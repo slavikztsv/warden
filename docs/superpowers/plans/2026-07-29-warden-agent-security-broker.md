@@ -768,6 +768,39 @@ test_denies_an_http_target_with_no_host if {
         with data as test_data
 }
 
+# R1b — a tool paired with the wrong target skipped the row check entirely.
+test_denies_query_customers_with_a_non_db_target if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "doc"},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
+
+# A negative counter made the sum smaller than the bound: 5,000,000 rows
+# approved because the task claimed to have already read minus five billion.
+test_denies_a_negative_row_counter if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": 5000000},
+        "task_state": {"data_classes_held": [], "rows_returned_so_far": -4999999950},
+    }
+        with data as test_data
+}
+
+test_denies_a_negative_row_estimate if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": -999999999},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
+
 test_denies_an_unknown_purpose if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": {
@@ -867,6 +900,51 @@ deny_reasons contains "input.malformed" if {
 	not is_array(input.target.recipients)
 }
 
+# R1b — tool/target agreement and value sanity. Two more fail-opens lived here.
+#
+# First: R5's row check keys off `action.tool`, but the estimated_rows shape
+# check above keys off `target.kind == "db"`. A `query_customers` call carrying
+# a `doc` target therefore skipped validation AND left R5's arithmetic
+# undefined, so an unbounded read was approved. Pin each tool to its target.
+#
+# Second: `is_number` accepts negatives, and the bound is a sum. A negative
+# `rows_returned_so_far` made the total smaller than the limit — a 5,000,000
+# row read evaluated to allow. Counts are cardinalities; they cannot be
+# negative.
+#
+# Written against the safe_* accessors, which are always defined, so the
+# negated-equality form is reliable here.
+expected_target_kind := {
+	"read_document": "doc",
+	"query_customers": "db",
+	"http_fetch": "http",
+	"send_email": "mail",
+}
+
+deny_reasons contains "input.malformed" if {
+	input.action.type == "tool_call"
+	not safe_action_tool == "read_document"
+	not safe_action_tool == "query_customers"
+	not safe_action_tool == "http_fetch"
+	not safe_action_tool == "send_email"
+}
+
+deny_reasons contains "input.malformed" if {
+	input.action.type == "tool_call"
+	expected := expected_target_kind[safe_action_tool]
+	not input.target.kind == expected
+}
+
+deny_reasons contains "input.malformed" if {
+	is_number(safe_rows_returned_so_far)
+	safe_rows_returned_so_far < 0
+}
+
+deny_reasons contains "input.malformed" if {
+	is_number(safe_target_estimated_rows)
+	safe_target_estimated_rows < 0
+}
+
 # R2 — the tool must be in the token's capability set.
 deny_reasons contains "tools.allowed" if {
 	input.action.type == "tool_call"
@@ -921,7 +999,7 @@ deny_reasons contains "mail.counterparty" if {
 - [ ] **Step 4: Run the policy test to verify it passes**
 
 Run: `opa test policies/ -v`
-Expected: PASS — 18 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
+Expected: PASS — 21 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
 
 - [ ] **Step 5: Commit**
 
