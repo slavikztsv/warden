@@ -36,14 +36,27 @@ confused-deputy problem, not a content problem.
 These were discovered while building and reviewing, and are stated rather than
 quietly fixed. Each is a real property of the system as shipped.
 
-- **The row bound is concurrency-safe by accident, not by construction.** The
-  broker's handler is `async def` and its only `await` occurs *before* the
-  taint snapshot, so the read-decide-record sequence runs uninterrupted under a
-  single worker. Change that handler to `def` (Starlette then uses a
-  threadpool), introduce an async HTTP client, or run a second worker, and a
-  TOCTOU on `rows.bounded` reopens silently — no test would catch it. A
-  structural fix needs a lock inside `TaintTracker`. **Single-worker deployment
-  is a requirement, not a default.**
+- **The row bound is concurrency-safe by construction only under a single
+  worker, not by any lock.** The broker's handler is `async def`, and its only
+  `await` (parsing the request body) runs *before* the taint snapshot is
+  taken; everything from the snapshot through `taint.record_read` — decide,
+  audit, execute, record — is synchronous. On a single-threaded event loop
+  that makes the read-decide-record sequence atomic with respect to other
+  requests: nothing can interleave inside it, because nothing yields control
+  during it. This was found the hard way: an earlier version took the
+  snapshot *before* the request body was parsed, putting that `await` inside
+  what was supposed to be the critical section, so two concurrent calls for
+  the same task could both read `rows_returned_so_far` before either recorded
+  its own read — a live TOCTOU, not a latent one, and it would interleave on
+  one worker, one event loop, no threads required. Moving the snapshot to
+  after the last `await` closed it. The safety is still fragile: change the
+  handler to `def` (Starlette then uses a threadpool), introduce an async
+  HTTP client anywhere between the snapshot and `record_read`, or run a
+  second worker, and the race reopens silently — no test would catch it
+  short of the concurrency test added for this specific case. A structural
+  fix needs a lock inside `TaintTracker`. **Single-worker deployment is a
+  requirement, not a default: two workers share no lock, so the single-event-
+  loop argument does not extend to them.**
 - **Egress destinations are matched by host, never by port.** An allowlisted
   `docstore.internal:22` is indistinguishable from `docstore.internal:443`, so
   an approved host exposes every port it listens on.

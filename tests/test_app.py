@@ -1,5 +1,9 @@
+import asyncio
+import json
+
 import httpx
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from broker.app import create_app
@@ -708,3 +712,114 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
     assert response.status_code == 200
     assert response.json()["rows"] == 120
     assert seen[0]["input"]["task_state"]["rows_returned_so_far"] == 0
+
+
+# --- Concurrency: the TOCTOU this branch's review pass found while writing
+# THREAT_MODEL.md. broker/app.py's only await must run BEFORE the taint
+# snapshot, or two concurrent calls for the same task can both read a stale
+# rows_returned_so_far and both be approved even though their combined total
+# breaks the bound. TestClient makes one request run to completion before the
+# next starts, so it cannot exercise this -- the two calls below are fired
+# directly at the ASGI endpoint function via asyncio.gather, each backed by a
+# hand-built Request whose receive() forces a real, deterministic suspension
+# (await asyncio.sleep(0)) at exactly the point a real body read would
+# suspend, so they genuinely interleave on one event loop instead of merely
+# running back-to-back.
+
+
+def _find_invoke_endpoint(app):
+    return next(r for r in app.routes if r.path == "/v1/tools/{tool}/invoke").endpoint
+
+
+def _concurrent_request(token: str, body: bytes) -> Request:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/tools/query_customers/invoke",
+        "query_string": b"",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+        "server": ("test", 80),
+        "client": ("test", 12345),
+        "scheme": "http",
+    }
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if not sent:
+            sent = True
+            await asyncio.sleep(0)
+            return {"type": "http.request", "body": body, "more_body": False}
+        await asyncio.sleep(3600)  # pragma: no cover -- never reached in this test
+
+    return Request(scope, receive)
+
+
+async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
+    tmp_path, signer
+):
+    """Fires two query_customers calls at the same task concurrently, each
+    requesting more than half the row bound, so their combined total (60)
+    breaks the configured limit (50) unless the second one is denied. This
+    is the regression test for the race: with the snapshot taken before the
+    request body is parsed (the bug), both calls read rows_returned_so_far=0
+    and both get approved -- proven by running this same scenario against
+    that ordering, which fails with two 200s and a final count of 60. With
+    the fix, the second call's snapshot reflects the first call's already-
+    recorded read, and it is denied under rows.bounded."""
+    max_rows = 50
+    db = tmp_path / "customers.db"
+    seed_customers(db, count=30)  # one full read is 30 rows; two would be 60 > 50
+
+    def opa_handler(request):
+        payload = json.loads(request.read())
+        task_state = payload["input"]["task_state"]
+        target = payload["input"]["target"]
+        total = task_state["rows_returned_so_far"] + target.get("estimated_rows", 0)
+        if total > max_rows:
+            return httpx.Response(
+                200, json={"result": {"allow": False, "deny_reasons": ["rows.bounded"]}}
+            )
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    taint = TaintTracker()
+    app = create_app(
+        verifier=Verifier(signer.public_key_pem()),
+        pdp=PolicyDecisionPoint(
+            "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
+        ),
+        taint=taint,
+        audit=audit,
+        backends=Backends(
+            docstore_url="http://docstore.internal",
+            db_path=db,
+            mailer_url="http://mailer.internal",
+            client=httpx.Client(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200, text="x"))
+            ),
+        ),
+        policy_digest="sha256:test",
+    )
+    invoke_endpoint = _find_invoke_endpoint(app)
+    token = token_for(signer)
+    body = json.dumps({"args": {"filter": "all"}}).encode()
+
+    response_a, response_b = await asyncio.gather(
+        invoke_endpoint("query_customers", _concurrent_request(token, body)),
+        invoke_endpoint("query_customers", _concurrent_request(token, body)),
+    )
+
+    statuses = sorted([response_a.status_code, response_b.status_code])
+    assert statuses == [200, 403], (
+        "both concurrent reads were allowed -- the row bound was bypassed "
+        f"(got {response_a.status_code} and {response_b.status_code})"
+    )
+    denied = response_a if response_a.status_code == 403 else response_b
+    assert json.loads(denied.body)["rule"] == "rows.bounded"
+
+    # The property that actually matters, independent of which call "won":
+    # the recorded total must never exceed the configured bound.
+    final_rows = taint.snapshot("4711")["rows_returned_so_far"]  # token_for()'s default task_id
+    assert final_rows <= max_rows
+    assert len(audit.records()) == 2

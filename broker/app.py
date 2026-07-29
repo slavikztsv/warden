@@ -140,9 +140,14 @@ def create_app(
                 {"error": "unauthenticated", "message": str(exc)}, status_code=401
             )
 
+        args = await _parse_args(request)
+        # Snapshot AFTER the final await. Everything from here to record_read
+        # is synchronous, so under a single worker the read-decide-record
+        # sequence cannot interleave with another request for the same task.
+        # Taking it earlier put an await inside the critical section and made
+        # the row bound racy on one event loop, never mind multiple workers.
         state = taint.snapshot(token.task_id)
 
-        args = await _parse_args(request)
         if args is None:
             return _deny(
                 audit, token, tool, {}, ToolTarget(kind="malformed"), state,
