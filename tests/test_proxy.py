@@ -1,10 +1,13 @@
+import asyncio
+import socket
+
 import httpx
 import pytest
 
 from broker.audit import AuditLog
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
-from broker.proxy import _audit_refusal, authorize_connect, parse_authority
+from broker.proxy import _audit_refusal, authorize_connect, parse_authority, serve_proxy
 from broker.taint import TaintTracker
 
 
@@ -134,6 +137,78 @@ def test_a_non_connect_method_is_recorded(tmp_path, signer):
     record = dependencies["audit"].records()[-1]
     assert record["rule"] == "proxy.method_not_allowed"
     assert record["target"]["host"] == "attacker.example"
+
+
+# The open_connection guard and the audit-write guard both live inside
+# serve_proxy's closure, not in authorize_connect -- driving a real server
+# (loopback only, no external network access) is the only way to exercise
+# them. An allow record must never be paired with silence on the wire.
+async def test_an_unreachable_upstream_gets_a_response_not_silence(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    server = await serve_proxy(
+        "127.0.0.1", 0, verifier=Verifier(signer.public_key_pem()), **dependencies
+    )
+    try:
+        proxy_host, proxy_port = server.sockets[0].getsockname()[:2]
+
+        # Bind then close: guarantees nothing is listening on this port, so
+        # the server's own asyncio.open_connection to it fails fast with
+        # ConnectionRefusedError -- no DNS lookup, no external network access.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+        probe.close()
+
+        reader, writer = await asyncio.open_connection(proxy_host, proxy_port)
+        writer.write(
+            f"CONNECT 127.0.0.1:{closed_port} HTTP/1.1\r\n"
+            f"Proxy-Authorization: Bearer {token(signer)}\r\n\r\n".encode()
+        )
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(4096), timeout=5)
+        writer.close()
+
+        assert response == (
+            b"HTTP/1.1 502 Bad Gateway\r\nX-Warden-Rule: upstream.unreachable\r\n\r\n"
+        )
+        records = dependencies["audit"].records()
+        assert len(records) == 1
+        assert records[0]["decision"] == "allow"
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_an_audit_write_failure_during_authorize_connect_is_reported_distinctly(
+    tmp_path, signer, monkeypatch
+):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+
+    def raise_oserror(**kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(dependencies["audit"], "append", raise_oserror)
+
+    server = await serve_proxy(
+        "127.0.0.1", 0, verifier=Verifier(signer.public_key_pem()), **dependencies
+    )
+    try:
+        proxy_host, proxy_port = server.sockets[0].getsockname()[:2]
+        reader, writer = await asyncio.open_connection(proxy_host, proxy_port)
+        writer.write(
+            f"CONNECT api.anthropic.com:443 HTTP/1.1\r\n"
+            f"Proxy-Authorization: Bearer {token(signer)}\r\n\r\n".encode()
+        )
+        await writer.drain()
+        response = await asyncio.wait_for(reader.read(4096), timeout=5)
+        writer.close()
+
+        assert response == (
+            b"HTTP/1.1 503 Service Unavailable\r\nX-Warden-Rule: audit.unavailable\r\n\r\n"
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 def test_every_connect_decision_is_audited(tmp_path, signer):
