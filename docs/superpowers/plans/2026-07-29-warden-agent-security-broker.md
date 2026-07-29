@@ -768,6 +768,28 @@ test_denies_an_http_target_with_no_host if {
         with data as test_data
 }
 
+# An egress action with a non-http target bypassed every rule at once.
+test_denies_an_egress_with_a_db_target if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": {"purpose": "support-triage", "allowed_tools": [], "counterparties": []},
+        "action": {"type": "egress"},
+        "target": {"kind": "db", "estimated_rows": 5000000000},
+        "task_state": tainted_state,
+    }
+        with data as test_data
+}
+
+# [["pii"]] holds PII but does not match the exact-element `in` check.
+test_denies_nested_data_classes if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "host": "docstore.internal", "port": 443},
+        "task_state": {"data_classes_held": [["pii"]], "rows_returned_so_far": 0},
+    }
+        with data as test_data
+}
+
 # R1b — a tool paired with the wrong target skipped the row check entirely.
 test_denies_query_customers_with_a_non_db_target if {
     "input.malformed" in authz.deny_reasons with input as {
@@ -935,6 +957,23 @@ deny_reasons contains "input.malformed" if {
 	not input.target.kind == expected
 }
 
+# Egress is by definition a network action, so it must carry an http target.
+# Without this, `{"type": "egress"}` with a `db` target sailed past everything:
+# R2/R5 key off `tool_call`, R3/R4 key off `target.kind == "http"`, so a
+# 5,000,000,000-row db "egress" with an empty capability set was approved.
+deny_reasons contains "input.malformed" if {
+	input.action.type == "egress"
+	not input.target.kind == "http"
+}
+
+# The taint check is `"pii" in data_classes_held`, which is exact-match on
+# elements. A nested array [["pii"]] therefore holds PII without matching, and
+# egress to an unapproved sink was allowed. Entries must be strings.
+deny_reasons contains "input.malformed" if {
+	some entry in safe_data_classes_held
+	not is_string(entry)
+}
+
 deny_reasons contains "input.malformed" if {
 	is_number(safe_rows_returned_so_far)
 	safe_rows_returned_so_far < 0
@@ -999,7 +1038,7 @@ deny_reasons contains "mail.counterparty" if {
 - [ ] **Step 4: Run the policy test to verify it passes**
 
 Run: `opa test policies/ -v`
-Expected: PASS — 21 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
+Expected: PASS — 23 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
 
 - [ ] **Step 5: Commit**
 
