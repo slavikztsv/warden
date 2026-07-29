@@ -2,6 +2,14 @@
 
 Asymmetric on purpose: the private key mints, the public key only verifies,
 so adding verifiers never grants minting power.
+
+That property is only worth anything if the two keys actually live in
+different places. The keypair is generated outside every container (see
+scripts/demo.sh) and handed out split: the control plane loads the private
+key and is the sole minter; the broker -- the enforcement point the agent can
+actually reach -- loads only the public key. A fully compromised broker
+therefore still cannot mint a token, because it never holds the material to
+sign one.
 """
 
 from __future__ import annotations
@@ -9,10 +17,14 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 import jwt
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 ISSUER = "warden-broker"
 DEFAULT_TTL_SECONDS = 300
@@ -42,6 +54,20 @@ class Signer:
     @classmethod
     def generate(cls) -> "Signer":
         return cls(Ed25519PrivateKey.generate())
+
+    @classmethod
+    def from_private_key_file(cls, path: Path | str) -> "Signer":
+        """Loads the minting key from disk.
+
+        The type check is not decoration: an RSA or EC key here would load
+        cleanly and then fail at the first mint, i.e. at request time, in the
+        one process whose only job is minting. Failing at startup instead
+        makes a misprovisioned control plane refuse to serve at all.
+        """
+        key = serialization.load_pem_private_key(Path(path).read_bytes(), password=None)
+        if not isinstance(key, Ed25519PrivateKey):
+            raise ValueError(f"{path} is not an Ed25519 private key")
+        return cls(key)
 
     def public_key_pem(self) -> bytes:
         return self._private_key.public_key().public_bytes(
@@ -81,7 +107,21 @@ class Signer:
 
 class Verifier:
     def __init__(self, public_key_pem: bytes) -> None:
-        self._public_key = serialization.load_pem_public_key(public_key_pem)
+        key = serialization.load_pem_public_key(public_key_pem)
+        if not isinstance(key, Ed25519PublicKey):
+            raise ValueError("verifier requires an Ed25519 public key")
+        self._public_key = key
+
+    @classmethod
+    def from_public_key_file(cls, path: Path | str) -> "Verifier":
+        """Loads the verification key from disk.
+
+        This is the only key material the broker process ever touches. There
+        is deliberately no corresponding loader for a private key here that
+        the broker could reach for by accident: the enforcement point verifies
+        and never mints.
+        """
+        return cls(Path(path).read_bytes())
 
     def verify(self, token: str, now: int | None = None) -> TaskToken:
         try:

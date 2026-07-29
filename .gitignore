@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 audit.jsonl
 data/customers.db
+data/agent.key
+data/agent.pub

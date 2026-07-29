@@ -12,6 +12,7 @@ confused-deputy problem, not a content problem.
 | Prompt injection as confused deputy | Containment. Authority scoped below the damage threshold. |
 | Credential theft from the agent | Nothing to steal — the runtime holds no long-lived credentials. |
 | Out-of-band network bypass | No route exists. `agent-net` is `internal: true`, so Docker attaches no gateway. |
+| Agent minting itself a broader token | The minting endpoint runs as its own service (`broker-control`) on `backend-net` only. The broker — the one service the agent *can* reach — loads only the public key and cannot sign. |
 | Bulk exfiltration | 50 rows per task, accumulated across calls; 5-minute token; purpose-scoped egress. |
 | Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. |
 | Log tampering to hide an attempt | Hash-chained audit records; any edit breaks the chain. |
@@ -23,13 +24,20 @@ confused-deputy problem, not a content problem.
 - **Covert channels inside allowed destinations.** No TLS interception: the
   proxy sees `CONNECT host:port` only. Data can be encoded into a URL path or
   a DNS-over-HTTPS query to an approved host.
-- **The broker is the TCB.** Compromise it and the model collapses. It is kept
-  small and single-purpose so it can be read end to end.
+- **The broker is the TCB** for enforcement. Compromise it and every decision
+  it makes is worthless. It is kept small and single-purpose so it can be read
+  end to end. It is *not* the TCB for identity: it holds only the public key,
+  so a compromised broker still cannot mint a token, and every token it
+  accepted remains attributable to the control plane that issued it.
 - **Multi-agent delegation chains.** Not built. The token carries a
   `delegated_from` slot so the extension is sketchable.
-- **Authenticating the control plane.** Token minting is bound to a separate
-  interface the agent cannot reach, but the caller itself is not
-  authenticated. That is the next trust boundary out.
+- **Authenticating the control plane.** `POST /v1/tokens` has no caller
+  authentication and lets its caller choose `task_id`, `purpose`,
+  `allowed_tools` and `counterparties`. Anything that can reach it holds
+  unlimited authority here. What keeps that acceptable is topology, not a
+  check: it runs as its own service on `backend-net` only, published to the
+  host for the demo's orchestrator, with no route from `agent-net`. Adding
+  mTLS or an operator credential is the next trust boundary out.
 
 ## Known limitations, found during implementation
 
@@ -57,6 +65,28 @@ quietly fixed. Each is a real property of the system as shipped.
   fix needs a lock inside `TaintTracker`. **Single-worker deployment is a
   requirement, not a default: two workers share no lock, so the single-event-
   loop argument does not extend to them.**
+- **The minting endpoint was reachable from the agent, and this document said
+  it was not.** An earlier version generated the keypair inside the broker and
+  served the control app from that same process on `0.0.0.0:8081`, while
+  Compose attached `broker` to `agent-net`. `ports: ["8081:8081"]` publishes to
+  the *host*; it does not restrict container-to-container reach, so
+  `agent-runtime` could POST to `broker:8081` and mint itself any token it
+  liked — including one naming a fresh `task_id`, which resets both the taint
+  state and the row budget. Every other control in this document assumes the
+  token bounds the agent, so this defeated all of them at once. Fixed by
+  splitting minting into a `broker-control` service attached to `backend-net`
+  only, and by generating the keypair outside every container so the broker
+  loads the public half alone. **The enforcement point now holds no signing
+  key**, which is strictly stronger than the original design: even a fully
+  compromised broker cannot mint.
+- **The containment property is topological and is not exercised by CI.** The
+  network isolation, the key split at the container level, and
+  `tests/test_isolation.sh` all require Docker. The Python suite proves the
+  wiring (the broker builds a `Verifier` from a public-key file, holds no
+  `Signer`, exposes no minting route; the control entrypoint signs with the
+  private half and the broker's verifier accepts it) and reads the Compose file
+  to pin `broker-control` off `agent-net` — but nothing here has run a
+  container. Treat the Compose topology as reviewed, not as tested.
 - **Egress destinations are matched by host, never by port.** An allowlisted
   `docstore.internal:22` is indistinguishable from `docstore.internal:443`, so
   an approved host exposes every port it listens on.

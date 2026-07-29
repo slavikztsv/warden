@@ -42,6 +42,10 @@ services:
     ports: ["8099:80"]     # host access so the demo can show what arrived
     profiles: [guarded, unprotected]
 
+  # The enforcement point. Attached to agent-net by necessity — it is the only
+  # host the agent can reach — and therefore the most exposed service here. It
+  # loads /data/agent.pub and NOTHING ELSE: no signing key lives in this
+  # container, so compromising it does not yield the ability to mint a token.
   broker:
     build: .
     command: ["python", "-m", "broker"]
@@ -51,12 +55,35 @@ services:
       MAILER_URL: http://mailer.internal
       DB_PATH: /data/customers.db
       AUDIT_PATH: /data/audit.jsonl
+      AGENT_PUBLIC_KEY_PATH: /data/agent.pub
     volumes:
       - ./data:/data
       - ./policies:/policies:ro
     networks: [agent-net, backend-net, egress-net]
-    ports: ["8081:8081"]   # control plane, reachable from the host only
     depends_on: [opa, docstore, mailer]
+    profiles: [guarded]
+
+  # The control plane: the only process holding the private key, and the only
+  # one that can mint a token. Attached to backend-net ONLY — never agent-net.
+  # That is the whole control: the endpoint has no caller authentication, so
+  # the property "the agent cannot mint itself a token" rests on there being no
+  # route from agent-net to this listener.
+  #
+  # `ports:` publishes to the HOST so the demo's orchestrator can request a
+  # token. It does NOT restrict container-to-container reach, which is why
+  # co-hosting this on the broker (attached to agent-net) was an escalation
+  # path with a comment claiming otherwise. Same pattern as sinkhole above:
+  # published from an internal network, reachable from the host, unreachable
+  # from agent-net.
+  broker-control:
+    build: .
+    command: ["python", "-m", "broker.control_main"]
+    environment:
+      AGENT_PRIVATE_KEY_PATH: /data/agent.key
+    volumes:
+      - ./data:/data
+    networks: [backend-net]
+    ports: ["8081:8081"]
     profiles: [guarded]
 
   agent-runtime:

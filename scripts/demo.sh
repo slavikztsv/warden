@@ -13,8 +13,23 @@ if [ "$PROFILE" = "unprotected" ]; then
   curl -s localhost:8099/__received | head -c 600
 else
   rm -f data/audit.jsonl
-  docker compose --profile guarded up -d opa docstore mailer sinkhole broker
+
+  # The keypair is generated HERE, outside every container, and handed out
+  # split: broker-control gets the private half and is the only thing that can
+  # mint; broker gets the public half and can only verify. Generating it inside
+  # the broker (as an earlier version did) meant the enforcement point held a
+  # signing key, so compromising the one service the agent can reach would have
+  # handed over the ability to mint arbitrary tokens.
+  if [ ! -f data/agent.key ]; then
+    openssl genpkey -algorithm ed25519 -out data/agent.key
+    chmod 600 data/agent.key
+  fi
+  openssl pkey -in data/agent.key -pubout -out data/agent.pub
+
+  docker compose --profile guarded up -d opa docstore mailer sinkhole broker broker-control
   sleep 3
+  # localhost:8081 is broker-control, published to the host. The agent runtime
+  # cannot reach it: broker-control is on backend-net only.
   TOKEN=$(curl -s -X POST localhost:8081/v1/tokens -H 'content-type: application/json' \
     -d '{"agent_id":"triage-bot","task_id":"4711","purpose":"support-triage",
          "allowed_tools":["read_document","query_customers","http_fetch","send_email"],
