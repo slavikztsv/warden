@@ -1728,7 +1728,9 @@ git commit -m "feat: tool description with COUNT pre-check, and execution"
 
 **Interfaces:**
 - Consumes: `AuditLog` (Task 1), `Verifier`/`Signer` (Task 2), `PolicyDecisionPoint` (Task 4), `TaintTracker` (Task 5), `Backends`/`UnknownTool` (Task 6).
-- Produces: `create_app(*, verifier, pdp, taint, audit, backends, policy_digest) -> FastAPI` serving `POST /v1/tools/{tool}/invoke`; `create_control_app(*, signer) -> FastAPI` serving `POST /v1/tokens`; `AuditWriteFailed(Exception)`.
+- Produces: `create_app(*, verifier, pdp, taint, audit, backends, policy_digest) -> FastAPI` serving `POST /v1/tools/{tool}/invoke`; `create_control_app(*, signer) -> FastAPI` serving `POST /v1/tokens`.
+
+  (An earlier draft listed an `AuditWriteFailed(Exception)` here. Struck: the real failure mode is a plain `OSError` from the log write, already caught and translated to a 503 at every call site, so a dedicated class would be dead code.)
 
 - [ ] **Step 1: Write the failing test**
 
