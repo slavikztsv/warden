@@ -76,6 +76,31 @@ def test_a_missing_token_is_refused(tmp_path, signer):
     assert (allowed, rule) == (False, "unauthenticated")
 
 
+# A CONNECT with no valid token is what a bypass attempt looks like. If it
+# leaves no trace, the proxy has failed at the one job it exists to do.
+def test_an_unauthenticated_attempt_is_still_audited(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    authorize_connect(
+        authority="attacker.example:443",
+        token_str="",
+        verifier=Verifier(signer.public_key_pem()),
+        **dependencies,
+    )
+    record = dependencies["audit"].records()[-1]
+    assert record["decision"] == "deny"
+    assert record["rule"] == "unauthenticated"
+    assert record["agent_id"] == "unauthenticated"
+    assert record["target"]["host"] == "attacker.example"
+    assert record["action"] == {"type": "egress", "tool": "CONNECT"}
+
+
+def test_parse_authority_never_raises_on_hostile_input(tmp_path):
+    assert parse_authority("[::1]:443") == ("::1", 443)
+    assert parse_authority("host:notanumber")[1] == 0
+    assert parse_authority("a:b:c")[1] == 0
+    assert parse_authority("") == ("", 443)
+
+
 def test_every_connect_decision_is_audited(tmp_path, signer):
     dependencies = deps(tmp_path, {"allow": False, "deny_reasons": ["egress.allowlist"]})
     authorize_connect(
