@@ -162,6 +162,25 @@ deny_reasons contains "input.malformed" if {
 	not input.target.kind == expected
 }
 
+# Egress is by definition a network action, so it must carry an http target.
+# Without this, `{"type": "egress"}` with a `db` target sailed past everything:
+# R2/R5 key off `tool_call`, R3/R4 key off `target.kind == "http"`, so a
+# 5,000,000,000-row db "egress" with an empty capability set was approved. The
+# same held for a `mail` target and a `doc` target — the guard is on the target
+# kind, not on any one wrong kind.
+deny_reasons contains "input.malformed" if {
+	input.action.type == "egress"
+	not input.target.kind == "http"
+}
+
+# The taint check is `"pii" in data_classes_held`, which is exact-match on
+# elements. A nested array [["pii"]] therefore holds PII without matching, and
+# egress to an unapproved sink was allowed. Entries must be strings.
+deny_reasons contains "input.malformed" if {
+	some entry in safe_data_classes_held
+	not is_string(entry)
+}
+
 deny_reasons contains "input.malformed" if {
 	is_number(safe_rows_returned_so_far)
 	safe_rows_returned_so_far < 0
