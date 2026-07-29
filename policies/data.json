@@ -1,0 +1,11 @@
+{
+  "purposes": {
+    "support-triage": {
+      "egress_allow": ["docstore.internal", "api.anthropic.com", "mailer.internal"],
+      "pii_approved_sinks": ["mailer.internal"]
+    }
+  },
+  "limits": {
+    "max_rows_per_task": 50
+  }
+}
