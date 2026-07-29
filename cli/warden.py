@@ -15,10 +15,15 @@ from broker.audit import AuditLog
 def _describe(record: dict) -> str:
     tool = record["action"].get("tool", "?")
     target = record["target"]
-    if target.get("kind") == "http":
+    kind = target.get("kind")
+    if kind == "http":
         return f"{tool}({target.get('host', '')}{target.get('path', '')})"
-    if target.get("kind") == "db":
+    if kind == "db":
         return f"{tool}(rows≈{target.get('estimated_rows', 0)})"
+    if kind == "doc":
+        return f"{tool}({target.get('path', '')})"
+    if kind == "mail":
+        return f"{tool}({', '.join(target.get('recipients', []))})"
     return f"{tool}()"
 
 
@@ -30,15 +35,21 @@ def render_replay(records: list[dict]) -> str:
     lines = [
         f"task {first['task_id']}  purpose={first['purpose']}  agent={first['agent_id']}"
     ]
+    # Each record's task_state is the snapshot taken BEFORE that call ran, so
+    # the first record showing pii is the one AFTER the read that caused it.
+    # Emitting the marker before that record's own line therefore places it
+    # directly beneath its cause. Emitting it after would attribute the taint
+    # to the next call — in the demo, to the denied bulk read, making it look
+    # as though the blocked query is what tainted the task.
     tainted = False
     for record in records:
-        mark = "✓" if record["decision"] == "allow" else "✗"
-        verdict = "allow" if record["decision"] == "allow" else "DENY "
-        lines.append(f"  {mark} {_describe(record):<38} {verdict}  {record['rule']}")
         held = record["task_state"]["data_classes_held"]
         if "pii" in held and not tainted:
             tainted = True
             lines.append("      ⛔ TAINT: task now holds data_class=pii")
+        mark = "✓" if record["decision"] == "allow" else "✗"
+        verdict = "allow" if record["decision"] == "allow" else "DENY "
+        lines.append(f"  {mark} {_describe(record):<38} {verdict}  {record['rule']}")
     lines.append(
         f"  chain intact: {len(records)} records, head sha256:{records[-1]['hash'][:8]}…"
     )
