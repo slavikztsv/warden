@@ -110,6 +110,7 @@ class Backends:
             return ToolResult(content=response.text, data_class="public")
         if tool == "http_fetch":
             response = self._client.get(args["url"])
+            response.raise_for_status()
             return ToolResult(content=response.text, data_class="public")
         if tool == "send_email":
             response = self._client.post(f"{self._mailer_url}/send", json=args)

@@ -90,6 +90,14 @@ def test_executing_http_fetch_returns_the_body(db):
     assert result.content == "fetched-body"
 
 
+def test_executing_http_fetch_raises_on_a_failed_response(db):
+    def handler(request):
+        return httpx.Response(500, text="internal server error from destination")
+
+    with pytest.raises(httpx.HTTPStatusError):
+        make_backends(db, handler).execute("http_fetch", {"url": "http://x.internal/a"})
+
+
 def test_target_serializes_for_the_policy_input(db):
     target = make_backends(db).describe("query_customers", {"filter": "id=8812"})
     assert target.as_dict() == {
