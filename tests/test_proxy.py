@@ -4,7 +4,7 @@ import pytest
 from broker.audit import AuditLog
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
-from broker.proxy import authorize_connect, parse_authority
+from broker.proxy import _audit_refusal, authorize_connect, parse_authority
 from broker.taint import TaintTracker
 
 
@@ -99,6 +99,41 @@ def test_parse_authority_never_raises_on_hostile_input(tmp_path):
     assert parse_authority("host:notanumber")[1] == 0
     assert parse_authority("a:b:c")[1] == 0
     assert parse_authority("") == ("", 443)
+    # A leading colon must not be mistaken for "no port present".
+    assert parse_authority(":8080") == ("", 8080)
+
+
+# An oversized header raises inside asyncio's reader BEFORE authorization is
+# reached. It must still refuse with a response and leave a record — a bare
+# socket close would make a probe look like it never happened.
+def test_an_unparseable_request_is_refused_and_recorded(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    _audit_refusal(
+        audit=dependencies["audit"],
+        policy_digest=dependencies["policy_digest"],
+        host="",
+        port=0,
+        rule="proxy.unparseable",
+    )
+    record = dependencies["audit"].records()[-1]
+    assert record["decision"] == "deny"
+    assert record["rule"] == "proxy.unparseable"
+    assert record["action"] == {"type": "egress", "tool": "CONNECT"}
+    assert dependencies["audit"].verify_chain() == (True, None)
+
+
+def test_a_non_connect_method_is_recorded(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    _audit_refusal(
+        audit=dependencies["audit"],
+        policy_digest=dependencies["policy_digest"],
+        host="attacker.example",
+        port=443,
+        rule="proxy.method_not_allowed",
+    )
+    record = dependencies["audit"].records()[-1]
+    assert record["rule"] == "proxy.method_not_allowed"
+    assert record["target"]["host"] == "attacker.example"
 
 
 def test_every_connect_decision_is_audited(tmp_path, signer):
