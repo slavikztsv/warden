@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,6 +44,13 @@ class AuditLog:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Guards the read-then-append critical section in `append`. The log
+        # is single-process, so a threading.Lock is sufficient: it prevents
+        # two concurrent callers (e.g. FastAPI sync handlers running in
+        # Starlette's threadpool) from reading the same head and writing
+        # conflicting records, which `verify_chain` would otherwise report
+        # as tampering.
+        self._lock = threading.Lock()
 
     def records(self) -> list[dict]:
         if not self.path.exists():
@@ -74,33 +82,39 @@ class AuditLog:
         task_state: dict,
         policy_bundle_digest: str,
     ) -> dict:
-        seq, prev_hash = self._head()
-        body = {
-            "seq": seq + 1,
-            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-            "task_id": task_id,
-            "agent_id": agent_id,
-            "purpose": purpose,
-            "action": action,
-            "target": target,
-            "args_digest": args_digest,
-            "decision": decision,
-            "rule": rule,
-            "task_state": task_state,
-            "policy_bundle_digest": policy_bundle_digest,
-            "prev_hash": prev_hash,
-        }
-        record = dict(body)
-        record["hash"] = record_hash(body)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
-            handle.flush()
-        return record
+        with self._lock:
+            seq, prev_hash = self._head()
+            body = {
+                "seq": seq + 1,
+                "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "purpose": purpose,
+                "action": action,
+                "target": target,
+                "args_digest": args_digest,
+                "decision": decision,
+                "rule": rule,
+                "task_state": task_state,
+                "policy_bundle_digest": policy_bundle_digest,
+                "prev_hash": prev_hash,
+            }
+            record = dict(body)
+            record["hash"] = record_hash(body)
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+                handle.flush()
+            return record
 
     def verify_chain(self) -> tuple[bool, int | None]:
         prev_hash = GENESIS_HASH
         for record in self.records():
-            body = {field: record[field] for field in _BODY_FIELDS}
+            # Hash the whole stored record (minus the hash field itself),
+            # not a fixed allowlist of fields: an attacker who injects an
+            # extra key into a stored line must be caught here, and a
+            # hardcoded field list would silently exclude it from
+            # verification.
+            body = {key: value for key, value in record.items() if key != "hash"}
             if record["prev_hash"] != prev_hash:
                 return False, record["seq"]
             if record["hash"] != record_hash(body):

@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 from broker.audit import GENESIS_HASH, AuditLog, canonical_json
@@ -73,3 +74,35 @@ def test_log_reopens_and_continues_the_chain(tmp_path):
     second = _append(AuditLog(path))
     assert second["seq"] == 2
     assert second["prev_hash"] == first["hash"]
+
+
+def test_concurrent_appends_produce_an_intact_chain(tmp_path):
+    log = AuditLog(tmp_path / "audit.jsonl")
+    n = 25
+    threads = [threading.Thread(target=lambda: _append(log)) for _ in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    records = log.records()
+    assert len(records) == n
+    assert sorted(record["seq"] for record in records) == list(range(1, n + 1))
+    assert log.verify_chain() == (True, None)
+
+
+def test_injected_field_is_detected_as_tampering(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    _append(log)
+    _append(log)
+
+    lines = path.read_text().splitlines()
+    doctored = json.loads(lines[0])
+    doctored["note"] = "approved by admin"
+    lines[0] = json.dumps(doctored)
+    path.write_text("\n".join(lines) + "\n")
+
+    ok, bad_seq = AuditLog(path).verify_chain()
+    assert ok is False
+    assert bad_seq == 1
