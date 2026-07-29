@@ -325,6 +325,7 @@ The proxy's own record is not in this replay, and that is correct rather than a 
 ```
 task -  purpose=-  agent=unauthenticated
   ✗ CONNECT(attacker.example)              DENY   unauthenticated
+  chain intact: 1 records, head sha256:2ef02da2…
 ```
 
 `unauthenticated`, not `egress.allowlist`. That is the better line to have on the screen: the bypass attempt did not fail a destination check, it arrived with no authority whatsoever.

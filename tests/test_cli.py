@@ -77,10 +77,25 @@ def test_chain_head_is_reported():
 
 
 def test_replay_command_exits_zero(tmp_path, capsys):
-    import json
+    # Built through the real AuditLog rather than from the hand-hashed
+    # RECORDS fixture: replay now exits 1 on a broken chain, and those
+    # fixtures ("a"*64, "b"*64, ...) never formed a real chain, so replaying
+    # them is by definition replaying a tampered log. The assertion this test
+    # was always making -- a normal replay exits zero -- needs a valid input
+    # to make it against.
+    from broker.audit import AuditLog
 
     path = tmp_path / "audit.jsonl"
-    path.write_text("\n".join(json.dumps(r) for r in RECORDS) + "\n")
+    log = AuditLog(path)
+    for doc_id in ("ticket-4711", "kb/refund-policy"):
+        log.append(
+            task_id="4711", agent_id="triage-bot", purpose="support-triage",
+            action={"type": "tool_call", "tool": "read_document"},
+            target={"kind": "doc", "path": doc_id}, args_digest="sha256:none",
+            decision="allow", rule="allow",
+            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            policy_bundle_digest="sha256:demo",
+        )
     assert main(["replay", "4711", "--audit", str(path)]) == 0
     assert "task 4711" in capsys.readouterr().out
 
@@ -384,7 +399,11 @@ def test_replay_of_a_tampered_log_is_reported_as_broken(tmp_path, capsys):
     path = tmp_path / "audit.jsonl"
     _tampered_log(path)
 
-    main(["replay", "4711", "--audit", str(path)])
+    # Exit 1, not just a banner. `warden replay 4711 && ...` must not succeed
+    # over a tampered log, and scripts/demo.sh runs this line under
+    # `set -euo pipefail` -- a demo that completes cheerfully over a modified
+    # audit chain is worse than one that stops.
+    assert main(["replay", "4711", "--audit", str(path)]) == 1
     out = capsys.readouterr().out
 
     assert "CHAIN BROKEN" in out
@@ -411,7 +430,7 @@ def test_replay_of_an_intact_log_reports_the_chain_as_intact(tmp_path, capsys):
         policy_bundle_digest="sha256:demo",
     )
 
-    main(["replay", "4711", "--audit", str(path)])
+    assert main(["replay", "4711", "--audit", str(path)]) == 0
     out = capsys.readouterr().out
 
     assert "chain intact: 1 records" in out
@@ -439,7 +458,7 @@ def test_replay_of_a_malformed_record_is_reported_as_broken(tmp_path, capsys):
         + "\n"
     )
 
-    main(["replay", "4711", "--audit", str(path)])
+    assert main(["replay", "4711", "--audit", str(path)]) == 1
     out = capsys.readouterr().out
 
     assert "CHAIN BROKEN" in out
@@ -453,3 +472,31 @@ def test_the_renderer_never_claims_integrity_it_was_not_given():
     output = render_replay([RECORDS[0]])
     assert "chain NOT VERIFIED" in output
     assert "chain intact" not in output
+
+
+def test_replay_exit_code_follows_the_chain_verdict(tmp_path, capsys):
+    """The banner alone is not the whole answer. `warden replay 4711 && ...`
+    must not succeed over a tampered log, and scripts/demo.sh runs exactly
+    that line under `set -euo pipefail` -- a demo that completes cheerfully
+    over a modified audit chain is worse than one that stops. Both halves
+    asserted together, because the pair is the contract: verify-chain already
+    exits 1, and replay shrugging would read as an oversight."""
+    from broker.audit import AuditLog
+
+    intact = tmp_path / "intact.jsonl"
+    AuditLog(intact).append(
+        task_id="4711", agent_id="triage-bot", purpose="support-triage",
+        action={"type": "tool_call", "tool": "read_document"},
+        target={"kind": "doc", "path": "ticket-4711"}, args_digest="sha256:none",
+        decision="allow", rule="allow",
+        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        policy_bundle_digest="sha256:demo",
+    )
+    tampered = tmp_path / "tampered.jsonl"
+    _tampered_log(tampered)
+
+    assert main(["replay", "4711", "--audit", str(intact)]) == 0
+    assert main(["replay", "4711", "--audit", str(tampered)]) == 1
+    out = capsys.readouterr().out
+    assert "chain intact" in out
+    assert "CHAIN BROKEN" in out

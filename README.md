@@ -46,7 +46,8 @@ which it does not — it knows only that no rule objected.
 The last line matters as much as the denials, twice over: **the task still
 completed**, and the chain claim is now the result of an actual
 `verify_chain()` rather than a line printed unconditionally. A tampered log
-renders as `⚠ CHAIN BROKEN at seq N`.
+renders as `⚠ CHAIN BROKEN at seq N` **and exits 1**, so the verdict survives
+being piped, chained, or run from a script.
 
 Out-of-band bypass attempts are recorded by the proxy, not the tool API, and
 they carry no token — so they are attributed to the sentinel principal and
@@ -55,6 +56,7 @@ appear under `warden replay -`:
 ```
 task -  purpose=-  agent=unauthenticated
   ✗ CONNECT(attacker.example)              DENY   unauthenticated
+  chain intact: 1 records, head sha256:2ef02da2…
 ```
 
 `unauthenticated`, not `egress.allowlist`: nothing on `agent-net` holds a

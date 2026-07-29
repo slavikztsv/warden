@@ -91,6 +91,19 @@ quietly fixed. Each is a real property of the system as shipped.
   loads the public half alone. **The enforcement point now holds no signing
   key**, which is strictly stronger than the original design: even a fully
   compromised broker cannot mint.
+- **`--live` is not covered by CI, and it answers only the first tool call in a
+  turn.** The `anthropic` package is deliberately not a dependency, so nothing
+  in the suite reaches the real API; `LiveClient` is driven by a stub that pins
+  the request shape and the `tool_use`/`tool_result` alternation but cannot
+  prove the API accepts it. Within that path, parallel tool use is unhandled:
+  a turn returning two `tool_use` blocks gets a `tool_result` for the first
+  only, and the API rejects the next request because the second is unanswered.
+  Accepted rather than fixed — it is reachable only on the already-unexercised
+  live path. **The cassette path the demo actually runs is unaffected**, because
+  a cassette yields exactly one step at a time. Relatedly, `MAX_TOKENS = 4096`
+  is a ceiling on thinking *and* response text together, and the model this
+  path targets runs adaptive thinking by default — a long reasoning turn can
+  therefore truncate the answer.
 - **The containment property is topological and is not exercised by CI.** The
   network isolation, the key split at the container level, and
   `tests/test_isolation.sh` all require Docker. The Python suite proves the

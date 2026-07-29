@@ -146,7 +146,16 @@ def main(argv: list[str] | None = None) -> int:
     # a tamper anywhere in the file invalidates everything after it.
     chain_ok, bad_seq, _ = verify()
     print(render_replay(records, chain_ok=chain_ok, bad_seq=bad_seq), end="")
-    return 0
+    # The banner is not the whole answer: a caller that chains
+    # `warden replay 4711 && ...` would sail past a tampered log if the exit
+    # code said success, and the verdict would live only in stdout. This is
+    # the same command that used to assert integrity it had never checked --
+    # it must not now check it and then shrug. `verify-chain` already exits 1;
+    # so does this. scripts/demo.sh runs under `set -euo pipefail` and will
+    # therefore abort on a broken chain, which is the behaviour we want: a
+    # demo that completes cheerfully over a tampered audit log is worse than
+    # one that stops.
+    return 0 if chain_ok else 1
 
 
 if __name__ == "__main__":
