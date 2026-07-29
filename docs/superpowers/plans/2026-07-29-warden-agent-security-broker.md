@@ -2590,20 +2590,38 @@ def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
                 allowed, rule = authorize_connect(
                     authority=authority, token_str=token_str, **deps
                 )
+            except OSError:
+                # The audit log itself failed. We cannot record, so we cannot
+                # act — same rule as the broker's tool surface, and reported
+                # distinctly rather than hidden behind a generic error.
+                allowed, rule = False, "audit.unavailable"
             except Exception:
                 allowed, rule = False, "proxy.error"
 
             if not allowed:
+                status = "503 Service Unavailable" if rule == "audit.unavailable" else "403 Forbidden"
                 writer.write(
-                    f"HTTP/1.1 403 Forbidden\r\nX-Warden-Rule: {rule}\r\n\r\n".encode()
+                    f"HTTP/1.1 {status}\r\nX-Warden-Rule: {rule}\r\n\r\n".encode()
                 )
                 await writer.drain()
                 return
 
             target_host, target_port = parse_authority(authority)
-            upstream_reader, upstream_writer = await asyncio.open_connection(
-                target_host, target_port
-            )
+            try:
+                upstream_reader, upstream_writer = await asyncio.open_connection(
+                    target_host, target_port
+                )
+            except OSError:
+                # The allow is already durably recorded. If the tunnel then
+                # cannot be established, answer the client — an allow in the
+                # log must never be paired with silence on the wire, or the
+                # replay will show a connection that never happened.
+                writer.write(
+                    b"HTTP/1.1 502 Bad Gateway\r\n"
+                    b"X-Warden-Rule: upstream.unreachable\r\n\r\n"
+                )
+                await writer.drain()
+                return
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
             await asyncio.gather(
