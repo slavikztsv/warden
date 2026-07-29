@@ -152,3 +152,35 @@ test_denies_everything_by_default if {
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
 }
+
+# R0 — the inversion (allow := no deny reasons) is not deny-by-default on its
+# own. These three inputs all evaluated to allow:true before the recognition
+# rules existed, which would have let a caller bypass the capability check by
+# omitting a single field.
+test_denies_an_action_with_no_type if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"tool": "send_email"},
+        "target": {"kind": "mail", "recipients": []},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_an_egress_with_no_target_kind if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "egress"},
+        "target": {},
+        "task_state": tainted_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_a_completely_empty_input if {
+    not authz.allow with input as {}
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}

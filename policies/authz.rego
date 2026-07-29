@@ -13,6 +13,22 @@ default allow := false
 
 allow if count(deny_reasons) == 0
 
+# R0 — input recognition. Without these, "allow unless a rule objects" is not
+# deny-by-default: an input that matches no rule produces no deny reasons and
+# is therefore allowed. An empty input {} evaluated to allow:true before these
+# rules existed. Anything whose shape we do not recognize is denied here.
+deny_reasons contains "input.malformed" if {
+	not input.action.type == "tool_call"
+	not input.action.type == "egress"
+}
+
+deny_reasons contains "input.malformed" if {
+	not input.target.kind == "doc"
+	not input.target.kind == "db"
+	not input.target.kind == "http"
+	not input.target.kind == "mail"
+}
+
 # R2 — the tool must be in the token's capability set.
 deny_reasons contains "tools.allowed" if {
 	input.action.type == "tool_call"
