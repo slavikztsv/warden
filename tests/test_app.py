@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from broker.app import create_app
 from broker.audit import AuditLog
-from broker.backends import Backends
+from broker.backends import Backends, ToolResult
 from broker.control import create_control_app
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
@@ -248,14 +248,22 @@ def test_agent_app_does_not_expose_the_minting_route(tmp_path, signer):
 def test_describe_failure_is_audited_as_malformed_input(tmp_path, signer):
     """A query_customers filter that backends.describe() cannot parse (a
     ValueError from the int() call in _where()) must not surface as an
-    unhandled 500. No decision was ever reached, so it is audited as a deny
-    under input.malformed, and the caller gets a structured 502."""
+    unhandled 500. It is still shaped correctly (filter is a string), so
+    the pre-describe() shape check lets it through; describe() itself then
+    rejects it. This is the agent's fault -- it is a client-caused failure,
+    not a backend fault -- so it is audited as a deny under input.malformed
+    and reported with the same 403 policy_denied shape as any other
+    denial, not a 502 (see finding 4: 502 is reserved for genuine backend
+    faults, so the caller can tell "you sent nonsense" apart from "the
+    docstore is down")."""
     client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
     response = invoke(client, token_for(signer), "query_customers", {"filter": "id=abc"})
-    assert response.status_code == 502
-    body = response.json()
-    assert body["error"] == "backend_error"
-    assert "message" in body
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "policy_denied",
+        "rule": "input.malformed",
+        "message": "Denied by policy rule input.malformed.",
+    }
 
     records = audit.records()
     assert len(records) == 1
@@ -307,6 +315,267 @@ def test_execute_connection_failure_becomes_backend_error(tmp_path, signer):
     records = audit.records()
     assert len(records) == 1
     assert records[0]["decision"] == "allow"
+
+
+# --- Code review round 2: findings 1, 2, 3, 4, 5 ---
+
+
+def test_missing_required_arg_is_denied_before_reaching_the_backend(tmp_path, signer):
+    """Finding 1's exact repro: read_document with no doc_id used to raise
+    KeyError('doc_id') inside execute() *after* the allow record was
+    already durably audited -- the audit log then asserted an authorized
+    read that never actually happened. The pre-describe() shape check
+    (finding 3) now catches this before any decision is made at all, so
+    only a single deny record exists, never an allow."""
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    response = invoke(client, token_for(signer), "read_document", {})
+    assert response.status_code == 403
+    assert response.json()["rule"] == "input.malformed"
+
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["decision"] == "deny"
+    assert records[0]["rule"] == "input.malformed"
+
+
+def test_execute_guard_catches_any_exception_not_just_httpx_errors(tmp_path, signer):
+    """Finding 1: the guard around backends.execute() must not be scoped
+    to httpx errors -- it must catch anything, because by the time
+    execute() runs the allow decision is already durable, and letting
+    *any* exception escape here means the audit log asserts an authorized
+    action that never happened."""
+    db = tmp_path / "customers.db"
+    seed_customers(db, count=5)
+
+    def opa_handler(request):
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    backends = Backends(
+        docstore_url="http://docstore.internal",
+        db_path=db,
+        mailer_url="http://mailer.internal",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, text="x"))
+        ),
+    )
+
+    def exploding_execute(tool, args):
+        raise RuntimeError("a backend bug unrelated to httpx")
+
+    backends.execute = exploding_execute
+
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    app = create_app(
+        verifier=Verifier(signer.public_key_pem()),
+        pdp=PolicyDecisionPoint(
+            "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
+        ),
+        taint=TaintTracker(),
+        audit=audit,
+        backends=backends,
+        policy_digest="sha256:test",
+    )
+    client = TestClient(app)
+    response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "backend_error"
+
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["decision"] == "allow"
+
+
+@pytest.mark.parametrize(
+    "raw_body",
+    [b"not json at all {{{", b"[]", b'"just a string"', b"null", b"42"],
+)
+def test_malformed_or_non_object_body_is_audited_as_malformed_input(tmp_path, signer, raw_body):
+    """Finding 2: neither invalid JSON, nor JSON that parses fine but
+    isn't an object (a list, a bare string, null, a number, ...), may
+    reach body.get("args", {}) -- that used to be an unhandled 500 with
+    zero audit trail. Both are treated the same as any other malformed
+    input: audited as a deny under input.malformed."""
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    response = client.post(
+        "/v1/tools/read_document/invoke",
+        content=raw_body,
+        headers={
+            "Authorization": f"Bearer {token_for(signer)}",
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": "policy_denied",
+        "rule": "input.malformed",
+        "message": "Denied by policy rule input.malformed.",
+    }
+
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["decision"] == "deny"
+    assert records[0]["rule"] == "input.malformed"
+
+
+def test_send_email_recipients_must_be_a_list_not_a_bare_string(tmp_path, signer):
+    """Finding 3's exact repro: send_email with "to" as the bare string
+    "attacker@evil.example" makes backends.describe() (which does
+    tuple(args.get("to", []))) see twenty-one single-character
+    recipients, while backends.execute() would pass the original whole
+    string through to the mailer untouched -- the policy and the action
+    would be judging two different targets. Reject the shape before
+    either stage ever sees it, so the mailer is never reached at all."""
+    calls = []
+
+    def backend_handler(request):
+        calls.append(request.url)
+        return httpx.Response(200, text="sent")
+
+    client, audit = build(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, backend_handler
+    )
+    token = token_for(signer, allowed_tools=["send_email"])
+    response = invoke(
+        client,
+        token,
+        "send_email",
+        {"to": "attacker@evil.example", "subject": "hi", "body": "hello"},
+    )
+    assert response.status_code == 403
+    assert response.json()["rule"] == "input.malformed"
+    assert calls == []  # the mailer must never be reached
+
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["decision"] == "deny"
+    assert records[0]["rule"] == "input.malformed"
+
+
+def test_send_email_with_a_well_shaped_recipient_list_is_allowed(tmp_path, signer):
+    """Positive control for finding 3's shape check: a properly shaped
+    call (a real list of string recipients) must not be over-rejected."""
+    calls = []
+
+    def backend_handler(request):
+        calls.append(request.url)
+        return httpx.Response(200, text="sent")
+
+    client, _ = build(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, backend_handler
+    )
+    token = token_for(signer, allowed_tools=["send_email"])
+    response = invoke(
+        client,
+        token,
+        "send_email",
+        {"to": ["customer@example.invalid"], "subject": "hi", "body": "hello"},
+    )
+    assert response.status_code == 200
+    assert len(calls) == 1
+
+
+def test_genuine_backend_fault_during_describe_is_not_blamed_on_the_agent(tmp_path, signer):
+    """Finding 4: a server-side bug in describe() (anything other than
+    the client-caused ValueError path a bad filter value takes) must not
+    be recorded as an input.malformed deny -- that would blame the agent
+    for our defect. It is reported as a plain backend fault instead, with
+    nothing audited against the agent."""
+    db = tmp_path / "customers.db"
+    seed_customers(db, count=5)
+
+    def opa_handler(request):
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    backends = Backends(
+        docstore_url="http://docstore.internal",
+        db_path=db,
+        mailer_url="http://mailer.internal",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, text="x"))
+        ),
+    )
+
+    def exploding_describe(tool, args):
+        raise AttributeError("some internal bug, not the agent's doing")
+
+    backends.describe = exploding_describe
+
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    app = create_app(
+        verifier=Verifier(signer.public_key_pem()),
+        pdp=PolicyDecisionPoint(
+            "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
+        ),
+        taint=TaintTracker(),
+        audit=audit,
+        backends=backends,
+        policy_digest="sha256:test",
+    )
+    client = TestClient(app)
+    response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "backend_error"
+    assert audit.records() == []
+
+
+def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, signer):
+    """Finding 5: a backend that reports a negative row count must not be
+    silently clamped to zero, which would under-count a security budget
+    rows.bounded relies on. taint.py's ValueError is the intended signal
+    (Task 5's review explicitly chose reject over clamp) and it must
+    surface here, not be swallowed. The already-durable allow record
+    stands; the taint state itself is left untouched by the rejected
+    update."""
+    db = tmp_path / "customers.db"
+    seed_customers(db, count=5)
+
+    def opa_handler(request):
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    backends = Backends(
+        docstore_url="http://docstore.internal",
+        db_path=db,
+        mailer_url="http://mailer.internal",
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, text="x"))
+        ),
+    )
+    original_execute = backends.execute
+
+    def execute_with_bogus_rows(tool, args):
+        result = original_execute(tool, args)
+        return ToolResult(content=result.content, rows=-5, data_class=result.data_class)
+
+    backends.execute = execute_with_bogus_rows
+
+    taint = TaintTracker()
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    app = create_app(
+        verifier=Verifier(signer.public_key_pem()),
+        pdp=PolicyDecisionPoint(
+            "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
+        ),
+        taint=taint,
+        audit=audit,
+        backends=backends,
+        policy_digest="sha256:test",
+    )
+    client = TestClient(app)
+    token = token_for(signer)
+    response = invoke(client, token, "read_document", {"doc_id": "a"})
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "backend_error"
+
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["decision"] == "allow"
+
+    state = taint.snapshot("4711")  # token_for()'s default task_id
+    assert state["rows_returned_so_far"] == 0
+    assert state["data_classes_held"] == []
 
 
 # --- Beyond-the-brief verification ---
