@@ -1,6 +1,7 @@
 package warden.authz_test
 
 import data.warden.authz
+import future.keywords.every
 import future.keywords.if
 import future.keywords.in
 
@@ -341,4 +342,114 @@ test_denies_an_unknown_purpose if {
     }
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
+}
+
+# --- Shipped-configuration tests -------------------------------------------
+#
+# Every test above overrides `data` with a mock, which is precisely why none
+# of them could catch a defect in policies/data.json itself. These deliberately
+# do NOT override it: they run the real rules against the real shipped bundle.
+#
+# The defect they close: data.json listed `mailer.internal` in BOTH
+# `egress_allow` and `pii_approved_sinks`. Rule 6 (mail.counterparty) only
+# guards `target.kind == "mail"`, so a PII-tainted
+# `http_fetch("http://mailer.internal/send", body=<the PII>)` is
+# `target.kind == "http"`, allowlisted, and PII-approved — it evaluated to
+# allow with an EMPTY deny_reasons set. The counterparty control was
+# bypassable with the demo's own token, using the demo's own tools.
+#
+# The configuration now states a much simpler and far more defensible
+# property: PII never leaves over HTTP at all. It leaves only through the mail
+# tool, to counterparties the task declared up front, where rule 6 governs it.
+
+shipped_principal := {
+	"agent_id": "triage-bot",
+	"task_id": "4711",
+	"purpose": "support-triage",
+	"allowed_tools": ["read_document", "query_customers", "http_fetch", "send_email"],
+	"counterparties": ["customer:8812"],
+}
+
+test_shipped_data_denies_pii_over_http_to_the_mail_host if {
+	reasons := authz.deny_reasons with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "http_fetch"},
+		"target": {"kind": "http", "host": "mailer.internal", "port": 80, "path": "/send"},
+		"task_state": tainted_state,
+	}
+
+	count(reasons) > 0
+	not authz.allow with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "http_fetch"},
+		"target": {"kind": "http", "host": "mailer.internal", "port": 80, "path": "/send"},
+		"task_state": tainted_state,
+	}
+}
+
+# The general form of the same property, asserted against every host the
+# shipped bundle allowlists rather than against one hand-picked name: a
+# tainted task reaching ANY allowlisted host over HTTP is denied under
+# egress.pii_sink. Adding a host to egress_allow can never again open an
+# HTTP exfil path for PII without this test failing.
+test_shipped_data_denies_pii_to_every_allowlisted_host if {
+	every host in data.purposes["support-triage"].egress_allow {
+		"egress.pii_sink" in authz.deny_reasons with input as {
+			"principal": shipped_principal,
+			"action": {"type": "tool_call", "tool": "http_fetch"},
+			"target": {"kind": "http", "host": host, "port": 443, "path": "/"},
+			"task_state": tainted_state,
+		}
+	}
+}
+
+test_shipped_data_approves_no_http_sink_for_pii if {
+	count(data.purposes["support-triage"].pii_approved_sinks) == 0
+}
+
+# Rule 4 guards `target.kind == "http"`, so removing every approved HTTP sink
+# must leave the mail path untouched: a tainted task can still email a
+# declared counterparty. Without this, the fix above would silently break the
+# demo's closing beat — the task completing despite containment.
+test_shipped_data_still_allows_tainted_mail_to_a_declared_counterparty if {
+	authz.allow with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "send_email"},
+		"target": {"kind": "mail", "recipients": ["customer:8812"]},
+		"task_state": tainted_state,
+	}
+}
+
+test_shipped_data_still_denies_tainted_mail_to_an_undeclared_counterparty if {
+	"mail.counterparty" in authz.deny_reasons with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "send_email"},
+		"target": {"kind": "mail", "recipients": ["attacker@evil.example"]},
+		"task_state": tainted_state,
+	}
+}
+
+# The demo's load-bearing denial, against the shipped bundle rather than a
+# mock: docstore.internal IS allowlisted, and only the taint rule stops it.
+test_shipped_data_denies_the_tainted_fallback_to_the_docstore if {
+	reasons := authz.deny_reasons with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "http_fetch"},
+		"target": {"kind": "http", "host": "docstore.internal", "port": 80, "path": "/feedback"},
+		"task_state": tainted_state,
+	}
+
+	"egress.pii_sink" in reasons
+	not "egress.allowlist" in reasons
+}
+
+# Positive control: an untainted fetch to an allowlisted host still works, so
+# the tests above are not passing because everything is denied.
+test_shipped_data_allows_an_untainted_fetch_to_an_allowlisted_host if {
+	authz.allow with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "http_fetch"},
+		"target": {"kind": "http", "host": "docstore.internal", "port": 80, "path": "/docs/x"},
+		"task_state": clean_state,
+	}
 }

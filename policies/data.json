@@ -1,8 +1,8 @@
 {
   "purposes": {
     "support-triage": {
-      "egress_allow": ["docstore.internal", "api.anthropic.com", "mailer.internal"],
-      "pii_approved_sinks": ["mailer.internal"]
+      "egress_allow": ["docstore.internal", "api.anthropic.com"],
+      "pii_approved_sinks": []
     }
   },
   "limits": {
