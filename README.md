@@ -67,3 +67,11 @@ pytest -v               # broker, agent, CLI, and the exploit itself
 `tests/test_injection_contained.py` runs the full attack and asserts the
 sinkhole received zero bytes. **The exploit is a regression test**, so the
 security property is verified continuously rather than demonstrated once.
+
+Cassettes replay model responses only — policy, egress, and the audit chain
+always execute for real. `python -m agent.loop --live` runs against the real
+API instead; it needs `pip install anthropic` (deliberately not in
+`requirements.txt`, since nothing else in the project depends on it) and an
+`ANTHROPIC_API_KEY`. **That path is not covered by CI**: the tests drive it
+through a stub, which pins the request shape and the message alternation but
+never calls the API.

@@ -167,3 +167,206 @@ def test_direct_dispatcher_matches_backends_for_the_same_filter(tmp_path):
         backend_result = backends.execute("query_customers", {"filter": filter_expr})
         assert json.loads(direct_result["content"]) == json.loads(backend_result.content)
         assert direct_result["rows"] == backend_result.rows
+
+
+# --- The --live path -------------------------------------------------------
+#
+# LiveClient.next_step never passed `tools=`, so the model was never told any
+# tools existed, no tool_use block could come back, and every turn returned
+# `final` on the first response. TOOL_SCHEMAS was dead code outside tests, and
+# http_fetch's schema had no `body` -- so even a working live client could only
+# issue bare GETs and the exfiltration attempt would carry nothing.
+#
+# These drive LiveClient through a stub in place of the anthropic client. They
+# pin the request shape and the message alternation; they cannot prove the real
+# API accepts it. The `anthropic` package is deliberately not a dependency, so
+# the live path is NOT exercised end to end anywhere, here or in CI.
+
+
+class _Block:
+    """A content block shaped like the SDK's, for the stub responses below."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
+class _Response:
+    def __init__(self, content):
+        self.content = content
+
+
+class StubAnthropic:
+    """Records every messages.create call and replays queued responses."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+        self.messages = self
+
+    def create(self, **kwargs):
+        # Snapshot `messages`: LiveClient passes its live history list and
+        # keeps appending to it, so recording the reference would let later
+        # turns rewrite what an earlier call is asserted to have sent. The real
+        # SDK serializes at call time, so the aliasing is harmless in
+        # production and only matters to this recorder.
+        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
+        return self._responses.pop(0)
+
+
+def _tool_use(block_id, name, args):
+    return _Block(type="tool_use", id=block_id, name=name, input=args)
+
+
+def _text(value):
+    return _Block(type="text", text=value)
+
+
+def test_live_client_declares_the_tools():
+    """Without `tools=`, no tool_use block can ever come back -- the whole
+    --live path collapses to a single text turn."""
+    from agent.llm import MAX_TOKENS, MODEL, LiveClient
+    from agent.tools import TOOL_SCHEMAS
+
+    stub = StubAnthropic([_Response([_text("done")])])
+    LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
+
+    call = stub.calls[0]
+    assert call["tools"] == TOOL_SCHEMAS
+    assert call["max_tokens"] == MAX_TOKENS
+    assert call["model"] == MODEL
+
+
+def test_live_client_returns_a_tool_use_step_the_loop_understands():
+    from agent.llm import LiveClient
+
+    stub = StubAnthropic(
+        [_Response([_tool_use("toolu_1", "read_document", {"doc_id": "ticket-4711"})])]
+    )
+    step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
+
+    assert step == {
+        "type": "tool_use",
+        "tool": "read_document",
+        "args": {"doc_id": "ticket-4711"},
+    }
+
+
+def test_live_client_returns_text_as_a_final_step():
+    from agent.llm import LiveClient
+
+    stub = StubAnthropic([_Response([_text("Ticket triaged."), _text("Done.")])])
+    step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
+
+    assert step["type"] == "final"
+    assert "Ticket triaged." in step["text"]
+
+
+def test_live_client_prefers_a_tool_use_block_over_accompanying_text():
+    from agent.llm import LiveClient
+
+    stub = StubAnthropic(
+        [_Response([_text("I'll read the ticket."), _tool_use("toolu_1", "read_document", {})])]
+    )
+    step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
+
+    assert step["type"] == "tool_use"
+
+
+def test_live_client_maintains_assistant_user_alternation_with_tool_results():
+    """The API rejects a tool_use turn that is not answered by a tool_result
+    with a matching id. The loop only knows how to append a plain user message,
+    so LiveClient has to do this mapping itself."""
+    from agent.llm import LiveClient
+
+    first = _tool_use("toolu_abc", "read_document", {"doc_id": "ticket-4711"})
+    stub = StubAnthropic([_Response([first]), _Response([_text("all done")])])
+    client = LiveClient("key", client=stub)
+
+    messages = [{"role": "user", "content": "triage"}]
+    step = client.next_step(messages)
+    assert step["type"] == "tool_use"
+
+    # What agent/loop.py does after dispatching the call.
+    messages.append({"role": "user", "content": json.dumps({"content": "the ticket"})})
+    client.next_step(messages)
+
+    sent = stub.calls[1]["messages"]
+    assert [message["role"] for message in sent] == ["user", "assistant", "user"]
+    # The assistant turn is echoed back verbatim, blocks and all.
+    assert sent[1]["content"] == [first]
+    assert sent[2]["content"] == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_abc",
+            "content": json.dumps({"content": "the ticket"}),
+        }
+    ]
+
+
+def test_live_client_drives_the_real_loop():
+    """End to end through run_task with a stub client: the loop cannot tell a
+    live client from a cassette, which is the property that makes --live worth
+    offering at all."""
+    from agent.llm import LiveClient
+    from agent.loop import run_task
+
+    stub = StubAnthropic(
+        [
+            _Response([_tool_use("t1", "read_document", {"doc_id": "ticket-4711"})]),
+            _Response([_tool_use("t2", "http_fetch", {"url": "http://x/y", "body": "rows"})]),
+            _Response([_text("done")]),
+        ]
+    )
+    calls = []
+
+    class RecordingDispatcher:
+        def call(self, tool, args):
+            calls.append((tool, args))
+            return {"content": "ok", "rows": 0}
+
+    transcript = run_task(RecordingDispatcher(), LiveClient("key", client=stub), task_id="4711")
+
+    assert [tool for tool, _ in calls] == ["read_document", "http_fetch"]
+    assert calls[1][1]["body"] == "rows"
+    assert transcript[-1] == {"type": "final", "text": "done"}
+
+
+def test_the_http_fetch_schema_advertises_the_body_field():
+    """Without this, a live model can only issue bare GETs and the unprotected
+    profile leaks nothing -- exactly the defect the cassette already had."""
+    from agent.tools import TOOL_SCHEMAS
+
+    schema = next(tool for tool in TOOL_SCHEMAS if tool["name"] == "http_fetch")
+    properties = schema["input_schema"]["properties"]
+    assert "body" in properties
+    assert properties["body"]["type"] == "string"
+    assert schema["input_schema"]["required"] == ["url"]  # body stays optional
+
+
+def test_every_advertised_tool_is_one_the_broker_actually_implements():
+    """A schema naming a tool the broker does not know would be denied under
+    tools.allowed on every call -- a live run that fails for a reason that has
+    nothing to do with the demo."""
+    from agent.tools import TOOL_SCHEMAS
+    from broker.backends import TOOLS
+
+    assert {tool["name"] for tool in TOOL_SCHEMAS} == set(TOOLS)
+
+
+def test_advertised_schemas_agree_with_the_brokers_shape_check():
+    """The broker rejects malformed args before any decision is made. A schema
+    whose required fields disagree with that check would produce a live run
+    where every call is audited input.malformed."""
+    from broker.app import _args_are_well_shaped
+    from agent.tools import TOOL_SCHEMAS
+
+    samples = {
+        "read_document": {"doc_id": "ticket-4711"},
+        "query_customers": {"filter": "id=8812"},
+        "http_fetch": {"url": "http://docstore.internal/feedback", "body": "[]"},
+        "send_email": {"to": ["customer:8812"], "subject": "s", "body": "b"},
+    }
+    for schema in TOOL_SCHEMAS:
+        args = samples[schema["name"]]
+        assert set(schema["input_schema"]["required"]) <= set(args)
+        assert _args_are_well_shaped(schema["name"], args), schema["name"]
