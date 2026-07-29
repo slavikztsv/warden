@@ -2226,7 +2226,7 @@ import pytest
 from broker.audit import AuditLog
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
-from broker.proxy import authorize_connect, parse_authority
+from broker.proxy import _audit_refusal, authorize_connect, parse_authority
 from broker.taint import TaintTracker
 
 
@@ -2321,6 +2321,41 @@ def test_parse_authority_never_raises_on_hostile_input(tmp_path):
     assert parse_authority("host:notanumber")[1] == 0
     assert parse_authority("a:b:c")[1] == 0
     assert parse_authority("") == ("", 443)
+    # A leading colon must not be mistaken for "no port present".
+    assert parse_authority(":8080") == ("", 8080)
+
+
+# An oversized header raises inside asyncio's reader BEFORE authorization is
+# reached. It must still refuse with a response and leave a record — a bare
+# socket close would make a probe look like it never happened.
+def test_an_unparseable_request_is_refused_and_recorded(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    _audit_refusal(
+        audit=dependencies["audit"],
+        policy_digest=dependencies["policy_digest"],
+        host="",
+        port=0,
+        rule="proxy.unparseable",
+    )
+    record = dependencies["audit"].records()[-1]
+    assert record["decision"] == "deny"
+    assert record["rule"] == "proxy.unparseable"
+    assert record["action"] == {"type": "egress", "tool": "CONNECT"}
+    assert dependencies["audit"].verify_chain() == (True, None)
+
+
+def test_a_non_connect_method_is_recorded(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    _audit_refusal(
+        audit=dependencies["audit"],
+        policy_digest=dependencies["policy_digest"],
+        host="attacker.example",
+        port=443,
+        rule="proxy.method_not_allowed",
+    )
+    record = dependencies["audit"].records()[-1]
+    assert record["rule"] == "proxy.method_not_allowed"
+    assert record["target"]["host"] == "attacker.example"
 
 
 def test_every_connect_decision_is_audited(tmp_path, signer):
@@ -2377,10 +2412,10 @@ def parse_authority(authority: str) -> tuple[str, int]:
     if authority.startswith("["):  # [::1]:443 — bracketed IPv6 literal
         host, _, rest = authority.partition("]")
         host, port = host[1:], rest.lstrip(":")
+    elif ":" not in authority:
+        host, port = authority, "443"
     else:
         host, _, port = authority.rpartition(":")
-        if not host:  # no colon present at all
-            host, port = authority, "443"
     try:
         return host, int(port) if port else 443
     except ValueError:
@@ -2459,6 +2494,39 @@ def authorize_connect(
     return decision.allow, decision.rule
 
 
+def _audit_refusal(*, audit, policy_digest: str, host: str, port: int, rule: str) -> None:
+    """Record a refusal that never reached the policy.
+
+    Denying without recording is the one failure mode this component cannot
+    have. An unparseable request, an oversized header, or a non-CONNECT method
+    is exactly what a probe looks like, and a bare socket close would leave the
+    replay showing a clean run. Best-effort: if the audit write itself fails we
+    still refuse, because refusing is not optional.
+    """
+    try:
+        audit.append(
+            task_id="-",
+            agent_id="unauthenticated",
+            purpose="-",
+            action={"type": "egress", "tool": "CONNECT"},
+            target={
+                "kind": "http",
+                "host": host,
+                "port": port,
+                "path": "",
+                "estimated_rows": 0,
+                "recipients": [],
+            },
+            args_digest="sha256:none",
+            decision="deny",
+            rule=rule,
+            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            policy_bundle_digest=policy_digest,
+        )
+    except OSError:
+        pass  # noqa: the refusal below still happens; losing the record is not a reason to allow
+
+
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
         while chunk := await reader.read(65536):
@@ -2471,18 +2539,48 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
 def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            request_line = await reader.readline()
-            headers = {}
-            while (line := await reader.readline()) not in (b"\r\n", b"\n", b""):
-                name, _, value = line.decode("latin-1").partition(":")
-                headers[name.strip().lower()] = value.strip()
+            # Parsing runs inside its own guard. asyncio's StreamReader raises
+            # on a header line past its 64KiB limit, and that raise happens
+            # before authorization is ever reached — which used to mean a bare
+            # socket close with no HTTP response and no audit record.
+            try:
+                request_line = await reader.readline()
+                headers = {}
+                while (line := await reader.readline()) not in (b"\r\n", b"\n", b""):
+                    name, _, value = line.decode("latin-1").partition(":")
+                    headers[name.strip().lower()] = value.strip()
 
-            method, _, rest = request_line.decode("latin-1").partition(" ")
-            authority = rest.split(" ")[0]
-            token_str = headers.get("proxy-authorization", "").removeprefix("Bearer ")
+                method, _, rest = request_line.decode("latin-1").partition(" ")
+                authority = rest.split(" ")[0]
+                token_str = headers.get("proxy-authorization", "").removeprefix("Bearer ")
+            except Exception:
+                _audit_refusal(
+                    audit=deps["audit"],
+                    policy_digest=deps["policy_digest"],
+                    host="",
+                    port=0,
+                    rule="proxy.unparseable",
+                )
+                writer.write(
+                    b"HTTP/1.1 400 Bad Request\r\nX-Warden-Rule: proxy.unparseable\r\n\r\n"
+                )
+                await writer.drain()
+                return
 
             if method.upper() != "CONNECT":
-                writer.write(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                # A non-CONNECT method is a probe. 405 alone left no trace.
+                host, port = parse_authority(authority)
+                _audit_refusal(
+                    audit=deps["audit"],
+                    policy_digest=deps["policy_digest"],
+                    host=host,
+                    port=port,
+                    rule="proxy.method_not_allowed",
+                )
+                writer.write(
+                    b"HTTP/1.1 405 Method Not Allowed\r\n"
+                    b"X-Warden-Rule: proxy.method_not_allowed\r\n\r\n"
+                )
                 await writer.drain()
                 return
 
