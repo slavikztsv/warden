@@ -29,4 +29,13 @@ else
   fail=1
 fi
 
+# Blocking is only half the job. A refusal that leaves no trace makes a probe
+# look like it never happened, so assert the attempt was RECORDED too.
+if grep -q '"tool": *"CONNECT"' data/audit.jsonl 2>/dev/null; then
+  echo "ok:   the bypass attempt was recorded in the audit log"
+else
+  echo "FAIL: bypass attempts were blocked but left no audit record"
+  fail=1
+fi
+
 exit $fail
