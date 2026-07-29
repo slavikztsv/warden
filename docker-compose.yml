@@ -7,6 +7,13 @@ networks:
     internal: true
   egress-net:
     driver: bridge
+  # Docker silently ignores `ports:` on a container attached ONLY to internal
+  # networks — no proxy is created and nothing listens on the host. Services
+  # that must be reachable from the host therefore need a non-internal network
+  # too. This does NOT weaken containment: agent-runtime is on agent-net alone
+  # and is attached to none of these.
+  host-net:
+    driver: bridge
 
 services:
   opa:
@@ -39,6 +46,7 @@ services:
     networks:
       backend-net:
         aliases: [attacker.example]
+      host-net: {}
     ports: ["8099:80"]     # host access so the demo can show what arrived
     profiles: [guarded, unprotected]
 
@@ -82,7 +90,7 @@ services:
       AGENT_PRIVATE_KEY_PATH: /data/agent.key
     volumes:
       - ./data:/data
-    networks: [backend-net]
+    networks: [backend-net, host-net]
     ports: ["8081:8081"]
     profiles: [guarded]
 

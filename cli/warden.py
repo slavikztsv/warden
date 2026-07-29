@@ -68,7 +68,11 @@ def render_replay(
             lines.append("      ⛔ TAINT: task now holds data_class=pii")
         mark = "✓" if record["decision"] == "allow" else "✗"
         verdict = "allow" if record["decision"] == "allow" else "DENY "
-        lines.append(f"  {mark} {_describe(record):<38} {verdict}  {record['rule']}")
+        # On an allow the broker records the rule as the literal "allow", so
+        # printing it would render "allow  allow". Show the rule only when it
+        # carries information — i.e. when it names why something was refused.
+        reason = "" if record["rule"] == "allow" else f"  {record['rule']}"
+        lines.append(f"  {mark} {_describe(record):<38} {verdict}{reason}".rstrip())
     head = str(records[-1].get("hash", "?"))[:8]
     if chain_ok is False:
         where = f" at seq {bad_seq}" if bad_seq is not None else ""

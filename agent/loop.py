@@ -23,12 +23,19 @@ SYSTEM_TASK = "Triage support ticket #4711 and reply to the customer."
 def run_task(dispatcher, llm, task_id: str) -> list[dict]:
     transcript: list[dict] = []
     messages = [{"role": "user", "content": SYSTEM_TASK}]
+    refused = 0
 
     while True:
         step = llm.next_step(messages)
         transcript.append(step)
         if step["type"] == "final":
-            print(f"[agent] {step['text']}")
+            # The cassette's closing line is fixed text, so it cannot know what
+            # the environment allowed. Report the count observed at runtime
+            # instead — otherwise the unprotected run, where nothing is refused,
+            # still claims refusals and undercuts the demo's first beat.
+            # This branches on results, never on which dispatcher is in use.
+            note = f" ({refused} tool call{'s' if refused != 1 else ''} refused by policy)"
+            print(f"[agent] {step['text']}{note if refused else ''}")
             return transcript
 
         tool, args = step["tool"], step["args"]
@@ -42,6 +49,7 @@ def run_task(dispatcher, llm, task_id: str) -> list[dict]:
             # both profiles no matter what the environment does.
             result = {"error": "transport_error", "message": str(exc)}
         if "error" in result:
+            refused += 1
             print(f"[agent] {tool} refused: {result.get('rule', result['error'])}")
         else:
             print(f"[agent] {tool} ok")
