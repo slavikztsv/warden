@@ -14,7 +14,7 @@ confused-deputy problem, not a content problem.
 | Out-of-band network bypass | No route exists. `agent-net` is `internal: true`, so Docker attaches no gateway. |
 | Agent minting itself a broader token | The minting endpoint runs as its own service (`broker-control`) on `backend-net` only. The broker — the one service the agent *can* reach — loads only the public key and cannot sign. |
 | Bulk exfiltration | 50 rows per task, accumulated across calls; 5-minute token; purpose-scoped egress. |
-| Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. |
+| Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. No HTTP destination is an approved PII sink, so **PII never leaves over HTTP at all** — it leaves only through the mail tool, to counterparties the task declared up front (`mail.counterparty`). |
 | Log tampering to hide an attempt | Hash-chained audit records; any edit breaks the chain. |
 
 ## Out of scope
@@ -65,6 +65,18 @@ quietly fixed. Each is a real property of the system as shipped.
   fix needs a lock inside `TaintTracker`. **Single-worker deployment is a
   requirement, not a default: two workers share no lock, so the single-event-
   loop argument does not extend to them.**
+- **The mail counterparty control was bypassable through the HTTP tool.**
+  `mail.counterparty` guards `target.kind == "mail"`, and the shipped
+  configuration listed `mailer.internal` in both `egress_allow` and
+  `pii_approved_sinks` — so a PII-tainted
+  `http_fetch("http://mailer.internal/send", body=<the customer rows>)` was
+  `kind == "http"`: allowlisted, PII-approved, and governed by no counterparty
+  rule. It evaluated to allow with an empty `deny_reasons`, i.e. a clean
+  record in the audit log. Closed by approving no HTTP sink for PII at all,
+  which is also the version of the rule that fits in one sentence. No test
+  could have caught it: every case in `authz_test.rego` mocked `data`, so the
+  shipped `data.json` was never evaluated. The tests that close it deliberately
+  do not mock it.
 - **The minting endpoint was reachable from the agent, and this document said
   it was not.** An earlier version generated the keypair inside the broker and
   served the control app from that same process on `0.0.0.0:8081`, while
