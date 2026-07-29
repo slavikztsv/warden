@@ -184,3 +184,65 @@ test_denies_a_completely_empty_input if {
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
 }
+
+# R1 — each of these omits exactly one field, and each one silently disabled
+# the rule that depended on it before shape validation existed. The pii_sink
+# case is the worst: dropping task_state defeated the control the whole
+# project exists to demonstrate.
+test_denies_when_task_state_is_missing if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "host": "docstore.internal", "port": 443},
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_when_allowed_tools_is_missing if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": {"purpose": "support-triage", "counterparties": []},
+        "action": {"type": "tool_call", "tool": "send_email"},
+        "target": {"kind": "mail", "recipients": []},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_a_db_read_with_no_row_estimate if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db"},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_an_http_target_with_no_host if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "port": 443},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_an_unknown_purpose if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": {
+            "purpose": "no-such-purpose",
+            "allowed_tools": ["read_document"],
+            "counterparties": [],
+        },
+        "action": {"type": "tool_call", "tool": "read_document"},
+        "target": {"kind": "doc"},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}

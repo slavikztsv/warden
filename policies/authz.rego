@@ -17,6 +17,11 @@ allow if count(deny_reasons) == 0
 # deny-by-default: an input that matches no rule produces no deny reasons and
 # is therefore allowed. An empty input {} evaluated to allow:true before these
 # rules existed. Anything whose shape we do not recognize is denied here.
+# Written as conjoined negated equalities, NOT as `not X in {A, B}`. Those are
+# not equivalent: when X is undefined, `not X in {...}` does not fire, so the
+# missing-field case — the exact case these rules exist to catch — would slip
+# through. Verified with `opa eval` on 0.70.0: the set form yields [] where the
+# equality form yields ["fired"].
 deny_reasons contains "input.malformed" if {
 	not input.action.type == "tool_call"
 	not input.action.type == "egress"
@@ -27,6 +32,99 @@ deny_reasons contains "input.malformed" if {
 	not input.target.kind == "db"
 	not input.target.kind == "http"
 	not input.target.kind == "mail"
+}
+
+# R1 — shape validation. Every rule below assumes a well-formed input, and in
+# Rego that assumption is dangerous: a reference to a missing field is
+# undefined, an undefined body contributes no deny reason, and the rule that
+# depended on it silently does not fire. Omitting `task_state` alone was enough
+# to disable the pii_sink rule entirely. Validate the shape once here so the
+# authorization rules can rely on it.
+#
+# `not is_string(input.principal.purpose)` (the brief's literal form) has the
+# same defect R0 already found in `not X in {...}`, one level deeper: is_*()
+# are ordinary builtin calls, and a builtin call is simply never invoked when
+# one of its arguments is undefined — the call expression itself becomes
+# undefined, not false, and `not` over that does not fire. Verified with `opa
+# eval` on 0.70.0 against all ten fields: every `not is_string(...)` /
+# `not is_array(...)` / `not is_number(...)` / `not data.purposes[...]` check
+# silently failed to fire whenever the underlying field was entirely absent
+# (as opposed to present-but-wrong-type, which they do catch). Wrapping the
+# call in `==` does not help either — `type_name(x) == "string"` has the same
+# undefined-argument problem, because the LHS is still a call.
+# The `default X := null / X := input....` pair below is not a call: it is
+# Rego's rule-level default mechanism, which substitutes null precisely when
+# the primary definition is undefined for any reason at any depth. Each type
+# check below runs against that always-defined accessor instead of the raw
+# path, so a wrong-type value and a wholly absent field are caught the same
+# way.
+default safe_purpose := null
+
+safe_purpose := input.principal.purpose
+
+default safe_allowed_tools := null
+
+safe_allowed_tools := input.principal.allowed_tools
+
+default safe_counterparties := null
+
+safe_counterparties := input.principal.counterparties
+
+default safe_data_classes_held := null
+
+safe_data_classes_held := input.task_state.data_classes_held
+
+default safe_rows_returned_so_far := null
+
+safe_rows_returned_so_far := input.task_state.rows_returned_so_far
+
+default safe_action_tool := null
+
+safe_action_tool := input.action.tool
+
+default safe_target_host := null
+
+safe_target_host := input.target.host
+
+default safe_target_estimated_rows := null
+
+safe_target_estimated_rows := input.target.estimated_rows
+
+default safe_target_recipients := null
+
+safe_target_recipients := input.target.recipients
+
+deny_reasons contains "input.malformed" if not is_string(safe_purpose)
+
+deny_reasons contains "input.malformed" if not is_array(safe_allowed_tools)
+
+deny_reasons contains "input.malformed" if not is_array(safe_counterparties)
+
+deny_reasons contains "input.malformed" if not is_array(safe_data_classes_held)
+
+deny_reasons contains "input.malformed" if not is_number(safe_rows_returned_so_far)
+
+# An unknown purpose has no allowlist, so nothing could be checked against it.
+deny_reasons contains "input.malformed" if not data.purposes[safe_purpose]
+
+deny_reasons contains "input.malformed" if {
+	input.action.type == "tool_call"
+	not is_string(safe_action_tool)
+}
+
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "http"
+	not is_string(safe_target_host)
+}
+
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "db"
+	not is_number(safe_target_estimated_rows)
+}
+
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "mail"
+	not is_array(safe_target_recipients)
 }
 
 # R2 — the tool must be in the token's capability set.
