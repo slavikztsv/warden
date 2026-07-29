@@ -3415,6 +3415,17 @@ services:
       BROKER_URL: http://broker:8080
       TASK_TOKEN: ${TASK_TOKEN}
       TASK_ID: "4711"
+      # Point every proxy-aware client at :3128 so an out-of-band attempt is
+      # DENIED AND RECORDED rather than merely failing to route. Without this
+      # the proxy never sees a CONNECT and is decoration — the isolation test
+      # would show a bare connection failure and the replay would contain no
+      # egress record at all.
+      HTTP_PROXY: http://broker:3128
+      HTTPS_PROXY: http://broker:3128
+      # The broker's own tool API must NOT be proxied through the broker's own
+      # proxy. httpx honours these variables by default (trust_env), so without
+      # this exclusion every legitimate tool call would loop back through :3128.
+      NO_PROXY: broker
     networks: [agent-net]           # the ONLY network — no route anywhere else
     depends_on: [broker]
     profiles: [guarded]
@@ -3502,6 +3513,15 @@ if docker compose --profile guarded run --rm --entrypoint sh agent-runtime \
   echo "ok:   the broker is reachable"
 else
   echo "FAIL: the broker should be reachable"
+  fail=1
+fi
+
+# Blocking is only half the job. A refusal that leaves no trace makes a probe
+# look like it never happened, so assert the attempt was RECORDED too.
+if grep -q '"tool": *"CONNECT"' data/audit.jsonl 2>/dev/null; then
+  echo "ok:   the bypass attempt was recorded in the audit log"
+else
+  echo "FAIL: bypass attempts were blocked but left no audit record"
   fail=1
 fi
 
