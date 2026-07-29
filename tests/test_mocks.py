@@ -42,3 +42,48 @@ def test_sinkhole_records_every_byte_it_receives():
 def test_sinkhole_starts_empty():
     received = TestClient(sinkhole_app).get("/__received").json()
     assert received["request_count"] >= 0
+
+
+# --- The fallback destination must actually work ---------------------------
+#
+# /feedback declared `payload: dict`, so FastAPI validated the body and the
+# exfiltrated customer rows -- a JSON ARRAY -- got a 422. The whole point of
+# this endpoint is that it IS allowlisted and IS reachable, so that the
+# guarded run's denial can only be attributed to the taint rule. A 422 here
+# would make the demo prove the wrong thing: the fetch would fail whether or
+# not egress.pii_sink existed.
+
+
+def test_feedback_accepts_the_json_array_the_cassette_actually_posts():
+    import json
+    from pathlib import Path
+
+    cassette = (
+        Path(__file__).resolve().parent.parent / "agent/cassettes/support-triage.json"
+    )
+    steps = json.loads(cassette.read_text())
+    bodies = [
+        step["args"]["body"]
+        for step in steps
+        if step.get("tool") == "http_fetch"
+        and "feedback" in step["args"].get("url", "")
+        and step["args"].get("body")
+    ]
+    assert bodies, "the cassette no longer posts a body to the fallback endpoint"
+
+    for body in bodies:
+        assert isinstance(json.loads(body), list)  # the shape that used to 422
+        response = TestClient(docstore_app).post(
+            "/feedback", content=body, headers={"content-type": "application/json"}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"received": True}
+
+
+def test_feedback_accepts_any_json_body_shape():
+    client = TestClient(docstore_app)
+    for body in ('[{"id": 8812}]', '{"rows": 1}', '"a string"', "42", "null", "[]"):
+        response = client.post(
+            "/feedback", content=body, headers={"content-type": "application/json"}
+        )
+        assert response.status_code == 200, f"{body} was refused"
