@@ -1,2 +1,7 @@
 .superpowers/
 bin/
+__pycache__/
+*.pyc
+.venv/
+audit.jsonl
+data/customers.db
