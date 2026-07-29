@@ -1,0 +1,85 @@
+name: warden
+
+networks:
+  agent-net:
+    internal: true      # no gateway — this is the containment property
+  backend-net:
+    internal: true
+  egress-net:
+    driver: bridge
+
+services:
+  opa:
+    image: openpolicyagent/opa:0.70.0
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes:
+      - ./policies:/policies:ro
+    networks: [backend-net]
+    profiles: [guarded]
+
+  docstore:
+    build: .
+    command: ["uvicorn", "mocks.docstore:app", "--host", "0.0.0.0", "--port", "80"]
+    networks:
+      backend-net:
+        aliases: [docstore.internal]
+    profiles: [guarded, unprotected]
+
+  mailer:
+    build: .
+    command: ["uvicorn", "mocks.mailer:app", "--host", "0.0.0.0", "--port", "80"]
+    networks:
+      backend-net:
+        aliases: [mailer.internal]
+    profiles: [guarded, unprotected]
+
+  sinkhole:
+    build: .
+    command: ["uvicorn", "mocks.sinkhole:app", "--host", "0.0.0.0", "--port", "80"]
+    networks:
+      backend-net:
+        aliases: [attacker.example]
+    ports: ["8099:80"]     # host access so the demo can show what arrived
+    profiles: [guarded, unprotected]
+
+  broker:
+    build: .
+    command: ["python", "-m", "broker"]
+    environment:
+      OPA_URL: http://opa:8181
+      DOCSTORE_URL: http://docstore.internal
+      MAILER_URL: http://mailer.internal
+      DB_PATH: /data/customers.db
+      AUDIT_PATH: /data/audit.jsonl
+    volumes:
+      - ./data:/data
+      - ./policies:/policies:ro
+    networks: [agent-net, backend-net, egress-net]
+    ports: ["8081:8081"]   # control plane, reachable from the host only
+    depends_on: [opa, docstore, mailer]
+    profiles: [guarded]
+
+  agent-runtime:
+    build: .
+    command: ["python", "-m", "agent.loop"]
+    environment:
+      BROKER_URL: http://broker:8080
+      TASK_TOKEN: ${TASK_TOKEN}
+      TASK_ID: "4711"
+    networks: [agent-net]           # the ONLY network — no route anywhere else
+    depends_on: [broker]
+    profiles: [guarded]
+
+  agent-runtime-unprotected:
+    build: .
+    command: ["python", "-m", "agent.loop"]
+    environment:
+      DOCSTORE_URL: http://docstore.internal
+      MAILER_URL: http://mailer.internal
+      DB_PATH: /data/customers.db
+      TASK_ID: "4711"
+    volumes:
+      - ./data:/data
+    networks: [backend-net, egress-net]
+    depends_on: [docstore, mailer, sinkhole]
+    profiles: [unprotected]
