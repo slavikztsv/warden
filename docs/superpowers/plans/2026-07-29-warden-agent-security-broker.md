@@ -724,6 +724,63 @@ test_denies_an_egress_with_no_target_kind if {
 test_denies_a_completely_empty_input if {
     not authz.allow with input as {} with data as test_data
 }
+
+# R1 — each of these omits exactly one field, and each one silently disabled
+# the rule that depended on it before shape validation existed. The pii_sink
+# case is the worst: dropping task_state defeated the control the whole
+# project exists to demonstrate.
+test_denies_when_task_state_is_missing if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "host": "docstore.internal", "port": 443},
+    }
+        with data as test_data
+}
+
+test_denies_when_allowed_tools_is_missing if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": {"purpose": "support-triage", "counterparties": []},
+        "action": {"type": "tool_call", "tool": "send_email"},
+        "target": {"kind": "mail", "recipients": []},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
+
+test_denies_a_db_read_with_no_row_estimate if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db"},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
+
+test_denies_an_http_target_with_no_host if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "port": 443},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
+
+test_denies_an_unknown_purpose if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": {
+            "purpose": "no-such-purpose",
+            "allowed_tools": ["read_document"],
+            "counterparties": [],
+        },
+        "action": {"type": "tool_call", "tool": "read_document"},
+        "target": {"kind": "doc"},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
 ```
 
 - [ ] **Step 2: Run the policy test to verify it fails**
@@ -769,6 +826,45 @@ deny_reasons contains "input.malformed" if {
 	not input.target.kind == "db"
 	not input.target.kind == "http"
 	not input.target.kind == "mail"
+}
+
+# R1 — shape validation. Every rule below assumes a well-formed input, and in
+# Rego that assumption is dangerous: a reference to a missing field is
+# undefined, an undefined body contributes no deny reason, and the rule that
+# depended on it silently does not fire. Omitting `task_state` alone was enough
+# to disable the pii_sink rule entirely. Validate the shape once here so the
+# authorization rules can rely on it.
+deny_reasons contains "input.malformed" if not is_string(input.principal.purpose)
+
+deny_reasons contains "input.malformed" if not is_array(input.principal.allowed_tools)
+
+deny_reasons contains "input.malformed" if not is_array(input.principal.counterparties)
+
+deny_reasons contains "input.malformed" if not is_array(input.task_state.data_classes_held)
+
+deny_reasons contains "input.malformed" if not is_number(input.task_state.rows_returned_so_far)
+
+# An unknown purpose has no allowlist, so nothing could be checked against it.
+deny_reasons contains "input.malformed" if not data.purposes[input.principal.purpose]
+
+deny_reasons contains "input.malformed" if {
+	input.action.type == "tool_call"
+	not is_string(input.action.tool)
+}
+
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "http"
+	not is_string(input.target.host)
+}
+
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "db"
+	not is_number(input.target.estimated_rows)
+}
+
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "mail"
+	not is_array(input.target.recipients)
 }
 
 # R2 — the tool must be in the token's capability set.
@@ -825,7 +921,7 @@ deny_reasons contains "mail.counterparty" if {
 - [ ] **Step 4: Run the policy test to verify it passes**
 
 Run: `opa test policies/ -v`
-Expected: PASS — 13 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
+Expected: PASS — 18 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
 
 - [ ] **Step 5: Commit**
 
