@@ -823,3 +823,101 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
     final_rows = taint.snapshot("4711")["rows_returned_so_far"]  # token_for()'s default task_id
     assert final_rows <= max_rows
     assert len(audit.records()) == 2
+
+
+# --- Refusing is half the job; recording it is the other half ---------------
+#
+# A missing, malformed, or expired token used to return 401 and write nothing
+# at all: three such requests produced zero audit records. That is the exact
+# defect class fixed three times in the proxy, whose own comment calls the
+# equivalent record "the single most valuable record the proxy produces" --
+# a call arriving with no authority is what a probe looks like, and an
+# unrecorded refusal makes it indistinguishable from a run that never
+# happened. The sentinel principal fields mirror broker/proxy.py's
+# _audit_refusal, so the replay renderer already knows how to display them.
+
+
+def _unauthenticated_requests(client, signer):
+    """The three ways a caller reaches the tool API with no usable token."""
+    client.post("/v1/tools/read_document/invoke", json={"args": {"doc_id": "a"}})
+    client.post(
+        "/v1/tools/read_document/invoke",
+        json={"args": {"doc_id": "a"}},
+        headers={"Authorization": "Bearer not-a-jwt-at-all"},
+    )
+    import broker.app as app_module
+
+    original = app_module.now
+    app_module.now = lambda: 10**12
+    try:
+        invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+    finally:
+        app_module.now = original
+
+
+def test_every_unauthenticated_call_leaves_an_audit_record(tmp_path, signer):
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    _unauthenticated_requests(client, signer)
+
+    records = audit.records()
+    assert len(records) == 3, "a refusal that leaves no trace makes a probe invisible"
+    assert [r["decision"] for r in records] == ["deny"] * 3
+    assert [r["rule"] for r in records] == ["unauthenticated"] * 3
+
+
+def test_the_unauthenticated_record_carries_sentinel_principal_fields(tmp_path, signer):
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    client.post("/v1/tools/query_customers/invoke", json={"args": {"filter": "all"}})
+
+    record = audit.records()[-1]
+    assert record["task_id"] == "-"
+    assert record["agent_id"] == "unauthenticated"
+    assert record["purpose"] == "-"
+    # The tool that was attempted is still named -- that is the point of the
+    # record -- but nothing about the caller's claimed target is trusted.
+    assert record["action"] == {"type": "tool_call", "tool": "query_customers"}
+    assert record["target"]["kind"] == "unknown"
+    assert record["args_digest"] == "sha256:none"
+
+
+def test_unauthenticated_records_chain_with_real_decisions(tmp_path, signer):
+    """The sentinel records go into the same log as authorized decisions, so
+    they must not break the hash chain the replay artifact depends on."""
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+    _unauthenticated_requests(client, signer)
+    invoke(client, token_for(signer), "read_document", {"doc_id": "b"})
+
+    assert audit.verify_chain() == (True, None)
+    assert [r["agent_id"] for r in audit.records()] == [
+        "triage-bot", "unauthenticated", "unauthenticated", "unauthenticated", "triage-bot",
+    ]
+
+
+def test_an_unauthenticated_call_still_returns_401_and_touches_nothing(tmp_path, signer):
+    """Recording the attempt must not turn it into a partially-served
+    request: the status stays 401 and neither the PDP nor a backend is
+    reached."""
+    client, decide_calls, describe_calls = _build_with_spies(tmp_path, signer)
+    response = client.post("/v1/tools/read_document/invoke", json={"args": {"doc_id": "a"}})
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "unauthenticated"
+    assert decide_calls == []
+    assert describe_calls == []
+
+
+def test_an_unrecordable_unauthenticated_refusal_is_reported_not_hidden(tmp_path, signer):
+    """Same rule as every other refusal on this surface: if it cannot be
+    logged, the caller is told the audit log is unavailable rather than
+    getting a clean 401 that leaves no trace. (The proxy deliberately differs
+    -- see THREAT_MODEL.md.)"""
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+
+    def explode(**kwargs):
+        raise OSError("disk full")
+
+    audit.append = explode
+    response = client.post("/v1/tools/read_document/invoke", json={"args": {"doc_id": "a"}})
+    assert response.status_code == 503
+    assert response.json()["error"] == "audit_unavailable"

@@ -9,6 +9,10 @@ explicitly, because letting any of them surface as a bare 500 would route
 around the audited-denial path this system exists to guarantee, or would
 let the response body lie about what happened:
 
+- A missing, malformed, or expired token is refused with a 401 AND
+  recorded, with sentinel principal fields, because a call arriving
+  without authority is exactly what a probe looks like and an unrecorded
+  refusal makes it indistinguishable from a run that never happened.
 - A malformed request body (not JSON, not an object, or an "args" that
   isn't an object) never reaches describe() at all. No decision was
   possible, so it is audited as a deny under input.malformed.
@@ -129,16 +133,13 @@ def create_app(
     async def invoke(tool: str, request: Request) -> JSONResponse:
         header = request.headers.get("authorization", "")
         if not header.startswith("Bearer "):
-            return JSONResponse(
-                {"error": "unauthenticated", "message": "Bearer token required."},
-                status_code=401,
+            return _refuse_unauthenticated(
+                audit, tool, "Bearer token required.", policy_digest
             )
         try:
             token = verifier.verify(header.removeprefix("Bearer "), now=now())
         except TokenInvalid as exc:
-            return JSONResponse(
-                {"error": "unauthenticated", "message": str(exc)}, status_code=401
-            )
+            return _refuse_unauthenticated(audit, tool, str(exc), policy_digest)
 
         args = await _parse_args(request)
         # Snapshot AFTER the final await. Everything from here to record_read
@@ -251,6 +252,61 @@ def create_app(
         return JSONResponse({"content": result.content, "rows": result.rows})
 
     return app
+
+
+UNAUTHENTICATED = "unauthenticated"
+
+
+def _refuse_unauthenticated(
+    audit: AuditLog, tool: str, message: str, policy_digest: str
+) -> JSONResponse:
+    """Refuses a call carrying no usable token -- and records it.
+
+    A missing, malformed, or expired token on the tool API is what an attempt
+    to act without authority looks like, and it left ZERO trace: three such
+    requests produced three 401s and an empty audit log, so a probe was
+    indistinguishable from a run that never happened. This is the same defect
+    the proxy had, fixed there three times, and its own comment calls the
+    equivalent record "the single most valuable record the proxy produces".
+    Denying and recording are separate requirements; a system whose demo
+    climax is replaying an attack path cannot have an unrecorded refusal.
+
+    There is no token, so there is no principal to attribute this to: the
+    fields carry the same sentinels broker/proxy.py's _audit_refusal uses
+    (task_id "-", agent_id "unauthenticated", purpose "-"), which the replay
+    renderer already knows how to display. The request body is deliberately
+    never read -- nothing about an unauthenticated caller's claimed arguments
+    is trustworthy, and parsing it would only add a failure mode. The tool
+    name comes from the path and is recorded as attempted, not as validated.
+    """
+    failure = None
+    try:
+        audit.append(
+            task_id="-",
+            agent_id=UNAUTHENTICATED,
+            purpose="-",
+            action={"type": "tool_call", "tool": tool},
+            target=ToolTarget(kind="unknown").as_dict(),
+            args_digest="sha256:none",
+            decision="deny",
+            rule=UNAUTHENTICATED,
+            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            policy_bundle_digest=policy_digest,
+        )
+    except OSError as exc:
+        # Same rule as every other refusal on this surface: if it cannot be
+        # logged, it is reported as unavailable rather than quietly refused.
+        # (broker/proxy.py deliberately differs -- it swallows the failure and
+        # still refuses -- because a tunnel refusal must happen even when it
+        # cannot be recorded. The asymmetry is documented in THREAT_MODEL.md.)
+        failure = JSONResponse(
+            {"error": "audit_unavailable", "message": str(exc)}, status_code=503
+        )
+    if failure is not None:
+        return failure
+    return JSONResponse(
+        {"error": UNAUTHENTICATED, "message": message}, status_code=401
+    )
 
 
 def _backend_fault(message: str) -> JSONResponse:
