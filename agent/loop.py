@@ -32,7 +32,15 @@ def run_task(dispatcher, llm, task_id: str) -> list[dict]:
             return transcript
 
         tool, args = step["tool"], step["args"]
-        result = dispatcher.call(tool, args)
+        try:
+            result = dispatcher.call(tool, args)
+        except Exception as exc:
+            # A transport failure is data too, for the same reason a denial is.
+            # If this raised, one profile would die where the other survived,
+            # and the demo would read as "the broker broke the agent" rather
+            # than "the policy worked". The loop must reach its final step in
+            # both profiles no matter what the environment does.
+            result = {"error": "transport_error", "message": str(exc)}
         if "error" in result:
             print(f"[agent] {tool} refused: {result.get('rule', result['error'])}")
         else:

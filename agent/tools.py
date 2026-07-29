@@ -65,14 +65,23 @@ class DirectDispatcher:
             self._client.post(f"{self._mailer_url}/send", json=args)
             return {"content": "sent"}
         if tool == "query_customers":
+            # Mirrors broker/backends.py::_where exactly. The two dispatchers
+            # are different code by design, but they must read the SAME rows
+            # for the same filter — otherwise the profiles differ in what the
+            # agent sees, not just in what it is allowed to do, and the A/B
+            # stops being a controlled comparison.
+            filter_expr = args.get("filter", "all")
+            if filter_expr in ("", "all", "*"):
+                clause, params = "", []
+            elif filter_expr.startswith("id="):
+                clause, params = " WHERE id = ?", [int(filter_expr[3:])]
+            else:
+                clause, params = " WHERE plan = ?", [filter_expr]
             connection = sqlite3.connect(self._db_path)
             try:
                 connection.row_factory = sqlite3.Row
-                clause = "" if args.get("filter", "all") in ("all", "*", "") else (
-                    " WHERE id = " + str(int(args["filter"][3:]))
-                )
                 rows = connection.execute(
-                    f"SELECT id, name, email, plan, balance FROM customers{clause}"
+                    f"SELECT id, name, email, plan, balance FROM customers{clause}", params
                 ).fetchall()
             finally:
                 connection.close()
