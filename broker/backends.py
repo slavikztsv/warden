@@ -109,7 +109,14 @@ class Backends:
             response.raise_for_status()
             return ToolResult(content=response.text, data_class="public")
         if tool == "http_fetch":
-            response = self._client.get(args["url"])
+            # An optional body makes this a POST. Exfiltration is a write, not
+            # a read: with a bare GET the sinkhole records zero bytes and the
+            # demo's beat 1 — "the data genuinely leaves" — has nothing to show.
+            body = args.get("body")
+            if body is None:
+                response = self._client.get(args["url"])
+            else:
+                response = self._client.post(args["url"], content=body)
             response.raise_for_status()
             return ToolResult(content=response.text, data_class="public")
         if tool == "send_email":

@@ -60,7 +60,12 @@ class DirectDispatcher:
             return {"content": self._client.get(
                 f"{self._docstore_url}/docs/{args['doc_id']}").text}
         if tool == "http_fetch":
-            return {"content": self._client.get(args["url"]).text}
+            # Mirrors Backends.execute: a body makes it a POST. This is the
+            # path that actually exfiltrates in the unprotected profile.
+            body = args.get("body")
+            if body is None:
+                return {"content": self._client.get(args["url"]).text}
+            return {"content": self._client.post(args["url"], content=body).text}
         if tool == "send_email":
             self._client.post(f"{self._mailer_url}/send", json=args)
             return {"content": "sent"}

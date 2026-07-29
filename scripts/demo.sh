@@ -4,7 +4,7 @@ set -euo pipefail
 PROFILE="${1:-guarded}"
 
 mkdir -p data
-python -c "from mocks.seed_db import seed_customers; seed_customers('data/customers.db', 10312)"
+python3 -c "from mocks.seed_db import seed_customers; seed_customers('data/customers.db', 10312)"
 
 if [ "$PROFILE" = "unprotected" ]; then
   docker compose --profile unprotected up -d docstore mailer sinkhole
@@ -19,10 +19,10 @@ else
     -d '{"agent_id":"triage-bot","task_id":"4711","purpose":"support-triage",
          "allowed_tools":["read_document","query_customers","http_fetch","send_email"],
          "data_classes":["public","internal"],"counterparties":["customer:8812"]}' \
-    | python -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
   TASK_TOKEN="$TOKEN" docker compose --profile guarded run --rm agent-runtime
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
   echo
-  python -m cli.warden replay 4711
+  python3 -m cli.warden replay 4711
 fi

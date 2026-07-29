@@ -97,7 +97,12 @@ def _args_are_well_shaped(tool: str, args: dict) -> bool:
     if tool == "query_customers":
         return isinstance(args.get("filter"), str)
     if tool == "http_fetch":
-        return isinstance(args.get("url"), str) and args["url"] != ""
+        body = args.get("body")
+        return (
+            isinstance(args.get("url"), str)
+            and args["url"] != ""
+            and (body is None or isinstance(body, str))
+        )
     if tool == "send_email":
         to = args.get("to")
         return (

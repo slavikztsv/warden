@@ -73,6 +73,11 @@ services:
       # egress record at all.
       HTTP_PROXY: http://broker:3128
       HTTPS_PROXY: http://broker:3128
+      # Lowercase forms too: curl deliberately ignores uppercase HTTP_PROXY for
+      # plain-http URLs (the httpoxy mitigation), so without these a plain-http
+      # probe dies at DNS and never reaches the proxy — blocked, but unrecorded.
+      http_proxy: http://broker:3128
+      https_proxy: http://broker:3128
       # The broker's own tool API must NOT be proxied through the broker's own
       # proxy. httpx honours these variables by default (trust_env), so without
       # this exclusion every legitimate tool call would loop back through :3128.

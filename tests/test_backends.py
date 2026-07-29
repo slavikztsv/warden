@@ -98,6 +98,26 @@ def test_executing_http_fetch_raises_on_a_failed_response(db):
         make_backends(db, handler).execute("http_fetch", {"url": "http://x.internal/a"})
 
 
+def test_executing_http_fetch_with_a_body_posts_it(db):
+    """Exfiltration is a write, not a read: an http_fetch carrying a body
+    must POST that body to the target rather than performing a bodiless
+    GET, or the sinkhole records zero bytes and the demo's beat 1 -- the
+    data genuinely leaving -- has nothing to show."""
+    seen = {}
+
+    def handler(request):
+        seen["method"] = request.method
+        seen["body"] = request.read().decode()
+        return httpx.Response(200, text="delivered")
+
+    result = make_backends(db, handler).execute(
+        "http_fetch", {"url": "http://x.internal/a", "body": "customer-rows"}
+    )
+    assert seen["method"] == "POST"
+    assert seen["body"] == "customer-rows"
+    assert result.content == "delivered"
+
+
 def test_target_serializes_for_the_policy_input(db):
     target = make_backends(db).describe("query_customers", {"filter": "id=8812"})
     assert target.as_dict() == {
