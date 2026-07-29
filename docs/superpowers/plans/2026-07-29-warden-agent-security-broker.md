@@ -2298,6 +2298,31 @@ def test_a_missing_token_is_refused(tmp_path, signer):
     assert (allowed, rule) == (False, "unauthenticated")
 
 
+# A CONNECT with no valid token is what a bypass attempt looks like. If it
+# leaves no trace, the proxy has failed at the one job it exists to do.
+def test_an_unauthenticated_attempt_is_still_audited(tmp_path, signer):
+    dependencies = deps(tmp_path, {"allow": True, "deny_reasons": []})
+    authorize_connect(
+        authority="attacker.example:443",
+        token_str="",
+        verifier=Verifier(signer.public_key_pem()),
+        **dependencies,
+    )
+    record = dependencies["audit"].records()[-1]
+    assert record["decision"] == "deny"
+    assert record["rule"] == "unauthenticated"
+    assert record["agent_id"] == "unauthenticated"
+    assert record["target"]["host"] == "attacker.example"
+    assert record["action"] == {"type": "egress", "tool": "CONNECT"}
+
+
+def test_parse_authority_never_raises_on_hostile_input(tmp_path):
+    assert parse_authority("[::1]:443") == ("::1", 443)
+    assert parse_authority("host:notanumber")[1] == 0
+    assert parse_authority("a:b:c")[1] == 0
+    assert parse_authority("") == ("", 443)
+
+
 def test_every_connect_decision_is_audited(tmp_path, signer):
     dependencies = deps(tmp_path, {"allow": False, "deny_reasons": ["egress.allowlist"]})
     authorize_connect(
@@ -2342,8 +2367,24 @@ NO_TOKEN = "unauthenticated"
 
 
 def parse_authority(authority: str) -> tuple[str, int]:
-    host, _, port = authority.partition(":")
-    return host, int(port) if port else 443
+    """Split CONNECT's host:port. Never raises.
+
+    An unparseable authority yields port 0, which matches no allowlist entry,
+    so it denies. Raising here would drop the connection with no HTTP response
+    and no audit record — failing closed, but invisibly, which is the one thing
+    this component exists to prevent.
+    """
+    if authority.startswith("["):  # [::1]:443 — bracketed IPv6 literal
+        host, _, rest = authority.partition("]")
+        host, port = host[1:], rest.lstrip(":")
+    else:
+        host, _, port = authority.rpartition(":")
+        if not host:  # no colon present at all
+            host, port = authority, "443"
+    try:
+        return host, int(port) if port else 443
+    except ValueError:
+        return host, 0
 
 
 def authorize_connect(
@@ -2357,12 +2398,6 @@ def authorize_connect(
     policy_digest: str,
 ) -> tuple[bool, str]:
     host, port = parse_authority(authority)
-    try:
-        token = verifier.verify(token_str)
-    except TokenInvalid:
-        return False, NO_TOKEN
-
-    state = taint.snapshot(token.task_id)
     target = {
         "kind": "http",
         "host": host,
@@ -2371,6 +2406,30 @@ def authorize_connect(
         "estimated_rows": 0,
         "recipients": [],
     }
+
+    try:
+        token = verifier.verify(token_str)
+    except TokenInvalid:
+        # Audit the unauthenticated attempt. This is the single most valuable
+        # record the proxy produces: a CONNECT carrying no valid token is what
+        # a bypass attempt looks like, and leaving it untraced would defeat the
+        # component's whole purpose. There is no token to attribute it to, so
+        # the principal fields carry sentinels.
+        audit.append(
+            task_id="-",
+            agent_id="unauthenticated",
+            purpose="-",
+            action={"type": "egress", "tool": "CONNECT"},
+            target=target,
+            args_digest="sha256:none",
+            decision="deny",
+            rule=NO_TOKEN,
+            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            policy_bundle_digest=policy_digest,
+        )
+        return False, NO_TOKEN
+
+    state = taint.snapshot(token.task_id)
     decision = pdp.decide(
         {
             "principal": {
@@ -2427,9 +2486,15 @@ def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
                 await writer.drain()
                 return
 
-            allowed, rule = authorize_connect(
-                authority=authority, token_str=token_str, **deps
-            )
+            # A raise here would drop the connection with no response and no
+            # record. Deny explicitly instead, so the attempt is still visible.
+            try:
+                allowed, rule = authorize_connect(
+                    authority=authority, token_str=token_str, **deps
+                )
+            except Exception:
+                allowed, rule = False, "proxy.error"
+
             if not allowed:
                 writer.write(
                     f"HTTP/1.1 403 Forbidden\r\nX-Warden-Rule: {rule}\r\n\r\n".encode()
