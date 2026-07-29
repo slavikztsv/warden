@@ -292,6 +292,42 @@ test_denies_a_negative_row_estimate if {
         with data.limits as mock_data.limits
 }
 
+# R1c — the data document was never validated, and all three rules that
+# dereference it failed open when their key was absent. These mock a
+# deliberately incomplete `data` rather than an incomplete input.
+test_denies_a_bulk_read_when_the_row_limit_is_missing if {
+    "rows.bounded" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": 5000000},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as {}
+}
+
+test_denies_pii_when_the_approved_sink_list_is_missing if {
+    "egress.pii_sink" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "host": "docstore.internal", "port": 443},
+        "task_state": tainted_state,
+    }
+        with data.purposes as {"support-triage": {"egress_allow": ["docstore.internal"]}}
+        with data.limits as mock_data.limits
+}
+
+test_denies_a_host_when_the_egress_allowlist_is_missing if {
+    "egress.allowlist" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "http_fetch"},
+        "target": {"kind": "http", "host": "attacker.example", "port": 443},
+        "task_state": clean_state,
+    }
+        with data.purposes as {"support-triage": {"pii_approved_sinks": ["mailer.internal"]}}
+        with data.limits as mock_data.limits
+}
+
 test_denies_an_unknown_purpose if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": {

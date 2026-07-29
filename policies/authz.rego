@@ -191,6 +191,56 @@ deny_reasons contains "input.malformed" if {
 	safe_target_estimated_rows < 0
 }
 
+# R1c — the same undefined-propagation defect, on the `data` side this time.
+# R0/R1/R1b validate the *input* exhaustively; nothing validated `data`, and
+# the three rules below dereference it. A missing key there is undefined, the
+# enclosing body is undefined, no deny reason is produced, and the request is
+# allowed. Verified with `opa eval` against the real authz.rego: dropping
+# `limits` approved a 5,000,000-row read; dropping `pii_approved_sinks`
+# approved PII to an unapproved host; dropping `egress_allow` approved
+# attacker.example; mapping a purpose to `null` approved all three — every one
+# `allow:true` with an empty deny_reasons set, so the audit log records a clean
+# allow rather than an error.
+#
+# Note `not host in <undefined collection>` does NOT fire, exactly as
+# `not <undefined> in {...}` does not: membership is a builtin call, and a
+# builtin is never invoked when an argument is undefined. The allowlists are
+# not saved by negation-as-failure any more than the row limit is.
+#
+# No test could have caught this: every case in authz_test.rego mocks both
+# `data.purposes` and `data.limits`, so the shipped data.json shape is never
+# exercised. Today that file is correct and mounted read-only, but a purpose
+# added without `pii_approved_sinks` silently disables the control this whole
+# project exists to demonstrate — for that purpose only, with no error.
+#
+# Fixed the same way the input side was: always-defined accessors with
+# fail-closed defaults. An absent or wrong-typed allowlist becomes the empty
+# set, so nothing is allowlisted and the existing rule denies under its own
+# correct reason. The type guard matters as much as the default — Rego compares
+# across types by total ordering, so a string "50" limit would make
+# `total > limit` false and fail open just as silently.
+default safe_egress_allow := []
+
+safe_egress_allow := hosts if {
+	hosts := data.purposes[input.principal.purpose].egress_allow
+	is_array(hosts)
+}
+
+default safe_pii_approved_sinks := []
+
+safe_pii_approved_sinks := hosts if {
+	hosts := data.purposes[input.principal.purpose].pii_approved_sinks
+	is_array(hosts)
+}
+
+# -1, not 0: with no configured limit, no read is permitted at all.
+default safe_max_rows_per_task := -1
+
+safe_max_rows_per_task := limit if {
+	limit := data.limits.max_rows_per_task
+	is_number(limit)
+}
+
 # R2 — the tool must be in the token's capability set.
 deny_reasons contains "tools.allowed" if {
 	input.action.type == "tool_call"
@@ -200,7 +250,7 @@ deny_reasons contains "tools.allowed" if {
 # R3 — network destinations must be allowlisted for this purpose.
 deny_reasons contains "egress.allowlist" if {
 	input.target.kind == "http"
-	not input.target.host in data.purposes[input.principal.purpose].egress_allow
+	not input.target.host in safe_egress_allow
 }
 
 # R4 — a task holding PII may only reach approved sinks. This is a data-flow
@@ -208,7 +258,7 @@ deny_reasons contains "egress.allowlist" if {
 deny_reasons contains "egress.pii_sink" if {
 	input.target.kind == "http"
 	"pii" in input.task_state.data_classes_held
-	not input.target.host in data.purposes[input.principal.purpose].pii_approved_sinks
+	not input.target.host in safe_pii_approved_sinks
 }
 
 # R5 — blast radius. Accumulates across the whole task, so many small reads
@@ -216,7 +266,7 @@ deny_reasons contains "egress.pii_sink" if {
 deny_reasons contains "rows.bounded" if {
 	input.action.tool == "query_customers"
 	total := input.task_state.rows_returned_so_far + input.target.estimated_rows
-	total > data.limits.max_rows_per_task
+	total > safe_max_rows_per_task
 }
 
 # R6 — mail may only go to counterparties the task declared up front.
