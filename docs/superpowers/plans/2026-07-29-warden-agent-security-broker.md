@@ -754,12 +754,21 @@ allow if count(deny_reasons) == 0
 # deny-by-default: an input that matches no rule produces no deny reasons and
 # is therefore allowed. An empty input {} evaluated to allow:true before these
 # rules existed. Anything whose shape we do not recognize is denied here.
+# Written as conjoined negated equalities, NOT as `not X in {A, B}`. Those are
+# not equivalent: when X is undefined, `not X in {...}` does not fire, so the
+# missing-field case — the exact case these rules exist to catch — would slip
+# through. Verified with `opa eval` on 0.70.0: the set form yields [] where the
+# equality form yields ["fired"].
 deny_reasons contains "input.malformed" if {
-	not input.action.type in {"tool_call", "egress"}
+	not input.action.type == "tool_call"
+	not input.action.type == "egress"
 }
 
 deny_reasons contains "input.malformed" if {
-	not input.target.kind in {"doc", "db", "http", "mail"}
+	not input.target.kind == "doc"
+	not input.target.kind == "db"
+	not input.target.kind == "http"
+	not input.target.kind == "mail"
 }
 
 # R2 — the tool must be in the token's capability set.
