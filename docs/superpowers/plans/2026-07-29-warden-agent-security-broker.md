@@ -16,14 +16,16 @@
 - **Every failure path denies.** If a decision cannot be made or an audit record cannot be written, the action is refused. Never `except: pass`.
 - **The agent runs identical code under both Compose profiles.** No conditional branching on whether the broker is present. If a task tempts you to add such a branch, the task is wrong.
 - **The audit record is durable before the action executes.** Never execute then log.
-- **Rule identifiers are exactly these strings**, used unchanged in Rego, Python, tests, and CLI output: `tools.allowed`, `egress.allowlist`, `egress.pii_sink`, `rows.bounded`, `mail.counterparty`.
+- **Rule identifiers are exactly these strings**, used unchanged in Rego, Python, tests, and CLI output: `input.malformed`, `tools.allowed`, `egress.allowlist`, `egress.pii_sink`, `rows.bounded`, `mail.counterparty`.
 - **Tool names are exactly:** `read_document`, `query_customers`, `http_fetch`, `send_email`.
 - **Genesis hash** for the audit chain is 64 zero characters.
 - **Repo root is the project root.** There is no `warden/` subdirectory; `broker/`, `agent/`, `policies/` sit at the top level.
 
 ### Deviation from the spec, applied deliberately
 
-The spec (§5.3) writes `allow` as positive rules and mentions a companion `deny_reasons` set. This plan inverts that: **`deny_reasons` is the single source of truth and `allow` is defined as `count(deny_reasons) == 0`.** Reason: in the spec's formulation the allow rules and the deny-reason rules can drift, so a request could be denied while reporting a rule that did not actually fail — which would corrupt the audit log and the demo. The inverted form makes the reported rule provably the reason for the denial. Behavior is otherwise identical.
+The spec (§5.3) writes `allow` as positive rules and mentions a companion `deny_reasons` set. This plan inverts that: **`deny_reasons` is the single source of truth and `allow` is defined as `count(deny_reasons) == 0`.** Reason: in the spec's formulation the allow rules and the deny-reason rules can drift, so a request could be denied while reporting a rule that did not actually fail — which would corrupt the audit log and the demo. The inverted form makes the reported rule provably the reason for the denial.
+
+**The inversion's cost, and the rule that pays it.** "Allow unless a rule objects" is *not* deny-by-default: an input matching no rule at all is allowed, and `default allow := false` never fires because `allow` is always defined. Verified against the first implementation — an input with `action.type` absent, an `egress` action with no `target.kind`, and even `{}` all evaluated to `allow: true`. The two `input.malformed` recognition rules in Task 3 close this by making an unrecognized action type or target kind an explicit deny reason. Both properties then hold at once: the audit log cannot name a rule that did not fail, *and* unrecognized input denies. This is why the rule-identifier set above has six entries rather than five.
 
 ---
 
@@ -694,6 +696,34 @@ test_denies_everything_by_default if {
     }
         with data as test_data
 }
+
+# R0 — the inversion (allow := no deny reasons) is not deny-by-default on its
+# own. These three inputs all evaluated to allow:true before the recognition
+# rules existed, which would have let a caller bypass the capability check by
+# omitting a single field.
+test_denies_an_action_with_no_type if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"tool": "send_email"},
+        "target": {"kind": "mail", "recipients": []},
+        "task_state": clean_state,
+    }
+        with data as test_data
+}
+
+test_denies_an_egress_with_no_target_kind if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "egress"},
+        "target": {},
+        "task_state": tainted_state,
+    }
+        with data as test_data
+}
+
+test_denies_a_completely_empty_input if {
+    not authz.allow with input as {} with data as test_data
+}
 ```
 
 - [ ] **Step 2: Run the policy test to verify it fails**
@@ -719,6 +749,18 @@ import future.keywords.in
 default allow := false
 
 allow if count(deny_reasons) == 0
+
+# R0 — input recognition. Without these, "allow unless a rule objects" is not
+# deny-by-default: an input that matches no rule produces no deny reasons and
+# is therefore allowed. An empty input {} evaluated to allow:true before these
+# rules existed. Anything whose shape we do not recognize is denied here.
+deny_reasons contains "input.malformed" if {
+	not input.action.type in {"tool_call", "egress"}
+}
+
+deny_reasons contains "input.malformed" if {
+	not input.target.kind in {"doc", "db", "http", "mail"}
+}
 
 # R2 — the tool must be in the token's capability set.
 deny_reasons contains "tools.allowed" if {
@@ -774,7 +816,7 @@ deny_reasons contains "mail.counterparty" if {
 - [ ] **Step 4: Run the policy test to verify it passes**
 
 Run: `opa test policies/ -v`
-Expected: PASS — 10 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
+Expected: PASS — 13 tests passed. If `test_allows_a_permitted_tool` fails, confirm `future.keywords` imports are present.
 
 - [ ] **Step 5: Commit**
 
@@ -951,6 +993,7 @@ import httpx
 # egress.allowlist outranks egress.pii_sink so that a pii_sink denial in the
 # audit log always means the destination genuinely passed the allowlist.
 DENY_PRECEDENCE = (
+    "input.malformed",
     "tools.allowed",
     "egress.allowlist",
     "egress.pii_sink",
