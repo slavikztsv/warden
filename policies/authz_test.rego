@@ -232,6 +232,42 @@ test_denies_an_http_target_with_no_host if {
         with data.limits as mock_data.limits
 }
 
+# R1b — a tool paired with the wrong target skipped the row check entirely.
+test_denies_query_customers_with_a_non_db_target if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "doc"},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+# A negative counter made the sum smaller than the bound: 5,000,000 rows
+# approved because the task claimed to have already read minus five billion.
+test_denies_a_negative_row_counter if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": 5000000},
+        "task_state": {"data_classes_held": [], "rows_returned_so_far": -4999999950},
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_denies_a_negative_row_estimate if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": -999999999},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
 test_denies_an_unknown_purpose if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": {
