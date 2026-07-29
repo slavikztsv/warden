@@ -4096,6 +4096,40 @@ confused-deputy problem, not a content problem.
 - **Authenticating the control plane.** Token minting is bound to a separate
   interface the agent cannot reach, but the caller itself is not
   authenticated. That is the next trust boundary out.
+
+## Known limitations, found during implementation
+
+These were discovered while building and reviewing, and are stated rather than
+quietly fixed. Each is a real property of the system as shipped.
+
+- **The row bound is concurrency-safe by accident, not by construction.** The
+  broker's handler is `async def` and its only `await` occurs *before* the
+  taint snapshot, so the read-decide-record sequence runs uninterrupted under a
+  single worker. Change that handler to `def` (Starlette then uses a
+  threadpool), introduce an async HTTP client, or run a second worker, and a
+  TOCTOU on `rows.bounded` reopens silently — no test would catch it. A
+  structural fix needs a lock inside `TaintTracker`. **Single-worker deployment
+  is a requirement, not a default.**
+- **Egress destinations are matched by host, never by port.** An allowlisted
+  `docstore.internal:22` is indistinguishable from `docstore.internal:443`, so
+  an approved host exposes every port it listens on.
+- **The proxy applies no capability check.** `allowed_tools` governs the tool
+  API only; a token with an empty tool set can still open an authorized
+  CONNECT. Egress is governed by destination and taint, not by capability.
+- **Missing and malformed `Proxy-Authorization` are indistinguishable** in the
+  log — both record `unauthenticated`. Deliberate: the security-relevant fact
+  is that a CONNECT arrived without valid authority.
+- **Once a tunnel is established, no further audit events occur** for that
+  connection's lifetime. The decision is recorded; the traffic is not.
+- **A failed audit write inside the proxy's refusal path is silent to the
+  client**, where the same failure on the tool API returns 503. Asymmetric
+  because a refusal must still happen even when it cannot be recorded.
+- **The policy is only as good as its input.** Six fail-open paths were found
+  and closed during development, all invisible to a passing test suite: in
+  Rego, an undefined sub-expression makes a rule body undefined, an undefined
+  body contributes no deny reason, and the rule silently does not fire. `R0`
+  and `R1` exist to make unrecognized input deny explicitly. Adversarial
+  evaluation with `opa eval`, not `opa test`, is what found them.
 ```
 
 - [ ] **Step 3: Write the README**
@@ -4172,6 +4206,78 @@ pytest -v               # broker, agent, CLI, and the exploit itself
 sinkhole received zero bytes. **The exploit is a regression test**, so the
 security property is verified continuously rather than demonstrated once.
 ```
+
+- [ ] **Step 3b: Guard the real cassette**
+
+Nothing in the suite reads `agent/cassettes/support-triage.json` — Tasks 10 and
+13 both build their own inline fixtures. So the one file the live demo actually
+replays is unguarded, and a typo in it would surface only during the demo.
+
+`tests/test_cassette.py`:
+```python
+"""The demo replays this exact file. Nothing else in the suite reads it."""
+
+import json
+from pathlib import Path
+
+from agent.tools import TOOL_SCHEMAS
+from broker.app import _args_are_well_shaped
+
+CASSETTE = Path("agent/cassettes/support-triage.json")
+EXPECTED = [
+    "read_document",
+    "read_document",
+    "query_customers",
+    "query_customers",
+    "http_fetch",
+    "http_fetch",
+    "send_email",
+]
+
+
+def steps():
+    return json.loads(CASSETTE.read_text())
+
+
+def test_the_cassette_is_valid_json_ending_in_a_final_step():
+    recorded = steps()
+    assert recorded[-1]["type"] == "final"
+    assert recorded[-1]["text"]
+
+
+def test_every_tool_is_one_the_agent_actually_has():
+    names = {schema["name"] for schema in TOOL_SCHEMAS}
+    assert [s["tool"] for s in steps() if s["type"] == "tool_use"] == EXPECTED
+    assert all(s["tool"] in names for s in steps() if s["type"] == "tool_use")
+
+
+def test_every_step_would_survive_the_brokers_argument_validation():
+    # A malformed step would be denied as input.malformed at runtime, so the
+    # demo would report the wrong rule for the wrong reason.
+    for step in steps():
+        if step["type"] == "tool_use":
+            assert _args_are_well_shaped(step["tool"], step["args"]), step
+
+
+def test_both_exfiltration_attempts_carry_a_body():
+    # Without a body the sinkhole records zero bytes and beat 1 of the demo
+    # has nothing to show.
+    exfil = [s for s in steps() if s["type"] == "tool_use" and s["tool"] == "http_fetch"]
+    assert len(exfil) == 2
+    assert all(isinstance(s["args"].get("body"), str) and s["args"]["body"] for s in exfil)
+
+
+def test_the_fallback_targets_an_allowlisted_host():
+    # docstore.internal is ON the egress allowlist; only taint stops it. If this
+    # ever changed to a non-allowlisted host, the demo would prove nothing that
+    # an ordinary gateway could not.
+    urls = [s["args"]["url"] for s in steps() if s.get("tool") == "http_fetch"]
+    assert any("attacker.example" in u for u in urls)
+    assert any("docstore.internal" in u for u in urls)
+```
+
+Run: `.venv/bin/pytest tests/test_cassette.py -v`
+Expected: PASS — 5 passed
 
 - [ ] **Step 4: Verify everything passes from a clean checkout**
 
