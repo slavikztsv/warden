@@ -548,10 +548,16 @@ def test_explain_refuses_an_alternative_task_without_a_live_model():
     """
     import pytest
 
+    from pathlib import Path
+
     from cli.explain import TASKS, _pick_task
 
     for name in TASKS:
-        if name == "triage":
+        # A scenario with its own recording is deterministic and needs no key;
+        # one without would replay the default transcript, showing steps this
+        # instruction had no part in causing.
+        has_recording = Path(f"agent/cassettes/{name}.json").exists()
+        if name == "triage" or has_recording:
             assert _pick_task(["--task", name], live=False)[0] == name
             continue
         with pytest.raises(SystemExit):
@@ -724,3 +730,51 @@ def test_agent_loop_can_be_capped():
     assert dispatcher.calls == 5
     assert len(transcript) == 6
     assert transcript[-1] == {"type": "final", "text": "(stopped after 5 steps)"}
+
+
+def test_a_recorded_scenario_drives_both_profiles_from_one_transcript():
+    """The point of recording a complying run.
+
+    Two live runs sample independently, so the unguarded side can follow an
+    injected instruction while the guarded side never attempts it — and then
+    "0 bytes with the broker" is not the broker's doing. Observed exactly that
+    before cli.record existed. A scenario with its own cassette must replay it
+    in both profiles, or the comparison is not controlled.
+    """
+    from pathlib import Path
+
+    from cli.explain import TASKS, _fresh_llm, _pick_task
+
+    recorded = [
+        name for name in TASKS if Path(f"agent/cassettes/{name}.json").exists()
+    ]
+    assert recorded, "no scenario has a recording yet"
+    for name in recorded:
+        # Runnable without --live, precisely because a recording exists.
+        assert _pick_task(["--task", name], live=False)[0] == name
+        task = (name, TASKS[name])
+        first, second = _fresh_llm(False, task), _fresh_llm(False, task)
+        assert first is not second, "each profile needs its own replay position"
+        assert first.name == second.name == f"recorded — {name}.json"
+        # Same transcript, so any difference in outcome has one cause.
+        assert [first.next_step([]) for _ in range(3)] == [
+            second.next_step([]) for _ in range(3)
+        ]
+
+
+def test_a_recording_is_accompanied_by_its_compliance_rate():
+    """A cassette without one invites the reader to assume the model always
+    complies. It did not: the rate is the honest headline."""
+    import json
+    from pathlib import Path
+
+    for meta_path in Path("agent/cassettes").glob("*.meta.json"):
+        meta = json.loads(meta_path.read_text())
+        assert 0 < meta["complied"] <= meta["attempts"], meta_path
+        assert meta["model"], meta_path
+        if meta.get("criterion", "").startswith("caused"):
+            # An injection recording exists to show the model complying, so a
+            # run that did nothing would be recording the wrong thing.
+            assert any(meta["damage_unguarded"].values()), (
+                f"{meta_path} claims compliance but records no damage"
+            )
