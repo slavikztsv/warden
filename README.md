@@ -81,6 +81,18 @@ shell, then the broker driven entirely with `curl`. By the end of Part 4 you
 have reproduced the whole security story with no AI involved at all, which is
 the point: the controls act on tool calls, not on model behaviour.
 
+Or watch the whole thing explain itself:
+
+```bash
+.venv/bin/python -m cli.explain --pause
+```
+
+Eleven narrated stages per step — the conversation going to the model, the
+complete policy input document, which rule fired and why that one, the audit
+write happening *before* execution, and the moment the task starts carrying
+customer data. All of it the real code path; the narration is added by wrapping
+the components, not by reimplementing them.
+
 It also answers the two questions the demo does not: **who starts a task** (and
 how that wires into a real helpdesk or queue), and **what the model is actually
 asked** — `WARDEN_TRACE=1` prints the full conversation each turn, so you can
