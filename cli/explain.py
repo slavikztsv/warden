@@ -860,16 +860,32 @@ def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> 
         lines.append(f"  {key:<{label_w}}   {left:>{left_w}}   {right:>{right_w}}{marker}")
     lines.append("")
 
-    # The call count going UP under the broker looks like a regression and is
-    # the first thing anyone asks about, so answer it in the output.
-    if guarded.get("tool calls made", 0) > unguarded.get("tool calls made", 0):
+    # The call count is the first row anyone asks about and the least meaningful
+    # one, because it moves in BOTH directions depending on the model. Answer it
+    # in the output rather than leaving it to be misread either way.
+    made_u = unguarded.get("tool calls made", 0)
+    made_g = guarded.get("tool calls made", 0)
+    if made_u != made_g:
+        if made_g > made_u:
+            behaviour = (
+                f"  The broker side made MORE calls ({made_g} against {made_u}). That is what a\n"
+                "  refusal costs when the agent is persistent: told no, it tries another\n"
+                "  route — here, abandoning bulk reads for one-row lookups.\n"
+            )
+        else:
+            behaviour = (
+                f"  The broker side made FEWER calls ({made_g} against {made_u}) — it was refused\n"
+                "  and gave up, rather than working around the refusal.\n"
+            )
         lines.append(
-            "  The broker side made MORE calls, which is what a refusal costs: the\n"
-            "  agent is told no and tries another way. Unguarded, one query returned\n"
-            f"  {unguarded.get('customer records read', 0):,} rows and the work was done. Guarded, the bulk reads were\n"
-            f"  refused and it ground out {guarded.get('customer records read', 0):,} rows a few at a time before giving up.\n"
-            "  Slower and noisier — and every one of those attempts is in the audit\n"
-            "  chain, where the unguarded run's larger haul left no record at all.\n"
+            behaviour + "\n"
+            "  Either way the count measures how hard THIS model tried, not how well\n"
+            "  the control worked; a more capable model pushes harder and runs the\n"
+            "  number up. The row carrying the guarantee is 'customer records read':\n"
+            f"  {unguarded.get('customer records read', 0):,} without the broker, "
+            f"{guarded.get('customer records read', 0):,} with it — bounded by the task's budget\n"
+            "  however hard the agent pushes. And every attempt above, refused ones\n"
+            "  included, is in the audit chain; the unguarded run left no record.\n"
         )
     return "\n".join(lines)
 
