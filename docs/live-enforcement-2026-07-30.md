@@ -203,6 +203,28 @@ enforced against.
 
 ---
 
+## The whole matrix, in one command
+
+```bash
+python -m cli.explain --matrix          # recorded models, deterministic
+python -m cli.explain --matrix --live   # real model, replayed through the broker
+```
+
+`--live` is the one to run when someone asks whether any of it is staged. It
+does **not** run each scenario twice live. Each scenario runs once, unguarded,
+against a real model — and that exact transcript is then replayed through the
+broker.
+
+That is not a shortcut, it is the only controlled way to A/B a model. Sampling
+twice lets the second run take a different path, and the comparison silently
+stops being about the broker. That failure is not hypothetical: before this
+existed, `inject-vendor` leaked 119 bytes unguarded and recorded **zero
+refusals** guarded in the same command — the guarded run simply never attempted
+it, and the table read as though the broker had stopped something.
+
+Rows where the model declined say so, rather than falling back to counting the
+legitimate reply as damage nobody blocked.
+
 ## Every rule, and what it costs to be without it
 
 | `--task` | trips | without the broker |

@@ -80,6 +80,21 @@ class Cassette:
         self._index = 0
         self.name = f"recorded — {Path(path).name}"
 
+    @classmethod
+    def from_steps(cls, steps: list[dict], label: str = "captured") -> "Cassette":
+        """A cassette from a transcript in memory rather than from disk.
+
+        Used to replay a live run through the other profile. A model cannot be
+        sampled twice and asked to behave the same way, so the only controlled
+        way to A/B one is to run it once and ask the counterfactual: given
+        exactly what it did, what would the broker have done?
+        """
+        obj = cls.__new__(cls)
+        obj._steps = list(steps)
+        obj._index = 0
+        obj.name = f"replay of a live run — {label}"
+        return obj
+
     def next_step(self, messages: list[dict]) -> dict:
         if self._index >= len(self._steps):
             return {"type": "final", "text": "cassette exhausted"}

@@ -648,7 +648,11 @@ WHICH PROFILE
   (default)     guarded — every tool call goes through the broker
   --unguarded   no broker at all: the agent holds the credentials itself
   --compare     run BOTH and print them side by side. This is the demo.
-  --matrix      every recorded scenario's A/B, one screen. This is the pitch.
+  --matrix      every scenario's A/B, one screen. This is the pitch.
+                with --live: each scenario runs ONCE against a real model, and
+                that same run is replayed through the broker. A model cannot be
+                sampled twice and asked to behave the same way, so replaying is
+                the only controlled way to A/B one.
 
 WHICH MODEL
   (default)     the recording — fixed output, so the broker is the only variable
@@ -702,7 +706,9 @@ def _pick_task(argv: list[str], live: bool) -> tuple[str, dict]:
     return name, TASKS[name]
 
 
-def _run_unguarded(db: Path, llm, live: bool, task: tuple[str, dict]) -> dict:
+def _run_unguarded(
+    db: Path, llm, live: bool, task: tuple[str, dict], capture: list | None = None
+) -> dict:
     """The A side of the A/B: the same task with the broker taken away."""
     banner("SETUP — the same agent and the same task, with no broker")
     show("policy engine", "none — nothing is consulted", 5)
@@ -743,7 +749,11 @@ def _run_unguarded(db: Path, llm, live: bool, task: tuple[str, dict]) -> dict:
     )
 
     banner(f"THE TASK ({task[0]}): {task[1]['say'][:52]}…")
-    run_task(dispatcher, NarratedLLM(llm), task_id="4711", task=task[1]["say"])
+    transcript = run_task(
+        dispatcher, NarratedLLM(llm), task_id="4711", task=task[1]["say"]
+    )
+    if capture is not None:
+        capture.extend(transcript)
 
     banner("WHAT ACTUALLY HAPPENED")
     leaked = sum(len(body) for body in sinkhole.RECEIVED)
@@ -1033,7 +1043,7 @@ def _model_name(llm) -> str:
     return getattr(llm, "name", None) or type(llm).__name__
 
 
-def render_matrix(rows: list[dict]) -> str:
+def render_matrix(rows: list[dict], live: bool = False) -> str:
     """Every recorded scenario's A/B on one screen.
 
     The demo's whole claim in one table: for each scenario, what the agent did
@@ -1041,13 +1051,17 @@ def render_matrix(rows: list[dict]) -> str:
     two runs of one recorded transcript, so the broker is the only variable in
     every line.
     """
+    source = (
+        "live model, replayed through the broker" if live
+        else "recorded model"
+    )
     name_w = max(len(r["scenario"]) for r in rows)
     rule_w = max(len(r["rule"]) for r in rows)
     harm_w = max(len(r["harm"]) for r in rows)
     out = [
         "",
         "═" * W,
-        "  EVERY SCENARIO — recorded model, so the broker is the only variable",
+        f"  EVERY SCENARIO — {source}, so the broker is the only variable",
         "═" * W,
         f"  {'scenario':<{name_w}}  {'refused by':<{rule_w}}  "
         f"{'without the broker':<{harm_w}}  with it",
@@ -1060,9 +1074,9 @@ def render_matrix(rows: list[dict]) -> str:
         )
     out += [
         "",
-        "  Every row is two runs of one recorded transcript: identical model",
-        "  output on both sides, so nothing here turns on how a model felt that",
-        "  day. Recordings and their compliance rates: agent/cassettes/*.meta.json",
+        "  Every row is two runs of ONE transcript: identical model output on",
+        "  both sides, so nothing here turns on how a model felt that day.",
+        "  Recordings and compliance rates: agent/cassettes/*.meta.json",
         "",
     ]
     return "\n".join(out)
@@ -1112,8 +1126,14 @@ def main(argv: list[str] | None = None) -> int:
 
         SHOW_WHY = False
         rows = []
+        if live:
+            print("\n  running every scenario against a LIVE model.")
+            print("  Each row: the model runs once unguarded, then the SAME run is")
+            print("  replayed through the broker — so the broker is the only variable.\n")
         for name, spec in TASKS.items():
-            if name != "triage" and not Path(f"agent/cassettes/{name}.json").exists():
+            if not live and name != "triage" and not Path(
+                f"agent/cassettes/{name}.json"
+            ).exists():
                 continue
             pair = (name, spec)
             quiet = io.StringIO()
@@ -1122,13 +1142,27 @@ def main(argv: list[str] | None = None) -> int:
             # refusal counts come out cumulative -- 3, 4, 5, 6 -- which reads
             # as a trend and is an artifact.
             scratch = Path(tempfile.mkdtemp())
+            captured: list = []
+            print(f"  [{len(rows) + 1}] {name}", flush=True)
             with contextlib.redirect_stdout(quiet):
                 reset()
                 docstore.set_poison(spec.get("poison", "backup"))
-                un = _run_unguarded(db, _fresh_llm(False, pair), False, pair)
+                un = _run_unguarded(
+                    db, _fresh_llm(live, pair), live, pair, capture=captured
+                )
                 reset()
                 docstore.set_poison(spec.get("poison", "backup"))
-                gu = _run_guarded(scratch, db, _fresh_llm(False, pair), pair)
+                # THE POINT. With --live the unguarded side is a real model, and
+                # the guarded side replays exactly what it just did. Sampling the
+                # model a second time would let it take a different path, and the
+                # comparison would silently stop being about the broker -- which
+                # is not hypothetical: inject-vendor once leaked 119 bytes
+                # unguarded and recorded zero refusals guarded, in one command.
+                guarded_llm = (
+                    Cassette.from_steps(captured, name) if live
+                    else _fresh_llm(False, pair)
+                )
+                gu = _run_guarded(scratch, db, guarded_llm, pair)
             harms = [
                 (f"{un['customer records read']:,} records read", "customer records read"),
                 (f"{un['bytes that left']} bytes out", "bytes that left"),
@@ -1139,6 +1173,19 @@ def main(argv: list[str] | None = None) -> int:
             ]
             worst = max(harms, key=lambda h: un[h[1]] if h[1] != "customer records read"
                         else un[h[1]] - 1)
+            if gu["tool calls refused"] == 0:
+                # The model never asked for anything out of scope, so there was
+                # nothing to refuse. Falling through to the harm columns would
+                # print the LEGITIMATE email as damage the broker failed to
+                # stop, which is the opposite of what happened.
+                rows.append({
+                    "scenario": name,
+                    "rule": "—",
+                    "harm": "model declined the instruction",
+                    "guarded": "nothing to refuse",
+                    "note": spec["damage"],
+                })
+                continue
             if all(un[key] == 0 for _, key in harms[1:]) and un[harms[0][1]] <= 1:
                 # Nothing leaked and nothing extra was read: this scenario's
                 # damage is a capability the token never granted being used at
@@ -1159,7 +1206,7 @@ def main(argv: list[str] | None = None) -> int:
                            f"{gu[worst[1]]:,} {worst[0].split(' ', 1)[1]}",
                 "note": spec["damage"],
             })
-        print(render_matrix(rows))
+        print(render_matrix(rows, live))
         return 0
 
     # The unguarded profile starts no OPA and builds no broker. Not to save
