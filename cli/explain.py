@@ -1052,6 +1052,21 @@ def _model_name(llm) -> str:
     return getattr(llm, "name", None) or type(llm).__name__
 
 
+def _target_label(target: dict) -> str:
+    """One short string naming what a call was actually aimed at."""
+    kind = target.get("kind")
+    if kind == "doc":
+        return target.get("path", "")
+    if kind == "db":
+        subjects = target.get("subjects") or []
+        return f"{target.get('estimated_rows', 0)} rows · {', '.join(subjects) or '?'}"
+    if kind == "http":
+        return f"{target.get('host', '')}{target.get('path', '')}"
+    if kind == "mail":
+        return ", ".join(target.get("recipients") or [])
+    return str(kind)
+
+
 def render_matrix(rows: list[dict], live: bool = False) -> str:
     """Every recorded scenario's A/B on one screen.
 
@@ -1081,6 +1096,18 @@ def render_matrix(rows: list[dict], live: bool = False) -> str:
             f"  {r['scenario']:<{name_w}}  {r['rule']:<{rule_w}}  "
             f"{r['harm']:<{harm_w}}  {r['guarded']}"
         )
+    out += ["", "  step by step:"]
+    for r in rows:
+        if not r.get("steps"):
+            continue
+        out.append(f"    {r['scenario']}")
+        for st in r["steps"]:
+            mark = "OK  " if st["decision"] == "allow" else "DENY"
+            reason = "" if st["rule"] == "allow" else f"  {st['rule']}"
+            pii = " [pii]" if "pii" in st["held"] else ""
+            out.append(
+                f"      {st['n']:>3}. {mark} {st['tool']}({st['target']}){pii}{reason}"
+            )
     out += [
         "",
         "  Every row is two runs of ONE transcript: identical model output on",
@@ -1189,6 +1216,22 @@ def _main(argv: list[str], run=None) -> int:
                     else _fresh_llm(False, pair)
                 )
                 gu = _run_guarded(scratch, db, guarded_llm, pair)
+            # The per-call decisions, not just the totals. "43 refused" is a
+            # summary; which calls, against what, and under which rule is the
+            # part a reader can actually check.
+            steps = []
+            audit_file = scratch / "audit.jsonl"
+            if audit_file.exists():
+                for record in AuditLog(audit_file).records():
+                    steps.append({
+                        "n": record["seq"],
+                        "tool": record["action"]["tool"],
+                        "target": _target_label(record["target"]),
+                        "decision": record["decision"],
+                        "rule": record["rule"],
+                        "held": list(record["task_state"]["data_classes_held"]),
+                        "rows_before": record["task_state"]["rows_returned_so_far"],
+                    })
             harms = [
                 (f"{un['customer records read']:,} records read", "customer records read"),
                 (f"{un['bytes that left']} bytes out", "bytes that left"),
@@ -1205,6 +1248,7 @@ def _main(argv: list[str], run=None) -> int:
                 # print the LEGITIMATE email as damage the broker failed to
                 # stop, which is the opposite of what happened.
                 rows.append({
+                    "steps": steps,
                     "scenario": name,
                     "rule": "—",
                     "harm": "model declined the instruction",
@@ -1222,6 +1266,7 @@ def _main(argv: list[str], run=None) -> int:
                     "emails delivered",
                 )
             rows.append({
+                "steps": steps,
                 "scenario": name,
                 "rule": (
                     spec["trips"].split("→")[-1].strip().split()[0]

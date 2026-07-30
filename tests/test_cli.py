@@ -819,3 +819,28 @@ def test_matrix_header_says_which_model_produced_it():
              "harm": "155 bytes out", "guarded": "1 refused, 0 bytes out"}]
     assert "recorded model" in render_matrix(rows, live=False)
     assert "live model, replayed through the broker" in render_matrix(rows, live=True)
+
+
+def test_the_matrix_records_each_decision_not_only_the_totals():
+    """"43 refused" is a summary. Which calls, against what, and under which
+    rule is the part a reader can check — and the part that makes a saved run
+    evidence rather than a claim."""
+    from cli.explain import _target_label
+
+    assert _target_label({"kind": "doc", "path": "ticket-4711"}) == "ticket-4711"
+    assert _target_label(
+        {"kind": "db", "estimated_rows": 10312, "subjects": ["*"]}
+    ) == "10312 rows · *"
+    assert _target_label(
+        {"kind": "db", "estimated_rows": 1, "subjects": ["customer:8812"]}
+    ) == "1 rows · customer:8812"
+    assert _target_label(
+        {"kind": "http", "host": "attacker.example", "path": "/collect"}
+    ) == "attacker.example/collect"
+    assert _target_label(
+        {"kind": "mail", "recipients": ["customer:8812"]}
+    ) == "customer:8812"
+    # A target the label function has never seen must degrade to something
+    # printable rather than raising inside a run that is being logged.
+    assert _target_label({"kind": "future"}) == "future"
+    assert _target_label({}) == "None"
