@@ -7,3 +7,7 @@ audit.jsonl
 data/customers.db
 data/agent.key
 data/agent.pub
+.env
+.env.local
+*.key
+data/
