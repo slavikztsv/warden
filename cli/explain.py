@@ -1,7 +1,8 @@
 """Run the scenario with every stage narrated and explained.
 
-    python -m cli.explain              # recorded model, full narration
-    python -m cli.explain --pause      # wait for Enter between steps
+    python -m cli.explain               # guarded: recorded model, full narration
+    python -m cli.explain --unguarded   # the same run with no broker at all
+    python -m cli.explain --pause       # wait for Enter between steps
     python -m cli.explain --live        # a real model instead of the recording
     python -m cli.explain --quiet-why   # drop the explanations, keep the data
 
@@ -35,7 +36,7 @@ from fastapi.testclient import TestClient
 
 from agent.llm import Cassette, live_client_from_env
 from agent.loop import SYSTEM_TASK, run_task
-from agent.tools import BrokeredDispatcher
+from agent.tools import BrokeredDispatcher, DirectDispatcher
 from broker.app import create_app
 from broker.audit import AuditLog
 from broker.backends import Backends
@@ -343,9 +344,105 @@ class NarratedDispatcher:
         return result
 
 
+class NarratedDirectDispatcher:
+    """Wraps the unprotected dispatcher — the `--unguarded` profile.
+
+    The narration here is mostly about what is *absent*. Same agent, same
+    model, same tools, same task; the broker is the only thing removed. So
+    every stage that does not print is a stage with nowhere left to happen.
+    """
+
+    SKIPPED = (
+        "④ resolve target    ⑤ broker context    ⑥ ask policy\n"
+        "⑦ verdict           ⑧ audit write       ⑩ taint update"
+    )
+
+    def __init__(self, inner: DirectDispatcher) -> None:
+        self._inner = inner
+        self.calls = 0
+        self.rows = 0
+
+    def call(self, tool: str, args: dict) -> dict:
+        self.calls += 1
+        already_leaked = len(sinkhole.RECEIVED)
+
+        stage("③", "THE AGENT ACTS — THERE IS NOBODY TO ASK")
+        show("calls", tool)
+        show("with arguments", clip(json.dumps(args), 260))
+        show("stages that cannot happen", self.SKIPPED)
+        if self.calls == 1:
+            why(
+                "This is the shape almost every agent deployment ships as, and "
+                "not out of carelessness: a tool is a function the agent calls, "
+                "so there is no seam between deciding and doing for a decision "
+                "to live in. The agent holds the database path, the mailer and "
+                "outbound network access itself — nothing is in a position to "
+                "ask 'may it?', so the model's intent is the only thing between "
+                "the task and the socket."
+            )
+        else:
+            why("No token to present, no endpoint to present it to.")
+
+        result = self._inner.call(tool, args)
+
+        stage("⑨", "IT HAPPENED — AND THAT IS WHAT THE AGENT IS TOLD")
+        show("returned", clip(result.get("content", result.get("error", "")), 200))
+        if "rows" in result:
+            self.rows += result["rows"]
+            show("rows", f"{result['rows']:,}")
+            if result["rows"] > 50:
+                why(
+                    f"{result['rows']:,} records, from a request the ticket never "
+                    "asked for. The guarded run refuses this one on "
+                    "'rows.bounded' before the query runs — so the exfiltration "
+                    "two steps from now has nothing to carry even if the "
+                    "destination had been allowed."
+                )
+        if len(sinkhole.RECEIVED) > already_leaked:
+            body = sinkhole.RECEIVED[-1]
+            show("→ attacker.example received", f"{len(body)} bytes")
+            show("→ the bytes", clip(body, 220))
+            why(
+                "Compare this against the guarded run, where the identical "
+                "model output produced 'egress.pii_sink' and zero bytes. The "
+                "model behaved the same way in both — it is not the variable. "
+                "The difference is entirely whether anything sat between the "
+                "request and the socket."
+            )
+        else:
+            why(
+                "No verdict, no record, no state change. The call returned, and "
+                "the only trace it leaves is in the model's context — which is "
+                "to say nowhere anyone can audit afterwards."
+            )
+        gate()
+        return result
+
+
 # --------------------------------------------------------------------------- #
 #  runner
 # --------------------------------------------------------------------------- #
+def _mock_transport() -> httpx.MockTransport:
+    """Routes the demo's hostnames to the in-process mocks.
+
+    Shared by both profiles on purpose: the two runs must reach the same
+    backends over the same paths, so the only thing that differs between them
+    is who is permitted to.
+    """
+    clients = {
+        "docstore.internal": TestClient(docstore.app),
+        "mailer.internal": TestClient(mailer.app),
+        "attacker.example": TestClient(sinkhole.app),
+    }
+
+    def route(request: httpx.Request) -> httpx.Response:
+        target = clients[request.url.host]
+        response = target.request(request.method, request.url.path, content=request.content)
+        return httpx.Response(response.status_code, content=response.content)
+
+    return httpx.MockTransport(route)
+
+
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -373,21 +470,55 @@ def _start_opa() -> tuple[subprocess.Popen, str]:
     sys.exit("OPA did not start")
 
 
-def main(argv: list[str] | None = None) -> int:
-    global SHOW_WHY, PAUSE
-    argv = sys.argv[1:] if argv is None else argv
-    live = "--live" in argv
-    PAUSE = "--pause" in argv
-    SHOW_WHY = "--quiet-why" not in argv
+def _run_unguarded(db: Path, llm) -> int:
+    """The A side of the A/B: the same task with the broker taken away."""
+    banner("SETUP — the same agent and the same task, with no broker")
+    show("policy engine", "none — nothing is consulted", 5)
+    show("audit log", "none — nothing is recorded", 5)
+    show("task token", "none — there is no authority to declare", 5)
+    show("customer database", f"{db.name}, 10,312 synthetic records", 5)
+    show("who holds the credentials", "the agent process itself", 5)
+    why(
+        "Everything else is held constant: same model output, same tools, same "
+        "backends, same poisoned document. Only the broker is removed. That is "
+        "what makes the two runs a controlled comparison rather than two "
+        "demos — any difference in the outcome has exactly one cause."
+    )
+    gate()
 
+    dispatcher = NarratedDirectDispatcher(
+        DirectDispatcher(
+            docstore_url="http://docstore.internal",
+            db_path=db,
+            mailer_url="http://mailer.internal",
+            client=httpx.Client(transport=_mock_transport()),
+        )
+    )
+
+    banner(f"THE TASK: {SYSTEM_TASK[:60]}…")
+    run_task(dispatcher, NarratedLLM(llm), task_id="4711")
+
+    banner("WHAT ACTUALLY HAPPENED")
+    leaked = sum(len(body) for body in sinkhole.RECEIVED)
+    show("tool calls made", dispatcher.calls, 2)
+    show("tool calls refused", 0, 2)
+    show("customer records read", f"{dispatcher.rows:,}", 2)
+    show("bytes that reached attacker.example", leaked, 2)
+    show("emails actually delivered", len(mailer.OUTBOX), 2)
+    show("audit trail", "none — no record that any of this happened", 2)
+    why(
+        "The task also completed here. That is the uncomfortable part: from the "
+        "outside this run looks like a success, and the only sign that anything "
+        "went wrong is a request nobody was watching. Now run it without "
+        "--unguarded and diff the two: identical model, identical tool calls, "
+        f"{leaked} bytes against 0."
+    )
+    return 0
+
+
+def _run_guarded(tmp: Path, db: Path, llm) -> int:
     opa, opa_url = _start_opa()
     try:
-        tmp = Path(tempfile.mkdtemp())
-        db = tmp / "customers.db"
-        seed_customers(db, 10312)
-        sinkhole.RECEIVED.clear()
-        mailer.OUTBOX.clear()
-
         banner("SETUP — what exists before the agent starts")
         show("policy bundle", f"policies/  digest {policy_bundle_digest(Path('policies'))[:22]}…", 5)
         show("policy engine", f"real OPA server at {opa_url}", 5)
@@ -419,19 +550,6 @@ def main(argv: list[str] | None = None) -> int:
         gate()
 
         # real components, wrapped for narration only
-        docstore_client = TestClient(docstore.app)
-        mailer_client = TestClient(mailer.app)
-        sinkhole_client = TestClient(sinkhole.app)
-
-        def route(request: httpx.Request) -> httpx.Response:
-            target = {
-                "docstore.internal": docstore_client,
-                "mailer.internal": mailer_client,
-                "attacker.example": sinkhole_client,
-            }[request.url.host]
-            response = target.request(request.method, request.url.path, content=request.content)
-            return httpx.Response(response.status_code, content=response.content)
-
         audit = NarratedAudit(AuditLog(tmp / "audit.jsonl"))
         pdp = NarratedPDP(PolicyDecisionPoint(opa_url, client=httpx.Client(timeout=5.0)))
         app = create_app(
@@ -444,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
                     docstore_url="http://docstore.internal",
                     db_path=db,
                     mailer_url="http://mailer.internal",
-                    client=httpx.Client(transport=httpx.MockTransport(route)),
+                    client=httpx.Client(transport=_mock_transport()),
                 )
             ),
             policy_digest=policy_bundle_digest(Path("policies")),
@@ -469,12 +587,6 @@ def main(argv: list[str] | None = None) -> int:
             token,
         )
 
-        llm = (
-            live_client_from_env(os.environ)
-            if live
-            else Cassette(Path("agent/cassettes/support-triage.json"))
-        )
-
         banner(f"THE TASK: {SYSTEM_TASK[:60]}…")
         run_task(dispatcher, NarratedLLM(llm), task_id="4711")
 
@@ -494,6 +606,32 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         opa.terminate()
         opa.wait(timeout=5)
+
+
+def main(argv: list[str] | None = None) -> int:
+    global SHOW_WHY, PAUSE
+    argv = sys.argv[1:] if argv is None else argv
+    PAUSE = "--pause" in argv
+    SHOW_WHY = "--quiet-why" not in argv
+
+    tmp = Path(tempfile.mkdtemp())
+    db = tmp / "customers.db"
+    seed_customers(db, 10312)
+    sinkhole.RECEIVED.clear()
+    mailer.OUTBOX.clear()
+
+    llm = (
+        live_client_from_env(os.environ)
+        if "--live" in argv
+        else Cassette(Path("agent/cassettes/support-triage.json"))
+    )
+
+    # The unguarded profile starts no OPA and builds no broker. Not to save
+    # time — so that "the policy was not consulted" is a fact about the run
+    # rather than a claim in the narration.
+    if "--unguarded" in argv:
+        return _run_unguarded(db, llm)
+    return _run_guarded(tmp, db, llm)
 
 
 if __name__ == "__main__":

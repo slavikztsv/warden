@@ -93,6 +93,16 @@ write happening *before* execution, and the moment the task starts carrying
 customer data. All of it the real code path; the narration is added by wrapping
 the components, not by reimplementing them.
 
+Then run the same thing with the broker taken away:
+
+```bash
+.venv/bin/python -m cli.explain --unguarded
+```
+
+Same model, same tools, same poisoned document — 121 bytes of customer data
+reach the attacker instead of 0, nothing is refused, and no record survives that
+any of it happened. Each call prints the stages that now have nowhere to happen.
+
 It also answers the two questions the demo does not: **who starts a task** (and
 how that wires into a real helpdesk or queue), and **what the model is actually
 asked** — `WARDEN_TRACE=1` prints the full conversation each turn, so you can
