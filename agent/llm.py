@@ -15,6 +15,11 @@ from agent.tools import TOOL_SCHEMAS
 ANTHROPIC_MODEL = "claude-sonnet-5"
 GEMINI_MODEL = "gemini-3.6-flash"
 MAX_TOKENS = 4096
+# Gemini counts thinking against the output budget, and current models think by
+# default. 4096 was enough to exhaust on reasoning alone and return a turn with
+# neither text nor a function call, which the loop then read as "the agent is
+# finished". Budget the live path separately.
+GEMINI_MAX_TOKENS = 16384
 
 # Kept for the Anthropic client, whose call site predates the second provider.
 MODEL = ANTHROPIC_MODEL
@@ -229,9 +234,15 @@ class GeminiClient:
 
         The free tier allows 5 requests per minute and this agent's task needs
         eight turns, so a 429 mid-run is the expected case rather than an edge
-        one — an unretried live path would fail every time. Bounded on purpose:
-        five attempts, and each wait is capped, so a genuine outage surfaces as
-        an error instead of hanging the demo.
+        one — an unretried live path would fail every time. 503 UNAVAILABLE is
+        retried for the same reason: it was observed in practice, and it is the
+        provider shedding load rather than anything wrong with the request.
+        Bounded on purpose: five attempts, each wait capped, so a genuine outage
+        surfaces as an error instead of hanging the demo.
+
+        This flakiness is itself the argument for the cassette staying the
+        default. A demo that depends on someone else's capacity is a demo that
+        can fail in the room.
 
         Note this is not the "no blind retry" rule the broker follows for
         backends. That rule exists because retrying an authorized read
@@ -248,12 +259,27 @@ class GeminiClient:
                     model=self._model, contents=self._history, config=config
                 )
             except Exception as exc:  # noqa: BLE001 - vendor error types vary
-                if getattr(exc, "code", None) != 429 and "RESOURCE_EXHAUSTED" not in str(exc):
+                text = str(exc)
+                transient = (
+                    getattr(exc, "code", None) in (429, 500, 503)
+                    or "RESOURCE_EXHAUSTED" in text
+                    or "UNAVAILABLE" in text
+                )
+                if not transient:
                     raise
+                # A per-DAY quota does not clear within a run. Retrying it just
+                # burns minutes before failing anyway, so surface it at once
+                # with the fix in the message.
+                if "PerDay" in text or "per day" in text:
+                    raise RuntimeError(
+                        "daily model quota exhausted for this model. Set "
+                        "GEMINI_MODEL in .env to a different model, or wait for "
+                        f"the quota to reset. Provider said: {text[:200]}"
+                    ) from exc
                 last = exc
-                asked = re.search(r"retry in ([0-9.]+)s", str(exc))
+                asked = re.search(r"retry in ([0-9.]+)s", text)
                 delay = min(float(asked.group(1)) + 1 if asked else 2 ** attempt * 5, 65)
-                print(f"[llm] rate limited, waiting {delay:.0f}s", flush=True)
+                print(f"[llm] transient provider error, waiting {delay:.0f}s", flush=True)
                 _time.sleep(delay)
         raise RuntimeError(f"model still rate limited after 5 attempts: {last}")
 
@@ -261,17 +287,29 @@ class GeminiClient:
         from google.genai import types
 
         self._absorb(messages)
-        response = self._generate(
-            types.GenerateContentConfig(
-                tools=self._declarations(), max_output_tokens=MAX_TOKENS
-            )
+        config = types.GenerateContentConfig(
+            tools=self._declarations(), max_output_tokens=GEMINI_MAX_TOKENS
         )
-        candidate = response.candidates[0]
+
+        # A turn carrying neither a call nor text is not the agent finishing —
+        # it is an empty turn, seen intermittently in practice. Retry once
+        # rather than reporting a completion the model never signalled, and do
+        # NOT append the empty turn: poisoning the history with it changes what
+        # the model is answering on the retry.
+        for _ in range(2):
+            response = self._generate(config)
+            candidate = response.candidates[0]
+            parts = candidate.content.parts or []
+            if any(
+                getattr(part, "function_call", None) or getattr(part, "text", None)
+                for part in parts
+            ):
+                break
+            print("[llm] empty turn, retrying once", flush=True)
         # Appended verbatim: a reconstructed turn drops part types this code
         # does not model, and an edited history is rejected on the next call.
         self._history.append(candidate.content)
 
-        parts = candidate.content.parts or []
         for part in parts:
             call = getattr(part, "function_call", None)
             if call is not None:
@@ -285,7 +323,17 @@ class GeminiClient:
         text = "\n".join(
             part.text for part in parts if getattr(part, "text", None)
         )
-        return {"type": "final", "text": text or "(no text returned)"}
+        if text:
+            return {"type": "final", "text": text}
+
+        # No call and no text is NOT the agent finishing — it is a truncated or
+        # empty turn, and silently reporting it as `final` hides the cause. The
+        # usual culprit is the output budget being consumed by thinking.
+        reason = getattr(candidate, "finish_reason", None)
+        return {
+            "type": "final",
+            "text": f"(model returned no text and no tool call; finish_reason={reason})",
+        }
 
 
 def live_client_from_env(env: dict) -> object:

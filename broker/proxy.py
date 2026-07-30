@@ -9,6 +9,7 @@ bypass attempts visible and denied, not to inspect content.
 from __future__ import annotations
 
 import asyncio
+import base64
 
 from broker.audit import AuditLog
 from broker.identity import TokenInvalid, Verifier
@@ -16,6 +17,34 @@ from broker.pdp import PolicyDecisionPoint
 from broker.taint import TaintTracker
 
 NO_TOKEN = "unauthenticated"
+
+
+def proxy_token(header: str) -> str:
+    """Pull the task token out of a Proxy-Authorization header.
+
+    Two forms are accepted, because a proxy has to work with clients it does
+    not control:
+
+      · `Bearer <jwt>` — what our own code sends when it can set headers.
+      · `Basic <base64 user:pass>` — what every proxy-aware HTTP client sends
+        when the token is embedded in the proxy URL. That is the only way to
+        authenticate a third-party SDK's internal HTTP client without patching
+        it, and a model SDK is exactly that case.
+
+    The username is ignored; the password carries the token. Anything else
+    yields the empty string, which fails verification and is audited as
+    `unauthenticated` like any other unauthorized CONNECT.
+    """
+    if header.startswith("Bearer "):
+        return header.removeprefix("Bearer ")
+    if header.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(header.removeprefix("Basic "), validate=True)
+            _, _, password = decoded.decode("utf-8").partition(":")
+        except (ValueError, UnicodeDecodeError):
+            return ""
+        return password
+    return ""
 
 
 def parse_authority(authority: str) -> tuple[str, int]:
@@ -145,12 +174,29 @@ def _audit_refusal(*, audit, policy_digest: str, host: str, port: int, rule: str
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Copy one direction of an established tunnel.
+
+    This deliberately does NOT close the peer when its own side reaches EOF.
+    Closing it tore down the opposite direction mid-flight: on a keep-alive
+    tunnel carrying several requests, the first side to finish sending killed
+    the connection the response was still arriving on, and the caller received
+    an empty reply. Found by running a live model through the proxy — the third
+    request of a session came back with no content, every time, while the same
+    agent talking directly to the same provider worked.
+
+    Signal EOF instead, and let the handler close both sockets once both
+    directions have finished.
+    """
     try:
         while chunk := await reader.read(65536):
             writer.write(chunk)
             await writer.drain()
-    finally:
-        writer.close()
+        if writer.can_write_eof():
+            writer.write_eof()
+    except (ConnectionError, OSError):
+        # The peer is gone. The other direction observes the same thing and
+        # ends on its own; there is nothing to recover and nothing to report.
+        return
 
 
 def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
@@ -169,7 +215,7 @@ def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
 
                 method, _, rest = request_line.decode("latin-1").partition(" ")
                 authority = rest.split(" ")[0]
-                token_str = headers.get("proxy-authorization", "").removeprefix("Bearer ")
+                token_str = proxy_token(headers.get("proxy-authorization", ""))
             except Exception:
                 _audit_refusal(
                     audit=deps["audit"],
@@ -241,11 +287,18 @@ def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
                 return
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
-            await asyncio.gather(
-                _pipe(reader, upstream_writer),
-                _pipe(upstream_reader, writer),
-                return_exceptions=True,
-            )
+            try:
+                await asyncio.gather(
+                    _pipe(reader, upstream_writer),
+                    _pipe(upstream_reader, writer),
+                    return_exceptions=True,
+                )
+            finally:
+                # Both directions are done, so the upstream socket is ours to
+                # close. _pipe no longer does it, precisely so that one
+                # direction finishing cannot cut the other off.
+                if not upstream_writer.is_closing():
+                    upstream_writer.close()
         finally:
             if not writer.is_closing():
                 writer.close()

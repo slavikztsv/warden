@@ -453,3 +453,27 @@ test_shipped_data_allows_an_untainted_fetch_to_an_allowlisted_host if {
 		"task_state": clean_state,
 	}
 }
+
+# The agent reaches its model provider only because that host is a declared
+# destination for this purpose — switching model vendors is a policy change,
+# which is the correct amount of friction. It is NOT a pii_approved_sink:
+# an agent holding customer data cannot post it to the model endpoint either.
+# (test_shipped_data_denies_pii_to_every_allowlisted_host already covers the
+# tainted case for every host in the bundle, including this one.)
+test_shipped_data_allows_the_model_endpoint_when_untainted if {
+	authz.allow with input as {
+		"principal": shipped_principal,
+		"action": {"type": "egress"},
+		"target": {"kind": "http", "host": "generativelanguage.googleapis.com", "port": 443, "path": "", "estimated_rows": 0, "recipients": []},
+		"task_state": clean_state,
+	}
+}
+
+test_shipped_data_denies_an_undeclared_model_endpoint if {
+	"egress.allowlist" in authz.deny_reasons with input as {
+		"principal": shipped_principal,
+		"action": {"type": "egress"},
+		"target": {"kind": "http", "host": "api.openai.com", "port": 443, "path": "", "estimated_rows": 0, "recipients": []},
+		"task_state": clean_state,
+	}
+}

@@ -2,6 +2,23 @@
 # The demo, start to finish. Run ./scripts/demo.sh unprotected  (then) guarded
 set -euo pipefail
 PROFILE="${1:-guarded}"
+MODE="${2:-cassette}"
+
+# `./scripts/demo.sh guarded --live` drives the loop with a real model instead
+# of the recorded transcript. The cassette stays the default: it is
+# deterministic, needs no credential, and cannot fail in front of an audience.
+AGENT_ARGS=""
+if [ "$MODE" = "--live" ]; then
+  AGENT_ARGS="--live"
+  if [ -f .env ]; then set -a; . ./.env; set +a; fi
+  if [ -z "${GEMINI_API_KEY:-}${ANTHROPIC_API_KEY:-}" ]; then
+    echo "--live needs GEMINI_API_KEY or ANTHROPIC_API_KEY in .env" >&2
+    exit 2
+  fi
+  echo "--- live model: the agent reaches its provider only because that host"
+  echo "--- is on this purpose's egress_allow. Every call is still brokered."
+fi
+export AGENT_ARGS
 
 mkdir -p data
 python3 -c "from mocks.seed_db import seed_customers; seed_customers('data/customers.db', 10312)"
@@ -35,7 +52,8 @@ else
          "allowed_tools":["read_document","query_customers","http_fetch","send_email"],
          "data_classes":["public","internal"],"counterparties":["customer:8812"]}' \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-  TASK_TOKEN="$TOKEN" docker compose --profile guarded run --rm agent-runtime
+  TASK_TOKEN="$TOKEN" AGENT_ARGS="$AGENT_ARGS" \
+    docker compose --profile guarded run --rm agent-runtime
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
   echo

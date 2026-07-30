@@ -144,3 +144,13 @@ quietly fixed. Each is a real property of the system as shipped.
   address it read from the database rather than the declared counterparty. See
   `docs/live-run-2026-07-30.md`. Still unexercised: a turn returning multiple
   parallel tool calls, where the adapter answers only the first.
+
+- **The model endpoint is an allowlisted destination, not a privileged one.**
+  `generativelanguage.googleapis.com` is in `egress_allow` for the
+  `support-triage` purpose so a live agent can reach its provider through the
+  proxy, and it is deliberately absent from `pii_approved_sinks`: an agent
+  holding customer data cannot post it to the model either. Changing vendors is
+  a policy edit. The task token reaches the proxy as Basic credentials embedded
+  in the proxy URL, because a third-party SDK owns its own HTTP client and will
+  not set a Bearer header — `proxy_token()` accepts both forms and anything
+  else is audited as `unauthenticated`.

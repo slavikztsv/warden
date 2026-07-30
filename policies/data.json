@@ -1,7 +1,11 @@
 {
   "purposes": {
     "support-triage": {
-      "egress_allow": ["docstore.internal", "api.anthropic.com"],
+      "egress_allow": [
+        "docstore.internal",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com"
+      ],
       "pii_approved_sinks": []
     }
   },

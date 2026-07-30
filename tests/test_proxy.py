@@ -1,13 +1,15 @@
 import asyncio
 import socket
 
+import base64
+
 import httpx
 import pytest
 
 from broker.audit import AuditLog
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
-from broker.proxy import _audit_refusal, authorize_connect, parse_authority, serve_proxy
+from broker.proxy import _audit_refusal, authorize_connect, parse_authority, proxy_token, serve_proxy
 from broker.taint import TaintTracker
 
 
@@ -223,3 +225,30 @@ def test_every_connect_decision_is_audited(tmp_path, signer):
     assert record["action"] == {"type": "egress", "tool": "CONNECT"}
     assert record["target"]["host"] == "attacker.example"
     assert record["decision"] == "deny"
+
+
+# A model SDK owns its own HTTP client and will not set a Bearer header for us.
+# Embedding the token in the proxy URL makes every proxy-aware client send it
+# as Basic credentials, which is the only way to authenticate a third party's
+# internal client without patching it.
+def test_proxy_token_accepts_a_bearer_header():
+    assert proxy_token("Bearer abc.def.ghi") == "abc.def.ghi"
+
+
+def test_proxy_token_accepts_basic_credentials_and_ignores_the_username():
+    header = "Basic " + base64.b64encode(b"anything:abc.def.ghi").decode()
+    assert proxy_token(header) == "abc.def.ghi"
+
+
+def test_proxy_token_survives_a_password_containing_colons():
+    header = "Basic " + base64.b64encode(b"agent:a:b:c").decode()
+    assert proxy_token(header) == "a:b:c"
+
+
+def test_proxy_token_yields_empty_for_anything_it_cannot_parse():
+    # Empty means "no token", which fails verification and is audited as
+    # unauthenticated — never an exception, never a bypass.
+    assert proxy_token("") == ""
+    assert proxy_token("Digest xyz") == ""
+    assert proxy_token("Basic !!!not-base64!!!") == ""
+    assert proxy_token("Basic " + base64.b64encode(b"\xff\xfe").decode()) == ""

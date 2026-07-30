@@ -95,8 +95,10 @@ services:
     profiles: [guarded]
 
   agent-runtime:
-    build: .
-    command: ["python", "-m", "agent.loop"]
+    build:
+      context: .
+      args: { LIVE: "1" }
+    command: ["sh", "-c", "exec python -m agent.loop $$AGENT_ARGS"]
     environment:
       BROKER_URL: http://broker:8080
       TASK_TOKEN: ${TASK_TOKEN}
@@ -106,23 +108,34 @@ services:
       # the proxy never sees a CONNECT and is decoration — the isolation test
       # would show a bare connection failure and the replay would contain no
       # egress record at all.
-      HTTP_PROXY: http://broker:3128
-      HTTPS_PROXY: http://broker:3128
+      # The task token rides in the proxy URL as Basic credentials. A model
+      # SDK owns its own HTTP client and will not set a Bearer header for us,
+      # but every proxy-aware client sends Proxy-Authorization when the URL
+      # carries userinfo. The username is ignored; the password is the token.
+      HTTP_PROXY: http://agent:${TASK_TOKEN}@broker:3128
+      HTTPS_PROXY: http://agent:${TASK_TOKEN}@broker:3128
       # Lowercase forms too: curl deliberately ignores uppercase HTTP_PROXY for
       # plain-http URLs (the httpoxy mitigation), so without these a plain-http
       # probe dies at DNS and never reaches the proxy — blocked, but unrecorded.
-      http_proxy: http://broker:3128
-      https_proxy: http://broker:3128
+      http_proxy: http://agent:${TASK_TOKEN}@broker:3128
+      https_proxy: http://agent:${TASK_TOKEN}@broker:3128
       # The broker's own tool API must NOT be proxied through the broker's own
       # proxy. httpx honours these variables by default (trust_env), so without
       # this exclusion every legitimate tool call would loop back through :3128.
       NO_PROXY: broker
+      # Only the agent gets a model credential. The broker enforces policy and
+      # has no business holding one.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      AGENT_ARGS: ${AGENT_ARGS:-}
     networks: [agent-net]           # the ONLY network — no route anywhere else
     depends_on: [broker]
     profiles: [guarded]
 
   agent-runtime-unprotected:
-    build: .
+    build:
+      context: .
+      args: { LIVE: "1" }
     command: ["python", "-m", "agent.loop"]
     environment:
       DOCSTORE_URL: http://docstore.internal
