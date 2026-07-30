@@ -91,16 +91,31 @@ quietly fixed. Each is a real property of the system as shipped.
   loads the public half alone. **The enforcement point now holds no signing
   key**, which is strictly stronger than the original design: even a fully
   compromised broker cannot mint.
-- **`--live` is not covered by CI, and it answers only the first tool call in a
-  turn.** The `anthropic` package is deliberately not a dependency, so nothing
-  in the suite reaches the real API; `LiveClient` is driven by a stub that pins
-  the request shape and the `tool_use`/`tool_result` alternation but cannot
-  prove the API accepts it. Within that path, parallel tool use is unhandled:
-  a turn returning two `tool_use` blocks gets a `tool_result` for the first
-  only, and the API rejects the next request because the second is unanswered.
-  Accepted rather than fixed — it is reachable only on the already-unexercised
-  live path. **The cassette path the demo actually runs is unaffected**, because
-  a cassette yields exactly one step at a time. Relatedly, `MAX_TOKENS = 4096`
+- **`--live` is not covered by CI, and the Anthropic client still answers only
+  the first tool call in a turn.** Neither `anthropic` nor `google-genai` is a
+  dependency, so nothing in CI reaches a real API. `LiveClient` is driven by a
+  stub that pins the request shape and the `tool_use`/`tool_result` alternation
+  but cannot prove the API accepts it, and within that path parallel tool use is
+  unhandled: a turn returning two `tool_use` blocks gets a `tool_result` for the
+  first only, and the API rejects the next request because the second is
+  unanswered. Accepted rather than fixed there, since nothing exercises it.
+
+  `GeminiClient` had the same defect and it was **not** theoretical — Gemini
+  returns multi-call turns routinely, and dropping the extras produced a
+  delayed, badly misleading symptom: the model's own turn was left holding a
+  call that never received a response, and a turn or two later the reply
+  degraded into a stray CJK glyph, the call restated as prose
+  (`object:default_api:query_customers{…}`), or an empty turn. One live reply
+  read `"巾 eyes open: query_customers returned: … Wait, was it returned in the
+  result?"` — the model asking where the dropped result had gone. Diagnosed by
+  dumping the raw parts rather than by reasoning about it, and initially
+  misattributed to the model being too small. Now every call in a turn is
+  queued, served one at a time without spending an extra turn, and answered in a
+  single user turn matched by function name; tests cover it. **The cassette path
+  the demo actually runs was never affected**, because a cassette yields exactly
+  one step at a time — which is also why the bug survived so long.
+
+  Relatedly, `MAX_TOKENS = 4096`
   is a ceiling on thinking *and* response text together, and the model this
   path targets runs adaptive thinking by default — a long reasoning turn can
   therefore truncate the answer.
@@ -142,8 +157,9 @@ quietly fixed. Each is a real property of the system as shipped.
   holding the attacker constant is how a boundary gets tested. In the same run
   the policy denied a benign mistake the model made on its own, emailing the
   address it read from the database rather than the declared counterparty. See
-  `docs/live-run-2026-07-30.md`. Still unexercised: a turn returning multiple
-  parallel tool calls, where the adapter answers only the first.
+  `docs/live-run-2026-07-30.md`. A turn returning multiple parallel tool calls
+  is no longer unexercised — it turned out to be the common case on Gemini, and
+  the adapter's handling of it is the bug described above.
 
 - **The model provider is treated as inside the data boundary, deliberately.**
   `generativelanguage.googleapis.com` is the single entry in

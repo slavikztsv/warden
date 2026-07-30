@@ -224,7 +224,23 @@ class GeminiClient:
             client = genai.Client(api_key=api_key)
         self._client = client
         self._history: list = []
-        self._pending_name: str | None = None
+        # Gemini returns SEVERAL function calls in one turn routinely, and the
+        # agent loop executes one tool at a time. The extras queue here and are
+        # served on later next_step calls without asking the model again.
+        #
+        # This class used to return the first call and drop the rest, which is a
+        # protocol violation with a delayed and very confusing symptom: the
+        # model's own turn is left holding a call that never receives a
+        # response, and one or two turns later the reply degrades -- a stray
+        # glyph, the call restated as prose, or an empty turn. Observed live as
+        # "巾 eyes open: query_customers returned: ... Wait, was it returned in
+        # the result?", which is the model asking where the dropped result went.
+        self._pending_calls: list = []
+        # Function responses accumulate until every call in the turn has been
+        # answered, because Gemini expects the N responses to a multi-call turn
+        # in ONE user turn, matched by function name.
+        self._answered: list = []
+        self._awaiting: str | None = None
 
     @staticmethod
     def _declarations():
@@ -255,20 +271,18 @@ class GeminiClient:
             return
 
         latest = messages[-1]["content"]
-        if self._pending_name is not None:
-            # An unanswered function call is a protocol error, the same way an
-            # unanswered tool_use is on the Anthropic side.
-            self._history.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_function_response(
-                            name=self._pending_name, response={"result": latest}
-                        )
-                    ],
+        if self._awaiting is not None:
+            # Collected, not appended. An unanswered function call is a protocol
+            # error, the same way an unanswered tool_use is on the Anthropic
+            # side — and when the turn carried several calls, every response
+            # belongs in the same user turn, so these accumulate until the last
+            # queued call has been executed.
+            self._answered.append(
+                types.Part.from_function_response(
+                    name=self._awaiting, response={"result": latest}
                 )
             )
-            self._pending_name = None
+            self._awaiting = None
         else:
             self._history.append(
                 types.Content(role="user", parts=[types.Part(text=latest)])
@@ -328,10 +342,30 @@ class GeminiClient:
                 _time.sleep(delay)
         raise RuntimeError(f"model still rate limited after 5 attempts: {last}")
 
+    def _serve_queued(self) -> dict:
+        """Hand the loop the next call the model asked for, oldest first."""
+        call = self._pending_calls.pop(0)
+        self._awaiting = call.name
+        return {"type": "tool_use", "tool": call.name, "args": dict(call.args or {})}
+
     def next_step(self, messages: list[dict]) -> dict:
         from google.genai import types
 
         self._absorb(messages)
+
+        # Serve a call the model already asked for before asking it for more.
+        # No API call happens here: the model decided this in a previous turn,
+        # and re-asking would both spend a turn and let it revise a sequence it
+        # is midway through.
+        if self._pending_calls:
+            return self._serve_queued()
+
+        # Every call in the previous turn has now been answered, so the
+        # responses go back as one user turn, in the order the calls arrived.
+        if self._answered:
+            self._history.append(types.Content(role="user", parts=self._answered))
+            self._answered = []
+
         config = types.GenerateContentConfig(
             tools=self._declarations(), max_output_tokens=GEMINI_MAX_TOKENS
         )
@@ -379,15 +413,15 @@ class GeminiClient:
                 ),
             }
 
-        for part in parts:
-            call = getattr(part, "function_call", None)
-            if call is not None:
-                self._pending_name = call.name
-                return {
-                    "type": "tool_use",
-                    "tool": call.name,
-                    "args": dict(call.args or {}),
-                }
+        # ALL of them, not just the first. See the note in __init__ on what
+        # dropping the rest does to the next turn.
+        self._pending_calls = [
+            part.function_call
+            for part in parts
+            if getattr(part, "function_call", None) is not None
+        ]
+        if self._pending_calls:
+            return self._serve_queued()
 
         text = "\n".join(
             part.text for part in parts if getattr(part, "text", None)

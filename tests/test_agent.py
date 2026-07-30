@@ -476,3 +476,66 @@ def test_gemini_recovers_when_a_retry_returns_a_real_call():
         "tool": "read_document",
         "args": {"doc_id": "ticket-4711"},
     }
+
+
+def test_gemini_serves_every_call_from_a_multi_call_turn():
+    """Gemini returns several function calls in one turn routinely.
+
+    Returning the first and dropping the rest leaves the model's own turn
+    holding a call that never gets a response. The symptom is delayed and
+    misleading: a turn or two later the reply degrades into a stray glyph or the
+    call restated as prose. Observed live before this was fixed.
+    """
+    pytest.importorskip("google.genai")
+    from agent.llm import GeminiClient
+
+    first = SimpleNamespace(name="read_document", args={"doc_id": "kb/refund-policy"})
+    second = SimpleNamespace(name="query_customers", args={"filter": "id=8812"})
+    done = SimpleNamespace(function_call=None, text="all done")
+    stub, calls = _gemini_stub(
+        [
+            _turn(
+                [
+                    SimpleNamespace(function_call=first, text=None),
+                    SimpleNamespace(function_call=second, text=None),
+                ]
+            ),
+            _turn([done]),
+        ]
+    )
+    client = GeminiClient("key", client=stub)
+
+    step_one = client.next_step([{"role": "user", "content": "triage"}])
+    assert step_one["tool"] == "read_document"
+
+    # The second call must come from the queue, without another API round trip.
+    step_two = client.next_step([{"role": "user", "content": '{"content": "kb"}'}])
+    assert step_two["tool"] == "query_customers"
+    assert len(calls) == 1, "the queued call must not cost a turn"
+
+    # Only once both are answered does the model get asked again, and the two
+    # responses go back in ONE user turn, in the order the calls arrived.
+    step_three = client.next_step([{"role": "user", "content": '{"content": "rows"}'}])
+    assert len(calls) == 2
+    assert step_three == {"type": "final", "text": "all done"}
+
+    responses = [
+        part
+        for content in client._history
+        if getattr(content, "role", None) == "user"
+        for part in (content.parts or [])
+        if getattr(part, "function_response", None) is not None
+    ]
+    assert [r.function_response.name for r in responses] == [
+        "read_document",
+        "query_customers",
+    ]
+    turns_with_responses = [
+        content
+        for content in client._history
+        if any(
+            getattr(part, "function_response", None) is not None
+            for part in (content.parts or [])
+        )
+    ]
+    assert len(turns_with_responses) == 1, "both responses belong to one user turn"
