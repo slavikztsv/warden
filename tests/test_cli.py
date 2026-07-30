@@ -557,3 +557,24 @@ def test_explain_refuses_an_alternative_task_without_a_live_model():
         with pytest.raises(SystemExit):
             _pick_task(["--task", name], live=False)
         assert _pick_task([f"--task={name}"], live=True)[0] == name
+
+
+def test_comparison_table_marks_only_the_rows_that_differ():
+    """The table is the demo's headline, so its arrow must mean something.
+
+    Every row is a measured value from the two runs; nothing in it is asserted
+    by the narration, which is the point of printing them side by side.
+    """
+    from cli.explain import render_comparison
+
+    table = render_comparison(
+        {"records read": 10313, "emails delivered": 1, "audit records": "none"},
+        {"records read": 1, "emails delivered": 1, "audit records": "7, chain intact"},
+        live=False,
+        task="triage",
+    )
+    lines = {line.split("  ")[1].strip(): line for line in table.splitlines() if "  " in line}
+    assert "←" in lines["records read"], "a differing row must be marked"
+    assert "←" not in lines["emails delivered"], "an identical row must not be"
+    assert "10,313" in table and "chain intact" in table
+    assert "recorded model" in table

@@ -93,15 +93,29 @@ write happening *before* execution, and the moment the task starts carrying
 customer data. All of it the real code path; the narration is added by wrapping
 the components, not by reimplementing them.
 
-Then run the same thing with the broker taken away:
+Or run both profiles at once and see them side by side:
 
 ```bash
-.venv/bin/python -m cli.explain --unguarded
+.venv/bin/python -m cli.explain --compare --quiet-why
 ```
 
-Same model, same tools, same poisoned document — 121 bytes of customer data
-reach the attacker instead of 0, nothing is refused, and no record survives that
-any of it happened. Each call prints the stages that now have nowhere to happen.
+```
+                              no broker       with broker
+  ───────────────────────────────────────────────────────
+  tool calls made                     7                 7
+  tool calls refused                  0                 3  ←
+  customer records read          10,313                 1  ←
+  bytes to attacker.example         121                 0  ←
+  emails delivered                    1                 1
+  audit records                    none   7, chain intact  ←
+```
+
+Same model output on both sides, so the broker is the only variable. The ticket
+gets answered either way — only the out-of-scope actions differ.
+
+Add `--live --task report` for the same table with a real model and nothing
+recorded: asked for a management report, it read the customer table twice with
+no broker, and got 13 rows and four refusals with one. `--help` lists every flag.
 
 It also answers the two questions the demo does not: **who starts a task** (and
 how that wires into a real helpdesk or queue), and **what the model is actually
