@@ -32,6 +32,11 @@ class ToolTarget:
     path: str = ""
     estimated_rows: int = 0
     recipients: tuple[str, ...] = field(default=())
+    # Which data subjects a database read names. `("*",)` means "not a bounded
+    # set" -- a filter by plan, or no filter at all. It is deliberately a value
+    # that can never appear in a token's counterparties, so an unbounded read is
+    # out of scope by construction rather than by a second rule.
+    subjects: tuple[str, ...] = field(default=())
 
     def as_dict(self) -> dict:
         return {
@@ -41,6 +46,7 @@ class ToolTarget:
             "path": self.path,
             "estimated_rows": self.estimated_rows,
             "recipients": list(self.recipients),
+            "subjects": list(self.subjects),
         }
 
 
@@ -49,6 +55,27 @@ class ToolResult:
     content: str
     rows: int = 0
     data_class: str | None = None
+
+
+def _subjects(filter_expr: str) -> tuple[str, ...]:
+    """The data subjects a filter names, as counterparty identifiers.
+
+    Only an `id=` filter names a bounded set. Anything else reaches an
+    unbounded one, and says so with "*" rather than by enumerating -- resolving
+    `plan=pro` into ids would mean reading the rows to decide whether the read
+    is allowed, which defeats the point of deciding first.
+    """
+    if filter_expr.startswith("id="):
+        try:
+            return (f"customer:{int(filter_expr[3:])}",)
+        except ValueError:
+            # Unreachable through describe(), which builds the WHERE clause
+            # first and raises on the same malformed id -- the broker maps that
+            # ValueError to input.malformed. Kept so this helper is total on its
+            # own: a pure function that raises for one input is a trap for the
+            # next caller.
+            return ("*",)
+    return ("*",)
 
 
 def _where(filter_expr: str) -> tuple[str, list]:
@@ -88,7 +115,12 @@ class Backends:
                 port=parts.port or DEFAULT_PORTS.get(parts.scheme, 0),
                 path=parts.path or "/",
             )
-        return ToolTarget(kind="db", estimated_rows=self._count(args.get("filter", "all")))
+        filter_expr = args.get("filter", "all")
+        return ToolTarget(
+            kind="db",
+            estimated_rows=self._count(filter_expr),
+            subjects=_subjects(filter_expr),
+        )
 
     def _count(self, filter_expr: str) -> int:
         clause, params = _where(filter_expr)

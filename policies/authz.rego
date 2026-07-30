@@ -94,6 +94,10 @@ default safe_target_recipients := null
 
 safe_target_recipients := input.target.recipients
 
+default safe_target_subjects := null
+
+safe_target_subjects := input.target.subjects
+
 deny_reasons contains "input.malformed" if not is_string(safe_purpose)
 
 deny_reasons contains "input.malformed" if not is_array(safe_allowed_tools)
@@ -120,6 +124,16 @@ deny_reasons contains "input.malformed" if {
 deny_reasons contains "input.malformed" if {
 	input.target.kind == "db"
 	not is_number(safe_target_estimated_rows)
+}
+
+# R7 depends on this being an array. An absent or wrong-typed `subjects` would
+# make `some subject in safe_target_subjects` iterate nothing, so the rule
+# would not fire and the read would be approved -- the same fail-open shape as
+# the six before it. Validated rather than defaulted, so a broker that stops
+# sending the field is a loud denial and not a silent hole.
+deny_reasons contains "input.malformed" if {
+	input.target.kind == "db"
+	not is_array(safe_target_subjects)
 }
 
 deny_reasons contains "input.malformed" if {
@@ -267,6 +281,28 @@ deny_reasons contains "rows.bounded" if {
 	input.action.tool == "query_customers"
 	total := input.task_state.rows_returned_so_far + input.target.estimated_rows
 	total > safe_max_rows_per_task
+}
+
+# R7 — scope. R5 bounds how MANY customer records a task may read; this bounds
+# WHICH. A support-triage task for customer:8812 could read customer 9999's
+# record one row at a time: inside the budget, inside policy, recorded as a
+# clean allow. `counterparties` governed mail alone and never applied to reads,
+# which is least privilege on quantity but not on subject.
+#
+# Only applies when the task declared its subjects. A token naming no
+# counterparties has no subject scope to enforce, and R5 remains its only read
+# control -- that is explicit, not an oversight.
+#
+# `"*"` is the broker's marker for a read that reaches an unbounded set (filter
+# by plan, or no filter). It can never appear in a counterparty list, so such a
+# read is out of scope by construction rather than by a second rule. Deliberately
+# ranked BELOW rows.bounded in the reported-rule precedence, so a bulk read is
+# still reported as the volume breach it primarily is.
+deny_reasons contains "rows.scope" if {
+	input.action.tool == "query_customers"
+	count(safe_counterparties) > 0
+	some subject in safe_target_subjects
+	not subject in safe_counterparties
 }
 
 # R6 — mail may only go to counterparties the task declared up front.

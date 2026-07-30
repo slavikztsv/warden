@@ -143,7 +143,7 @@ in both runs; only the topology differs.
 
 ## Policy
 
-Six rules in [policies/authz.rego](policies/authz.rego), unit-tested with
+Seven rules in [policies/authz.rego](policies/authz.rego), unit-tested with
 `opa test policies/`. `deny_reasons` is the source of truth and `allow` is its
 negation, so the rule recorded in the audit log is provably the reason the
 request failed.

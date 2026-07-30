@@ -125,6 +125,41 @@ def test_target_serializes_for_the_policy_input(db):
         "host": "",
         "port": 0,
         "path": "",
+        "subjects": ["customer:8812"],
         "estimated_rows": 1,
         "recipients": [],
     }
+
+
+def test_describe_resolves_which_subjects_a_query_names(db):
+    """R7 compares these against the token's counterparties.
+
+    Only an `id=` filter names a bounded set. Everything else says so with "*"
+    rather than enumerating — resolving `plan=pro` into ids would mean reading
+    the rows in order to decide whether the read is allowed.
+    """
+    backends = make_backends(db)
+    assert backends.describe(
+        "query_customers", {"filter": "id=8812"}).subjects == ("customer:8812",)
+    assert backends.describe(
+        "query_customers", {"filter": "all"}).subjects == ("*",)
+    assert backends.describe(
+        "query_customers", {"filter": "pro"}).subjects == ("*",)
+    # A malformed id raises out of describe(), which the broker maps to
+    # input.malformed (broker/app.py) — refused with a reason, not guessed at.
+    import pytest
+
+    with pytest.raises(ValueError):
+        backends.describe("query_customers", {"filter": "id=notanumber"})
+
+
+def test_only_a_db_target_carries_subjects(db):
+    """A non-db target has no subjects, and the policy only validates the field
+    for db targets — so a doc or mail target must not invent one."""
+    backends = make_backends(db)
+    for tool, args in (
+        ("read_document", {"doc_id": "ticket-4711"}),
+        ("send_email", {"to": ["customer:8812"], "subject": "s", "body": "b"}),
+        ("http_fetch", {"url": "http://x.internal/a"}),
+    ):
+        assert backends.describe(tool, args).subjects == (), tool

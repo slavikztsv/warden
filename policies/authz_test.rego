@@ -96,7 +96,7 @@ test_denies_a_bulk_read if {
     "rows.bounded" in authz.deny_reasons with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db", "estimated_rows": 10312},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 10312},
         "task_state": clean_state,
     }
         with data.purposes as mock_data.purposes
@@ -108,7 +108,7 @@ test_row_bound_accumulates_across_the_task if {
     "rows.bounded" in authz.deny_reasons with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db", "estimated_rows": 1},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 1},
         "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 50},
     }
         with data.purposes as mock_data.purposes
@@ -119,7 +119,7 @@ test_allows_a_read_inside_the_bound if {
     authz.allow with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db", "estimated_rows": 1},
+        "target": {"kind": "db", "subjects": ["customer:8812"], "estimated_rows": 1},
         "task_state": clean_state,
     }
         with data.purposes as mock_data.purposes
@@ -215,7 +215,7 @@ test_denies_a_db_read_with_no_row_estimate if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db"},
+        "target": {"kind": "db", "subjects": ["*"]},
         "task_state": clean_state,
     }
         with data.purposes as mock_data.purposes
@@ -238,7 +238,7 @@ test_denies_an_egress_with_a_db_target if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": {"purpose": "support-triage", "allowed_tools": [], "counterparties": []},
         "action": {"type": "egress"},
-        "target": {"kind": "db", "estimated_rows": 5000000000},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 5000000000},
         "task_state": tainted_state,
     }
         with data.purposes as mock_data.purposes
@@ -275,7 +275,7 @@ test_denies_a_negative_row_counter if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db", "estimated_rows": 5000000},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 5000000},
         "task_state": {"data_classes_held": [], "rows_returned_so_far": -4999999950},
     }
         with data.purposes as mock_data.purposes
@@ -286,7 +286,7 @@ test_denies_a_negative_row_estimate if {
     "input.malformed" in authz.deny_reasons with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db", "estimated_rows": -999999999},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": -999999999},
         "task_state": clean_state,
     }
         with data.purposes as mock_data.purposes
@@ -300,7 +300,7 @@ test_denies_a_bulk_read_when_the_row_limit_is_missing if {
     "rows.bounded" in authz.deny_reasons with input as {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
-        "target": {"kind": "db", "estimated_rows": 5000000},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 5000000},
         "task_state": clean_state,
     }
         with data.purposes as mock_data.purposes
@@ -520,4 +520,101 @@ test_shipped_data_does_not_extend_the_concession_to_other_hosts if {
 		"target": {"kind": "http", "host": "docstore.internal", "port": 80, "path": "/feedback", "estimated_rows": 0, "recipients": []},
 		"task_state": tainted_state,
 	}
+}
+
+
+# --- R7: scope. R5 bounds how many records a read returns; R7 bounds which. ---
+#
+# The gap these close was found by running the scenario, not by reading the
+# rules: a support-triage task for customer:8812 read three other customers'
+# records one at a time, every one inside the budget and recorded as a clean
+# allow.
+
+test_denies_a_read_of_an_undeclared_subject if {
+    "rows.scope" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "subjects": ["customer:9999"], "estimated_rows": 1},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_allows_a_read_of_the_declared_subject if {
+    authz.allow with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "subjects": ["customer:8812"], "estimated_rows": 1},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+# One in-scope subject does not launder an out-of-scope one alongside it.
+test_denies_a_read_mixing_declared_and_undeclared_subjects if {
+    "rows.scope" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {
+            "kind": "db",
+            "subjects": ["customer:8812", "customer:9999"],
+            "estimated_rows": 2,
+        },
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+# "*" is the broker's marker for a read reaching an unbounded set. It can never
+# appear in a counterparty list, so it is out of scope by construction.
+test_denies_an_unbounded_read_as_out_of_scope if {
+    "rows.scope" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 3},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+# A token naming no subjects has no subject scope to enforce; R5 remains its
+# only read control. Explicit, so that nobody later reads the absence as a bug.
+test_scope_does_not_apply_when_no_counterparties_are_declared if {
+    not "rows.scope" in authz.deny_reasons with input as {
+        "principal": object.union(principal, {"counterparties": []}),
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "subjects": ["customer:9999"], "estimated_rows": 1},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+# The fail-open shape that bit six times: an absent array makes `some x in ...`
+# iterate nothing, so the rule never fires. It must be a malformed input, not a
+# quiet allow.
+test_a_db_target_without_subjects_is_malformed if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": 1},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_a_db_target_with_wrong_typed_subjects_is_malformed if {
+    "input.malformed" in authz.deny_reasons with input as {
+        "principal": principal,
+        "action": {"type": "tool_call", "tool": "query_customers"},
+        "target": {"kind": "db", "subjects": "customer:8812", "estimated_rows": 1},
+        "task_state": clean_state,
+    }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
 }

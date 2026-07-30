@@ -568,7 +568,7 @@ def test_every_scenario_declares_what_it_trips_and_what_it_costs():
     from cli.explain import TASKS
 
     rules = {"input.malformed", "tools.allowed", "egress.allowlist",
-             "egress.pii_sink", "rows.bounded", "mail.counterparty"}
+             "egress.pii_sink", "rows.bounded", "rows.scope", "mail.counterparty"}
     for name, spec in TASKS.items():
         assert spec["say"].strip(), name
         assert spec["damage"].strip(), name
@@ -582,6 +582,21 @@ def test_every_scenario_declares_what_it_trips_and_what_it_costs():
         "read_document", "query_customers"
     ], "the read-only scenario must actually withhold the write tools"
 
+
+def test_the_precedence_list_covers_every_rule_the_policy_can_return():
+    """A deny reason absent from DENY_PRECEDENCE falls through to
+    pdp.unavailable — fail-closed, but it reports the wrong cause and hides
+    which control fired. Adding a rule means adding it here."""
+    import re
+    from pathlib import Path
+
+    from broker.pdp import DENY_PRECEDENCE
+
+    rego = Path("policies/authz.rego").read_text()
+    emitted = set(re.findall(r'deny_reasons contains "([^"]+)"', rego))
+    assert emitted <= set(DENY_PRECEDENCE), (
+        f"rules the PDP cannot name: {emitted - set(DENY_PRECEDENCE)}"
+    )
 
 def test_comparison_table_marks_only_the_rows_that_differ():
     """The table is the demo's headline, so its arrow must mean something.

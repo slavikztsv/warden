@@ -19,6 +19,10 @@ DENY_PRECEDENCE = (
     "egress.allowlist",
     "egress.pii_sink",
     "rows.bounded",
+    # Below rows.bounded on purpose: a bulk read breaches both, and the volume
+    # breach is the one worth naming. rows.scope is then unambiguous -- it can
+    # only be reported for a read that was within budget and still out of scope.
+    "rows.scope",
     "mail.counterparty",
 )
 

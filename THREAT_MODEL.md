@@ -17,17 +17,26 @@ confused-deputy problem, not a content problem.
 | Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. No HTTP destination is an approved PII sink, so **PII never leaves over HTTP at all** — it leaves only through the mail tool, to counterparties the task declared up front (`mail.counterparty`). |
 | Log tampering to hide an attempt | Hash-chained audit records; any edit breaks the chain. |
 
-- **Reads are bounded by volume, not by subject.** `rows.bounded` caps how
-  *many* customer records a task may read; nothing caps *which*. A
-  support-triage task for `customer:8812` can read customer 9999's record —
-  one row, inside the budget, inside policy, and recorded as a clean allow.
-  `counterparties` constrains `mail.counterparty` only; it has never applied to
-  database reads. Found by building `--task crosscheck`, where a live model
-  asked to "check a few other customers" read three records with zero
-  refusals. The token names its subject and the read path ignores it, which is
-  least privilege on quantity but not on scope. Closing it needs the broker to
-  resolve a query into the subjects it names, and a rule comparing those
-  against `counterparties` — reachable, and not built here.
+- **Reads were bounded by volume, not by subject — now closed by `rows.scope`
+  (R7).** `rows.bounded` caps how *many* customer records a task may read;
+  nothing capped *which*. A support-triage task for `customer:8812` could read
+  customer 9999's record: one row, inside the budget, inside policy, recorded
+  as a clean allow. `counterparties` governed `mail.counterparty` alone and had
+  never applied to database reads.
+
+  Found by building `--task crosscheck`, not by reading the rules — a live
+  model asked to "check a few other customers" read three records with zero
+  refusals. `Backends.describe` now resolves a query into the subjects it
+  names, and R7 denies any that the token did not declare. The same scenario
+  now reads one record and refuses two.
+
+  Two design notes worth stating. A read reaching an unbounded set (`plan=pro`,
+  or no filter) reports the subject `"*"`, which can never appear in a
+  counterparty list, so it is out of scope by construction rather than by a
+  second rule. And R7 applies only when the task declared counterparties: a
+  token naming no subjects has no subject scope to enforce, and `rows.bounded`
+  remains its only read control. That is explicit, and it is a real residual —
+  a purpose minted with an empty `counterparties` list gets volume limits only.
 
 ## Out of scope
 
