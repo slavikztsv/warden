@@ -1,0 +1,12 @@
+# OPTIONAL — only needed for `python -m agent.loop --live`.
+#
+# Deliberately separate from requirements.txt: the broker, the policy layer and
+# all 167 tests run without either of these, and CI never installs them. A
+# model SDK is not a dependency of the enforcement point.
+#
+#   pip install -r requirements-live.txt
+#
+# Provide GEMINI_API_KEY or ANTHROPIC_API_KEY in .env; the runtime picks
+# whichever is present.
+google-genai==2.15.0
+anthropic==0.69.0

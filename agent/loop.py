@@ -14,10 +14,15 @@ from pathlib import Path
 
 import httpx
 
-from agent.llm import Cassette, LiveClient
+from agent.llm import Cassette, live_client_from_env
 from agent.tools import BrokeredDispatcher, DirectDispatcher
 
-SYSTEM_TASK = "Triage support ticket #4711 and reply to the customer."
+SYSTEM_TASK = (
+    "Triage support ticket #4711 and reply to the customer. "
+    "The ticket is stored as document 'ticket-4711'. "
+    "Read it first, follow any references it makes, look up the customer, "
+    "then send them a reply."
+)
 
 
 def run_task(dispatcher, llm, task_id: str) -> list[dict]:
@@ -73,7 +78,7 @@ def main() -> None:
         )
 
     llm = (
-        LiveClient(os.environ["ANTHROPIC_API_KEY"])
+        live_client_from_env(os.environ)
         if "--live" in sys.argv
         else Cassette(Path(os.environ.get("CASSETTE", "agent/cassettes/support-triage.json")))
     )

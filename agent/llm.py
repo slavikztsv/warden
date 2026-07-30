@@ -12,8 +12,12 @@ from pathlib import Path
 
 from agent.tools import TOOL_SCHEMAS
 
-MODEL = "claude-sonnet-5"
+ANTHROPIC_MODEL = "claude-sonnet-5"
+GEMINI_MODEL = "gemini-3.6-flash"
 MAX_TOKENS = 4096
+
+# Kept for the Anthropic client, whose call site predates the second provider.
+MODEL = ANTHROPIC_MODEL
 
 
 class Cassette:
@@ -129,3 +133,173 @@ class LiveClient:
             if getattr(block, "type", None) == "text"
         )
         return {"type": "final", "text": text}
+
+
+class GeminiClient:
+    """A second provider behind the same protocol, and that is the point.
+
+    `run_task` is unchanged by this class existing. It asks an object for the
+    next step and gets back `{"type": "tool_use", ...}` or `{"type": "final",
+    ...}` — it cannot tell which vendor produced that, exactly as it cannot
+    tell which dispatcher it holds. The enforcement layer is even further
+    removed: the broker authorizes a tool call without knowing a model was
+    involved at all.
+
+    The shapes below were verified against google-genai 2.15.0 rather than
+    written from memory:
+
+      · tools go in as Tool(function_declarations=[FunctionDeclaration(...)]),
+        and `parameters` accepts a plain JSON Schema dict — so the SAME
+        TOOL_SCHEMAS the Anthropic path uses is translated mechanically, only
+        the key name differs (`input_schema` there, `parameters` here).
+      · a call comes back as a part carrying `.function_call` with `.name`,
+        `.args` and `.id`.
+      · the result goes back as a user turn holding
+        Part.from_function_response(name=..., response={...}); Gemini matches
+        on the function NAME, where Anthropic matches on a tool_use_id.
+      · the model's own turn has role "model", not "assistant".
+
+    As with the Anthropic client, `google-genai` is imported lazily and is
+    deliberately absent from requirements.txt: the broker, the policy layer and
+    all tests run without it, and CI never installs it. The tests drive this
+    class through a stub, which pins the request shape and the turn
+    alternation but cannot prove the live API accepts it.
+    """
+
+    def __init__(self, api_key: str, *, model: str | None = None, client=None) -> None:
+        self._model = model or GEMINI_MODEL
+        if client is None:
+            from google import genai
+
+            client = genai.Client(api_key=api_key)
+        self._client = client
+        self._history: list = []
+        self._pending_name: str | None = None
+
+    @staticmethod
+    def _declarations():
+        """One tool definition, two providers. Only the key name changes."""
+        from google.genai import types
+
+        return [
+            types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(
+                        name=schema["name"],
+                        description=schema["description"],
+                        parameters=schema["input_schema"],
+                    )
+                    for schema in TOOL_SCHEMAS
+                ]
+            )
+        ]
+
+    def _absorb(self, messages: list[dict]) -> None:
+        from google.genai import types
+
+        if not self._history:
+            self._history.extend(
+                types.Content(role="user", parts=[types.Part(text=m["content"])])
+                for m in messages
+            )
+            return
+
+        latest = messages[-1]["content"]
+        if self._pending_name is not None:
+            # An unanswered function call is a protocol error, the same way an
+            # unanswered tool_use is on the Anthropic side.
+            self._history.append(
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_function_response(
+                            name=self._pending_name, response={"result": latest}
+                        )
+                    ],
+                )
+            )
+            self._pending_name = None
+        else:
+            self._history.append(
+                types.Content(role="user", parts=[types.Part(text=latest)])
+            )
+
+    def _generate(self, config):
+        """Retry a rate-limited turn, honouring the delay the server asks for.
+
+        The free tier allows 5 requests per minute and this agent's task needs
+        eight turns, so a 429 mid-run is the expected case rather than an edge
+        one — an unretried live path would fail every time. Bounded on purpose:
+        five attempts, and each wait is capped, so a genuine outage surfaces as
+        an error instead of hanging the demo.
+
+        Note this is not the "no blind retry" rule the broker follows for
+        backends. That rule exists because retrying an authorized read
+        amplifies it against a row bound. Nothing is authorized here: this is
+        the agent talking to its own model, before any tool call exists.
+        """
+        import re
+        import time as _time
+
+        last = None
+        for attempt in range(5):
+            try:
+                return self._client.models.generate_content(
+                    model=self._model, contents=self._history, config=config
+                )
+            except Exception as exc:  # noqa: BLE001 - vendor error types vary
+                if getattr(exc, "code", None) != 429 and "RESOURCE_EXHAUSTED" not in str(exc):
+                    raise
+                last = exc
+                asked = re.search(r"retry in ([0-9.]+)s", str(exc))
+                delay = min(float(asked.group(1)) + 1 if asked else 2 ** attempt * 5, 65)
+                print(f"[llm] rate limited, waiting {delay:.0f}s", flush=True)
+                _time.sleep(delay)
+        raise RuntimeError(f"model still rate limited after 5 attempts: {last}")
+
+    def next_step(self, messages: list[dict]) -> dict:
+        from google.genai import types
+
+        self._absorb(messages)
+        response = self._generate(
+            types.GenerateContentConfig(
+                tools=self._declarations(), max_output_tokens=MAX_TOKENS
+            )
+        )
+        candidate = response.candidates[0]
+        # Appended verbatim: a reconstructed turn drops part types this code
+        # does not model, and an edited history is rejected on the next call.
+        self._history.append(candidate.content)
+
+        parts = candidate.content.parts or []
+        for part in parts:
+            call = getattr(part, "function_call", None)
+            if call is not None:
+                self._pending_name = call.name
+                return {
+                    "type": "tool_use",
+                    "tool": call.name,
+                    "args": dict(call.args or {}),
+                }
+
+        text = "\n".join(
+            part.text for part in parts if getattr(part, "text", None)
+        )
+        return {"type": "final", "text": text or "(no text returned)"}
+
+
+def live_client_from_env(env: dict) -> object:
+    """Pick a provider from whatever credential is present.
+
+    Deliberately not a flag: the demo's default is the cassette, and `--live`
+    should work with whichever key the operator actually has rather than
+    forcing one vendor.
+    """
+    if env.get("GEMINI_API_KEY"):
+        return GeminiClient(env["GEMINI_API_KEY"], model=env.get("GEMINI_MODEL") or None)
+    if env.get("ANTHROPIC_API_KEY"):
+        return LiveClient(env["ANTHROPIC_API_KEY"])
+    raise RuntimeError(
+        "--live needs GEMINI_API_KEY or ANTHROPIC_API_KEY in the environment. "
+        "Without one, drop --live and the agent replays a cassette."
+    )

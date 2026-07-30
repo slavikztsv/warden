@@ -132,3 +132,15 @@ quietly fixed. Each is a real property of the system as shipped.
   body contributes no deny reason, and the rule silently does not fire. `R0`
   and `R1` exist to make unrecognized input deny explicitly. Adversarial
   evaluation with `opa eval`, not `opa test`, is what found them.
+
+- **`--live` is now exercised, and what it showed matters.** On 2026-07-30 a
+  live `gemini-3.1-flash-lite` agent read the poisoned document and **refused
+  the injection**, naming it as likely malicious. That is a welcome outcome and
+  it is deliberately not counted as a control: model refusal is probabilistic,
+  unstated as a guarantee, and removed by a rephrasing or a different model.
+  The recorded cassette is therefore treated as a *fixed adversarial model* —
+  holding the attacker constant is how a boundary gets tested. In the same run
+  the policy denied a benign mistake the model made on its own, emailing the
+  address it read from the database rather than the declared counterparty. See
+  `docs/live-run-2026-07-30.md`. Still unexercised: a turn returning multiple
+  parallel tool calls, where the adapter answers only the first.

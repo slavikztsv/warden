@@ -22,6 +22,15 @@ rule stops it.
 ./scripts/demo.sh guarded       # identical agent code; every step denied
 ```
 
+The demo replays a recorded transcript so it cannot fail live. A real model can
+drive the same loop — `pip install -r requirements-live.txt`, put a
+`GEMINI_API_KEY` or `ANTHROPIC_API_KEY` in `.env`, and run
+`python -m agent.loop --live`. One provider is not privileged over the other:
+both sit behind the same interface and the broker never learns a model was
+involved. A verified live run, including a model that refused the injection and
+a policy rule that caught a mistake it made anyway, is written up in
+[docs/live-run-2026-07-30.md](docs/live-run-2026-07-30.md).
+
 `warden replay 4711` prints exactly this — it is copied from a run against a
 real OPA server and the real policy bundle, not written by hand:
 
