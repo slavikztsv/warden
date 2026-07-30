@@ -666,7 +666,34 @@ that *did* follow the injection, so the three refusals actually happen. Neither
 run is the honest one on its own: the recording shows the controls firing, the
 live run shows they do not fire spuriously.
 
-**Live models do get refused — just for mistakes rather than attacks.** In the
+**To see enforcement live, change the task rather than the injection.** The
+broker's claim is that it refuses an out-of-scope request without knowing why the
+request was made — so the cleanest way to trigger a refusal is to *ask* for the
+out-of-scope action outright, as the operator:
+
+```bash
+.venv/bin/python -m cli.explain --live --task report   # rows.bounded
+.venv/bin/python -m cli.explain --live --task share    # egress.pii_sink
+.venv/bin/python -m cli.explain --live --task export   # egress.allowlist
+```
+
+The token is identical in every scenario — same purpose, same counterparty, same
+50-row ceiling. Only the instruction changes, and the instruction is not an input
+to any decision: look for the task text in the input document at stage ⑥ and it
+is not there. Authority comes from the token, so asking for more cannot produce
+more. (These require `--live`; the recording ignores the prompt, so replaying it
+under a different instruction would misrepresent the run's own cause.)
+
+`--task report` is the one to show. Asked to compile a plan-distribution report,
+a live model hit `rows.bounded` on the full table, retried with three narrower
+filters, then **decomposed the query into single-row lookups** — the classic
+aggregation attack, arrived at unprompted — and got exactly 50 rows before being
+cut off, because the bound is a per-task budget rather than a per-query limit.
+Sixty audit records, chain intact, and the customer still got their email. Full
+transcripts and the arithmetic in
+[live-enforcement-2026-07-30.md](live-enforcement-2026-07-30.md).
+
+**Live models also get refused for plain mistakes.** In the
 run recorded in [live-run-2026-07-30.md](live-run-2026-07-30.md) the model
 addressed its reply to `person00000@example.invalid`, the address it had just
 read out of the customer database, instead of `customer:8812`, the counterparty

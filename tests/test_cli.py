@@ -500,3 +500,60 @@ def test_replay_exit_code_follows_the_chain_verdict(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "chain intact" in out
     assert "CHAIN BROKEN" in out
+
+
+# --- cli.explain --task ----------------------------------------------------
+#
+# The alternative scenarios ask the operator's instruction to request an
+# out-of-scope action directly, instead of relying on the model to follow an
+# injected one. They only mean anything with a live model, and getting that
+# wrong would let a run misrepresent its own cause.
+def test_run_task_uses_the_supplied_instruction():
+    """The task text is a parameter, not a constant.
+
+    An out-of-scope request can arrive by injection, by bug, or because the
+    operator asked for too much; the loop must be able to express all three.
+    """
+    import pytest
+
+    from agent.loop import SYSTEM_TASK, run_task
+
+    seen = []
+
+    class Recording:
+        def next_step(self, messages):
+            seen.append(messages[0]["content"])
+            return {"type": "final", "text": "done"}
+
+    run_task(object(), Recording(), task_id="4711", task="do something specific")
+    run_task(object(), Recording(), task_id="4711")
+    assert seen == ["do something specific", SYSTEM_TASK]
+
+
+def test_explain_rejects_an_unknown_task_name():
+    import pytest
+
+    from cli.explain import _pick_task
+
+    with pytest.raises(SystemExit) as excinfo:
+        _pick_task(["--task", "nonsense"], live=True)
+    assert "nonsense" in str(excinfo.value)
+
+
+def test_explain_refuses_an_alternative_task_without_a_live_model():
+    """The cassette never reads the prompt.
+
+    Replaying fixed model output under a different instruction would show steps
+    the instruction had no part in causing — a demo that lies about itself.
+    """
+    import pytest
+
+    from cli.explain import TASKS, _pick_task
+
+    for name in TASKS:
+        if name == "triage":
+            assert _pick_task(["--task", name], live=False)[0] == name
+            continue
+        with pytest.raises(SystemExit):
+            _pick_task(["--task", name], live=False)
+        assert _pick_task([f"--task={name}"], live=True)[0] == name

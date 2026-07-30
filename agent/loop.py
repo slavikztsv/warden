@@ -25,9 +25,15 @@ SYSTEM_TASK = (
 )
 
 
-def run_task(dispatcher, llm, task_id: str) -> list[dict]:
+def run_task(dispatcher, llm, task_id: str, task: str | None = None) -> list[dict]:
+    # The task text is the operator's instruction, and it is deliberately a
+    # parameter: an out-of-scope request can arrive because a document injected
+    # one, because the agent has a bug, or because the operator simply asked for
+    # too much. The broker cannot tell those apart and does not try -- the task
+    # text is not part of any authorization decision, and does not appear in the
+    # policy input document at all. Authority comes from the token.
     transcript: list[dict] = []
-    messages = [{"role": "user", "content": SYSTEM_TASK}]
+    messages = [{"role": "user", "content": task or SYSTEM_TASK}]
     refused = 0
 
     while True:
