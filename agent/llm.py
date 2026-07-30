@@ -337,11 +337,13 @@ class GeminiClient:
         )
 
         # A turn carrying neither a call nor text is not the agent finishing —
-        # it is an empty turn, seen intermittently in practice. Retry once
-        # rather than reporting a completion the model never signalled, and do
-        # NOT append the empty turn: poisoning the history with it changes what
-        # the model is answering on the retry.
-        for _ in range(2):
+        # it is an empty turn, seen intermittently in practice. Retry rather
+        # than reporting a completion the model never signalled, and do NOT
+        # append the empty turn: poisoning the history with it changes what the
+        # model is answering on the retry, and a Content with no parts is
+        # rejected outright on the next call.
+        attempts = 3
+        for attempt in range(1, attempts + 1):
             response = self._generate(config)
             candidate = response.candidates[0]
             parts = candidate.content.parts or []
@@ -349,11 +351,33 @@ class GeminiClient:
                 getattr(part, "function_call", None) or getattr(part, "text", None)
                 for part in parts
             ):
+                # Appended verbatim: a reconstructed turn drops part types this
+                # code does not model, and an edited history is rejected on the
+                # next call.
+                self._history.append(candidate.content)
                 break
-            print("[llm] empty turn, retrying once", flush=True)
-        # Appended verbatim: a reconstructed turn drops part types this code
-        # does not model, and an edited history is rejected on the next call.
-        self._history.append(candidate.content)
+            # Only announce a retry when one actually follows. Printing this on
+            # the final attempt reads as "it retried and I am still going",
+            # which is the opposite of what happened.
+            if attempt < attempts:
+                print(f"[llm] empty turn {attempt}/{attempts}, retrying", flush=True)
+        else:
+            # No call and no text is NOT the agent finishing — it is a thinking
+            # or truncated turn, and silently reporting it as `final` hides the
+            # cause. finish_reason distinguishes them: MAX_TOKENS means the
+            # output budget was consumed, STOP means the model ended its turn
+            # having emitted only thought parts, which are not returned.
+            reason = getattr(candidate, "finish_reason", None)
+            return {
+                "type": "final",
+                "text": (
+                    f"(no text and no tool call after {attempts} attempts; "
+                    f"finish_reason={reason}. With STOP this is a thought-only "
+                    f"turn — the model reasoned and emitted nothing. {self._model} "
+                    "may be too small for this task; GEMINI_MODEL="
+                    f"{GEMINI_MODEL} is the tested default.)"
+                ),
+            }
 
         for part in parts:
             call = getattr(part, "function_call", None)
@@ -371,14 +395,11 @@ class GeminiClient:
         if text:
             return {"type": "final", "text": text}
 
-        # No call and no text is NOT the agent finishing — it is a truncated or
-        # empty turn, and silently reporting it as `final` hides the cause. The
-        # usual culprit is the output budget being consumed by thinking.
-        reason = getattr(candidate, "finish_reason", None)
-        return {
-            "type": "final",
-            "text": f"(model returned no text and no tool call; finish_reason={reason})",
-        }
+        # Unreachable: the retry loop only breaks once some part carries a call
+        # or text, so one of the two returns above has fired. Kept as a return
+        # rather than a raise because falling off the end would hand the loop a
+        # None to subscript, and a demo should degrade to a message.
+        return {"type": "final", "text": "(unreachable: turn had neither call nor text)"}
 
 
 def live_client_from_env(env: dict) -> object:

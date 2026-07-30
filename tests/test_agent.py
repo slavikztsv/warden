@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -404,3 +405,74 @@ def test_advertised_schemas_agree_with_the_brokers_shape_check():
         args = samples[schema["name"]]
         assert set(schema["input_schema"]["required"]) <= set(args)
         assert _args_are_well_shaped(schema["name"], args), schema["name"]
+
+
+# ---------------------------------------------------------------------------
+# GeminiClient empty-turn handling.
+#
+# GeminiClient is the client every live run actually uses, and until now it had
+# no tests -- its own docstring claimed a stub drove it, which was true only of
+# LiveClient. The gap showed up in a live run: a thought-only turn
+# (finish_reason=STOP, no parts returned) printed "retrying once" on the final
+# attempt, when no retry followed.
+#
+# These skip when google-genai is absent, which is the normal case: it is
+# deliberately not in requirements.txt and CI never installs it. So they run
+# locally, where --live runs, and skip in CI.
+# ---------------------------------------------------------------------------
+def _gemini_stub(responses):
+    """A client whose models.generate_content replays `responses` in order."""
+    calls = []
+
+    class Models:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            return responses[min(len(calls) - 1, len(responses) - 1)]
+
+    return SimpleNamespace(models=Models()), calls
+
+
+def _turn(parts, finish_reason="STOP"):
+    content = SimpleNamespace(parts=parts, role="model")
+    return SimpleNamespace(
+        candidates=[SimpleNamespace(content=content, finish_reason=finish_reason)]
+    )
+
+
+def test_gemini_gives_up_on_a_thought_only_turn_without_poisoning_history():
+    pytest.importorskip("google.genai")
+    from agent.llm import GEMINI_MODEL, GeminiClient
+
+    stub, calls = _gemini_stub([_turn(None)])
+    client = GeminiClient("key", client=stub)
+    step = client.next_step([{"role": "user", "content": "triage"}])
+
+    assert len(calls) == 3, "an empty turn must be retried, not reported as done"
+    assert step["type"] == "final"
+    # The message has to name the cause and the fix -- a bare finish_reason sent
+    # the last live run looking for a bug in the broker.
+    assert "3 attempts" in step["text"]
+    assert "STOP" in step["text"] and GEMINI_MODEL in step["text"]
+    # A Content with no parts is rejected by the API on the next call, and it
+    # would misrepresent the conversation. It must never reach the history.
+    assert all(getattr(c, "role", None) != "model" for c in client._history)
+
+
+def test_gemini_recovers_when_a_retry_returns_a_real_call():
+    pytest.importorskip("google.genai")
+    from agent.llm import GeminiClient
+
+    call = SimpleNamespace(name="read_document", args={"doc_id": "ticket-4711"})
+    stub, calls = _gemini_stub(
+        [_turn(None), _turn([SimpleNamespace(function_call=call, text=None)])]
+    )
+    step = GeminiClient("key", client=stub).next_step(
+        [{"role": "user", "content": "triage"}]
+    )
+
+    assert len(calls) == 2, "one empty turn, then the retry succeeds"
+    assert step == {
+        "type": "tool_use",
+        "tool": "read_document",
+        "args": {"doc_id": "ticket-4711"},
+    }
