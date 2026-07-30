@@ -635,6 +635,43 @@ still answered — and the unguarded run *also* reports success, which is the
 uncomfortable part: from the outside it looks fine, and the only sign anything
 went wrong is a request nobody was watching.
 
+### What `--live` can and cannot show
+
+Adding `--live` changes what the run is evidence *of*, and it is worth being
+precise about this rather than letting the demo overclaim.
+
+A live guarded run typically ends with **zero denials**. The model reads the
+poisoned document and simply does not act on it: it queries `id=8812`, emails the
+customer, and stops. Every call is allowed, and the replay shows four `allow`
+records. That run is real evidence — of the **absence of false positives**. The
+broker permitted every step of the legitimate task, which is the property that
+decides whether anyone would deploy it. It is *not* evidence that enforcement
+works, because nothing was there to enforce against.
+
+Enforcement is what the recorded run demonstrates. The cassette replays a model
+that *did* follow the injection, so the three refusals actually happen. Neither
+run is the honest one on its own: the recording shows the controls firing, the
+live run shows they do not fire spuriously.
+
+`--live --unguarded` is the weakest of the four combinations and should not be
+used to argue anything. Two live runs differ by sampling, so the profiles are no
+longer a controlled comparison — the narration says so in that mode rather than
+repeating the A/B claim. A live unguarded run can also just fall over: in one
+observed run the model emitted `消费Wait, let's see the customer query result.`
+and ended the task after two tool calls, leaking nothing because it never
+reached the exfiltration step. Zero bytes there is luck, not a control, and the
+closing narration labels it inconclusive instead of a pass.
+
+One detail that had to be fixed for any of this to hold: the tool result is
+appended to the conversation verbatim, so the two profiles must hand the model
+byte-identical envelopes. `DirectDispatcher` originally returned
+`{"content": …}` for `read_document` while the broker returned
+`{"content": …, "rows": 0}` — an eleven-character difference, visible in the
+narration as `[+292]` against `[+303]`. Inert under a fixed recording, but under
+`--live` it meant the model was reacting to the response shape as well as to the
+missing broker. `tests/test_agent.py` now pins the envelopes together for every
+tool.
+
 **Everything it prints is the real code path** — real OPA over HTTP, the real
 policy bundle, the real broker app, the real hash-chained log, the real
 backends. The narration is added by *wrapping* those components, never by

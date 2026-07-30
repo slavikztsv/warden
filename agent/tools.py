@@ -133,19 +133,28 @@ class DirectDispatcher:
         self._client = client
 
     def call(self, tool: str, args: dict) -> dict:
+        # Every branch returns the same envelope the broker returns
+        # ({"content", "rows"}, see broker/app.py). The tool RESULT is what
+        # gets appended to the conversation, so an envelope that differed by
+        # even one field would feed the two profiles different text and make a
+        # live A/B uncontrolled — the model would be reacting to the shape of
+        # the response as well as to the removal of the broker.
         if tool == "read_document":
             return {"content": self._client.get(
-                f"{self._docstore_url}/docs/{args['doc_id']}").text}
+                f"{self._docstore_url}/docs/{args['doc_id']}").text, "rows": 0}
         if tool == "http_fetch":
             # Mirrors Backends.execute: a body makes it a POST. This is the
             # path that actually exfiltrates in the unprotected profile.
             body = args.get("body")
             if body is None:
-                return {"content": self._client.get(args["url"]).text}
-            return {"content": self._client.post(args["url"], content=body).text}
+                return {"content": self._client.get(args["url"]).text, "rows": 0}
+            return {
+                "content": self._client.post(args["url"], content=body).text,
+                "rows": 0,
+            }
         if tool == "send_email":
             self._client.post(f"{self._mailer_url}/send", json=args)
-            return {"content": "sent"}
+            return {"content": "sent", "rows": 0}
         if tool == "query_customers":
             # Mirrors broker/backends.py::_where exactly. The two dispatchers
             # are different code by design, but they must read the SAME rows
