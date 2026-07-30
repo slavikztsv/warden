@@ -25,6 +25,51 @@ GEMINI_MAX_TOKENS = 16384
 MODEL = ANTHROPIC_MODEL
 
 
+class TracingLLM:
+    """Wraps any LLM client and prints exactly what goes in and what comes back.
+
+    The most common question about an agent is "what did you actually send it?",
+    and answering that should not require a debugger. This wraps rather than
+    instruments, so all three clients stay identical and the trace has the same
+    shape whichever provider is in use — including the cassette, where it shows
+    the conversation that *would* have been sent alongside the recorded reply.
+
+    Enabled with WARDEN_TRACE=1. Off by default: the trace prints the full
+    conversation, which includes whatever the agent has read.
+    """
+
+    def __init__(self, inner, limit: int = 900) -> None:
+        self._inner = inner
+        self._limit = limit
+        self._turn = 0
+
+    def _clip(self, text: str) -> str:
+        text = str(text)
+        if len(text) <= self._limit:
+            return text
+        return text[: self._limit] + f"\n      … [{len(text) - self._limit} more chars]"
+
+    def next_step(self, messages: list[dict]) -> dict:
+        self._turn += 1
+        name = type(self._inner).__name__
+        print(f"\n{'=' * 72}\n  TURN {self._turn}  —  asking {name}\n{'=' * 72}", flush=True)
+        for i, message in enumerate(messages, 1):
+            print(f"  [{i}] role={message.get('role')}", flush=True)
+            print("      " + self._clip(message.get("content", "")).replace("\n", "\n      "), flush=True)
+
+        step = self._inner.next_step(messages)
+
+        print(f"  {'-' * 68}\n  MODEL REPLIED: type={step.get('type')}", flush=True)
+        if step.get("type") == "tool_use":
+            import json as _json
+
+            print(f"      tool: {step['tool']}", flush=True)
+            print("      args: " + self._clip(_json.dumps(step["args"])), flush=True)
+        else:
+            print("      text: " + self._clip(step.get("text", "")).replace("\n", "\n      "), flush=True)
+        return step
+
+
 class Cassette:
     def __init__(self, path: Path) -> None:
         self._steps = json.loads(Path(path).read_text())

@@ -73,6 +73,19 @@ token to present to the proxy, so the attempt is refused before any policy
 question is asked. That is the stronger record — the bypass carried no
 authority at all.
 
+## Drive it yourself
+
+[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) starts each component by hand and
+pokes it directly — the rules with no code running, the audit log in a Python
+shell, then the broker driven entirely with `curl`. By the end of Part 4 you
+have reproduced the whole security story with no AI involved at all, which is
+the point: the controls act on tool calls, not on model behaviour.
+
+It also answers the two questions the demo does not: **who starts a task** (and
+how that wires into a real helpdesk or queue), and **what the model is actually
+asked** — `WARDEN_TRACE=1` prints the full conversation each turn, so you can
+watch the injected instruction enter the context.
+
 ## How containment works
 
 `agent-net` is declared `internal: true`, so Docker attaches no gateway. The
