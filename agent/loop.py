@@ -25,7 +25,9 @@ SYSTEM_TASK = (
 )
 
 
-def run_task(dispatcher, llm, task_id: str, task: str | None = None) -> list[dict]:
+def run_task(
+    dispatcher, llm, task_id: str, task: str | None = None, max_steps: int | None = None
+) -> list[dict]:
     # The task text is the operator's instruction, and it is deliberately a
     # parameter: an out-of-scope request can arrive because a document injected
     # one, because the agent has a bug, or because the operator simply asked for
@@ -37,6 +39,16 @@ def run_task(dispatcher, llm, task_id: str, task: str | None = None) -> list[dic
     refused = 0
 
     while True:
+        # An agent loop with no ceiling runs until the model decides to stop.
+        # The token expiring after five minutes is the only bound the system
+        # otherwise has, and that is a bound on authority, not on effort. Off by
+        # default so the demo is unchanged; the model sweep sets it, because a
+        # model it has never run before may never choose to finish.
+        if max_steps is not None and len(transcript) >= max_steps:
+            step = {"type": "final", "text": f"(stopped after {max_steps} steps)"}
+            transcript.append(step)
+            print(f"[agent] {step['text']}")
+            return transcript
         step = llm.next_step(messages)
         transcript.append(step)
         if step["type"] == "final":

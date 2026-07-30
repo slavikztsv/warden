@@ -480,9 +480,17 @@ class OpenRouterClient:
         model: str | None = None,
         client=None,
         url: str | None = None,
+        retries: int = 5,
+        max_delay: float = 65.0,
     ) -> None:
         import httpx
 
+        # A sweep across many models wants a short retry budget: a 429 from a
+        # busy free-tier model is a fact about that model's availability, not a
+        # transient blip worth five escalating waits. A single live run wants
+        # the opposite, so it stays the default.
+        self._retries = max(1, retries)
+        self._max_delay = max_delay
         self._key = api_key
         self._model = model or OPENROUTER_MODEL
         self._url = url or self.URL
@@ -543,7 +551,7 @@ class OpenRouterClient:
         import httpx
 
         last = None
-        for attempt in range(5):
+        for attempt in range(self._retries):
             response = self._client.post(
                 self._url,
                 headers={
@@ -587,16 +595,20 @@ class OpenRouterClient:
 
             last = f"{response.status_code}: {text}"
             asked = response.headers.get("retry-after")
+            if attempt == self._retries - 1:
+                break
             if asked and re.fullmatch(r"\d+", asked.strip()):
-                delay = min(float(asked) + 1, 65)
+                delay = min(float(asked) + 1, self._max_delay)
             else:
-                delay = min(2 ** attempt * 5, 65)
+                delay = min(2 ** attempt * 5, self._max_delay)
             print(
                 f"[llm] openrouter {response.status_code}, waiting {delay:.0f}s",
                 flush=True,
             )
             _time.sleep(delay)
-        raise RuntimeError(f"openrouter still failing after 5 attempts: {last}")
+        raise RuntimeError(
+            f"openrouter still failing after {self._retries} attempts: {last}"
+        )
 
     def _serve_queued(self) -> dict:
         call = self._pending_calls.pop(0)
