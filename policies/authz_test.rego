@@ -392,8 +392,18 @@ test_shipped_data_denies_pii_over_http_to_the_mail_host if {
 # tainted task reaching ANY allowlisted host over HTTP is denied under
 # egress.pii_sink. Adding a host to egress_allow can never again open an
 # HTTP exfil path for PII without this test failing.
-test_shipped_data_denies_pii_to_every_allowlisted_host if {
-	every host in data.purposes["support-triage"].egress_allow {
+# Every allowlisted host refuses PII EXCEPT the model endpoint, which is an
+# explicit, tested concession (see the data-boundary test below). Written as a
+# sweep over the real bundle rather than one hand-picked name so a host added
+# to egress_allow cannot quietly become a PII sink too.
+non_pii_hosts := {host |
+	some host in data.purposes["support-triage"].egress_allow
+	not host in data.purposes["support-triage"].pii_approved_sinks
+}
+
+test_shipped_data_denies_pii_to_every_allowlisted_host_but_the_model if {
+	count(non_pii_hosts) > 0
+	every host in non_pii_hosts {
 		"egress.pii_sink" in authz.deny_reasons with input as {
 			"principal": shipped_principal,
 			"action": {"type": "tool_call", "tool": "http_fetch"},
@@ -403,8 +413,13 @@ test_shipped_data_denies_pii_to_every_allowlisted_host if {
 	}
 }
 
-test_shipped_data_approves_no_http_sink_for_pii if {
-	count(data.purposes["support-triage"].pii_approved_sinks) == 0
+# Exactly one PII-approved sink, and it is the model endpoint. This is the
+# smallest possible concession: a remote-model agent cannot read a customer
+# record and then reason about it without that record entering its conversation
+# history, so the provider is inside the data boundary or the agent is useless
+# after its first PII read. Pinned at one so the list cannot grow unnoticed.
+test_shipped_data_approves_exactly_one_http_sink_for_pii if {
+	data.purposes["support-triage"].pii_approved_sinks == ["generativelanguage.googleapis.com"]
 }
 
 # Rule 4 guards `target.kind == "http"`, so removing every approved HTTP sink
@@ -475,5 +490,34 @@ test_shipped_data_denies_an_undeclared_model_endpoint if {
 		"action": {"type": "egress"},
 		"target": {"kind": "http", "host": "api.openai.com", "port": 443, "path": "", "estimated_rows": 0, "recipients": []},
 		"task_state": clean_state,
+	}
+}
+
+# The model endpoint is a PII-approved sink, and that is a DECISION rather than
+# an oversight. A remote-model agent cannot read a customer record and then
+# think about it without the record entering its conversation history, so the
+# provider is either inside the data boundary or the agent stops working the
+# moment it touches PII. Discovered by running a live model under the guarded
+# profile: the taint rule denied the agent's own next model call.
+#
+# This test exists so the entry cannot be removed accidentally, and so anyone
+# reading the bundle sees that it was chosen.
+test_shipped_data_treats_the_model_endpoint_as_inside_the_data_boundary if {
+	authz.allow with input as {
+		"principal": shipped_principal,
+		"action": {"type": "egress"},
+		"target": {"kind": "http", "host": "generativelanguage.googleapis.com", "port": 443, "path": "", "estimated_rows": 0, "recipients": []},
+		"task_state": tainted_state,
+	}
+}
+
+# The concession is scoped to the model endpoint alone. Every other allowlisted
+# host still refuses PII — the demo's fallback beat depends on it.
+test_shipped_data_does_not_extend_the_concession_to_other_hosts if {
+	"egress.pii_sink" in authz.deny_reasons with input as {
+		"principal": shipped_principal,
+		"action": {"type": "tool_call", "tool": "http_fetch"},
+		"target": {"kind": "http", "host": "docstore.internal", "port": 80, "path": "/feedback", "estimated_rows": 0, "recipients": []},
+		"task_state": tainted_state,
 	}
 }

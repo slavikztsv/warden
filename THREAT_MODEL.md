@@ -145,6 +145,17 @@ quietly fixed. Each is a real property of the system as shipped.
   `docs/live-run-2026-07-30.md`. Still unexercised: a turn returning multiple
   parallel tool calls, where the adapter answers only the first.
 
+- **The model provider is treated as inside the data boundary, deliberately.**
+  `generativelanguage.googleapis.com` is the single entry in
+  `pii_approved_sinks`. A remote-model agent cannot read a customer record and
+  then reason about it without that record entering its context, so the
+  provider is a processor or the agent is useless after its first PII read. This
+  was not designed in — the taint rule denied the agent's own model call during
+  a live guarded run, forcing the choice. The alternatives are in-boundary
+  inference (the sovereign-cloud answer) or redacting before the tool result
+  returns. `authz_test.rego` pins the list at exactly one host so it cannot
+  grow unnoticed, and asserts every other allowlisted host still refuses PII.
+
 - **The model endpoint is an allowlisted destination, not a privileged one.**
   `generativelanguage.googleapis.com` is in `egress_allow` for the
   `support-triage` purpose so a live agent can reach its provider through the
