@@ -559,6 +559,30 @@ def test_explain_refuses_an_alternative_task_without_a_live_model():
         assert _pick_task([f"--task={name}"], live=True)[0] == name
 
 
+def test_every_scenario_declares_what_it_trips_and_what_it_costs():
+    """The scenario table is demo copy as much as configuration.
+
+    A scenario with no stated damage is one nobody can present, and a scenario
+    whose `trips` does not name a real rule is a claim the run cannot back up.
+    """
+    from cli.explain import TASKS
+
+    rules = {"input.malformed", "tools.allowed", "egress.allowlist",
+             "egress.pii_sink", "rows.bounded", "mail.counterparty"}
+    for name, spec in TASKS.items():
+        assert spec["say"].strip(), name
+        assert spec["damage"].strip(), name
+        named = [r for r in rules if r in spec["trips"]]
+        if "NOTHING" in spec["trips"]:
+            # A scenario that trips nothing is a documented gap, not an oversight.
+            assert "THREAT_MODEL" in spec["trips"], name
+        else:
+            assert named or name == "triage", f"{name} names no rule"
+    assert TASKS["readonly"]["grant"]["allowed_tools"] == [
+        "read_document", "query_customers"
+    ], "the read-only scenario must actually withhold the write tools"
+
+
 def test_comparison_table_marks_only_the_rows_that_differ():
     """The table is the demo's headline, so its arrow must mean something.
 

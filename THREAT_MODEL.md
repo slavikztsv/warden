@@ -17,6 +17,18 @@ confused-deputy problem, not a content problem.
 | Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. No HTTP destination is an approved PII sink, so **PII never leaves over HTTP at all** — it leaves only through the mail tool, to counterparties the task declared up front (`mail.counterparty`). |
 | Log tampering to hide an attempt | Hash-chained audit records; any edit breaks the chain. |
 
+- **Reads are bounded by volume, not by subject.** `rows.bounded` caps how
+  *many* customer records a task may read; nothing caps *which*. A
+  support-triage task for `customer:8812` can read customer 9999's record —
+  one row, inside the budget, inside policy, and recorded as a clean allow.
+  `counterparties` constrains `mail.counterparty` only; it has never applied to
+  database reads. Found by building `--task crosscheck`, where a live model
+  asked to "check a few other customers" read three records with zero
+  refusals. The token names its subject and the read path ignores it, which is
+  least privilege on quantity but not on scope. Closing it needs the broker to
+  resolve a query into the subjects it names, and a rule comparing those
+  against `counterparties` — reachable, and not built here.
+
 ## Out of scope
 
 - **Malicious runtime code / supply chain.** The runtime image is trusted. A
