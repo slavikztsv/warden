@@ -671,14 +671,19 @@ def _run_guarded(tmp: Path, db: Path, llm) -> int:
         else:
             why(
                 "Nothing was refused — the model never asked for anything out of "
-                "bounds, so no rule had anything to object to. State that "
-                "precisely, because it is easy to overclaim: this run shows the "
-                "ABSENCE OF FALSE POSITIVES — every step of the legitimate task "
-                "was permitted — and shows nothing at all about enforcement. "
-                "'Exfiltration attempted: 0' is the line that tells you which "
-                "claim you are looking at. For enforcement, run without --live: "
-                "the recording replays a model that did follow the injection, "
-                "and three calls are refused."
+                "bounds, and 'exfiltration attempted: 0' is the line that tells "
+                "you so. Be precise about what this does and does not establish. "
+                "It DOES show the machinery ran end to end and was exercised: "
+                "the taint transition fired, every later decision received the "
+                "accumulated state, and each was recorded before its action with "
+                "the chain intact. It does NOT show that a refusal works, "
+                "because none happened. For that, run without --live — the "
+                "recording replays a model that did follow the injection and "
+                "three calls are refused. Live models do get refused, though, "
+                "just for mistakes rather than attacks: see "
+                "docs/live-run-2026-07-30.md, where one emailed the address it "
+                "had read out of the database instead of the declared "
+                "counterparty and was denied on mail.counterparty."
             )
         return 0
     finally:

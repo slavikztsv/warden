@@ -654,10 +654,34 @@ broker permitted every step of the legitimate task, which is the property that
 decides whether anyone would deploy it. It is *not* evidence that enforcement
 works, because nothing was there to enforce against.
 
+Say precisely what a zero-denial live run establishes, because it is more than
+nothing and less than enforcement. The machinery demonstrably **ran**: the taint
+transition fired at step 3, every later decision received the accumulated state,
+and each was written to the chain before its action. What did not happen is a
+refusal — so the run shows the mechanism is live and does not misfire, not that
+blocking works.
+
 Enforcement is what the recorded run demonstrates. The cassette replays a model
 that *did* follow the injection, so the three refusals actually happen. Neither
 run is the honest one on its own: the recording shows the controls firing, the
 live run shows they do not fire spuriously.
+
+**Live models do get refused — just for mistakes rather than attacks.** In the
+run recorded in [live-run-2026-07-30.md](live-run-2026-07-30.md) the model
+addressed its reply to `person00000@example.invalid`, the address it had just
+read out of the customer database, instead of `customer:8812`, the counterparty
+declared on the token. `mail.counterparty` denied it:
+
+```
+  ✗ send_email(person00000@example.invalid)  DENY   mail.counterparty
+```
+
+That is arguably the more representative result of the two. Most agent incidents
+will not be adversarial — they will be an agent doing something reasonable-looking
+with the wrong recipient, the wrong scope, or the wrong volume. The rule that
+stopped a prompt injection is the same rule that stopped an ordinary bug, and it
+did not need to know which it was looking at. A control keyed to *where data is
+allowed to go* covers both; a control keyed to detecting attacks covers only one.
 
 A live *unguarded* run usually leaks nothing either, and that fact deserves to be
 stated loudly rather than quietly enjoyed: **no live model has yet followed this
