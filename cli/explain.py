@@ -872,10 +872,15 @@ def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> 
     made_g = guarded.get("tool calls made", 0)
     if made_u != made_g:
         if made_g > made_u:
+            # Deliberately does NOT name the workaround. Which one a model
+            # reaches for varies: gemini-3.6 switched to one-row lookups,
+            # qwen3.7 simply retried the same bulk filters. Asserting either
+            # here would be describing a run this is not.
             behaviour = (
                 f"  The broker side made MORE calls ({made_g} against {made_u}). That is what a\n"
-                "  refusal costs when the agent is persistent: told no, it tries another\n"
-                "  route — here, abandoning bulk reads for one-row lookups.\n"
+                "  refusal costs when the agent is persistent: told no, it tries again —\n"
+                "  retrying, narrowing, or changing tactic. Read the replay above to see\n"
+                "  which of those this model did.\n"
             )
         else:
             behaviour = (
