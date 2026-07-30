@@ -152,6 +152,31 @@ how that wires into a real helpdesk or queue), and **what the model is actually
 asked** — `WARDEN_TRACE=1` prints the full conversation each turn, so you can
 watch the injected instruction enter the context.
 
+## Evidence
+
+Every run writes itself to `runs/` (gitignored):
+
+```
+runs/2026-07-30T19-12-37Z-explain-compare-triage-recorded.log    what you saw
+runs/2026-07-30T19-12-37Z-explain-compare-triage-recorded.json   what produced it
+runs/index.jsonl                                                 one line per run
+```
+
+The manifest names the model, the policy bundle digest, the git commit, the
+arguments, the measured results, and the SHA-256 of the log beside it — because
+a saved printout on its own does not say which policy produced it or whether it
+is still the file that was written.
+
+The index is hash-chained exactly like the audit log, so a run cannot be quietly
+edited out of the history:
+
+```bash
+warden verify-runs      # run index intact: 3 runs
+```
+
+Tamper-evident, not tamper-proof, for the same reason as the audit log: it
+detects an edit, it does not prevent one. `--no-log` skips it.
+
 ## How containment works
 
 `agent-net` is declared `internal: true`, so Docker attaches no gateway. The

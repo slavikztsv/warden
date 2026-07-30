@@ -53,6 +53,7 @@ from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.policy_digest import policy_bundle_digest
 from broker.taint import TaintTracker
+from cli.runlog import RunLog
 from cli.warden import render_replay
 from mocks import docstore, mailer, sinkhole
 from mocks.seed_db import seed_customers
@@ -671,6 +672,14 @@ WHICH TASK           (--task needs --live; the recording ignores the prompt)
 OUTPUT
   --pause       wait for Enter between steps
   --quiet-why   drop the explanations, keep the data
+  --no-log      skip writing runs/ (every run is logged by default)
+
+EVIDENCE
+  Every run writes runs/<stamp>-<label>.log (what you saw) and .json (what
+  produced it: model, policy digest, git commit, sha256 of the log). The
+  index is hash-chained like the audit log — `warden verify-runs` checks it.
+  runs/ is gitignored: local evidence of local runs, and the logs contain the
+  full narration, which includes whatever the agent read.
 
 THE TWO COMMANDS WORTH MEMORISING
   python -m cli.explain --compare --quiet-why
@@ -1097,11 +1106,28 @@ def _fresh_llm(live: bool, task: tuple[str, dict] | None = None):
 
 
 def main(argv: list[str] | None = None) -> int:
-    global SHOW_WHY, PAUSE
     argv = sys.argv[1:] if argv is None else argv
     if "--help" in argv or "-h" in argv:
         print(USAGE)
         return 0
+    if "--no-log" in argv:
+        return _main(argv)
+    label = "-".join(
+        part for part in (
+            "matrix" if "--matrix" in argv else
+            "compare" if "--compare" in argv else
+            "unguarded" if "--unguarded" in argv else "guarded",
+            _pick_task(argv, "--live" in argv)[0],
+            "live" if "--live" in argv else "recorded",
+        )
+    )
+    with RunLog("explain", label) as run:
+        code = _main(argv, run)
+    return code
+
+
+def _main(argv: list[str], run=None) -> int:
+    global SHOW_WHY, PAUSE
     PAUSE = "--pause" in argv
     SHOW_WHY = "--quiet-why" not in argv
 
@@ -1207,6 +1233,9 @@ def main(argv: list[str] | None = None) -> int:
                 "note": spec["damage"],
             })
         print(render_matrix(rows, live))
+        if run is not None:
+            run.results = {r["scenario"]: r for r in rows}
+            run.model = _model_name(_fresh_llm(live, ("triage", TASKS["triage"])))
         return 0
 
     # The unguarded profile starts no OPA and builds no broker. Not to save
@@ -1217,6 +1246,9 @@ def main(argv: list[str] | None = None) -> int:
         unguarded = _run_unguarded(db, _fresh_llm(live, task), live, task)
         reset()
         guarded = _run_guarded(tmp, db, _fresh_llm(live, task), task)
+        if run is not None:
+            run.results = {"unguarded": unguarded, "guarded": guarded}
+            run.model = _model_name(_fresh_llm(live, task))
         print(render_comparison(unguarded, guarded, live, task[0]))
         if live:
             print(
@@ -1227,10 +1259,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     reset()
+    llm = _fresh_llm(live, task)
+    if run is not None:
+        run.model = _model_name(llm)
     if "--unguarded" in argv:
-        _run_unguarded(db, _fresh_llm(live, task), live, task)
+        stats = _run_unguarded(db, llm, live, task)
     else:
-        _run_guarded(tmp, db, _fresh_llm(live, task), task)
+        stats = _run_guarded(tmp, db, llm, task)
+    if run is not None:
+        run.results = stats
     return 0
 
 

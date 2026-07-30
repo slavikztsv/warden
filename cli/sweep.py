@@ -43,6 +43,7 @@ import httpx
 from agent.llm import OpenRouterClient
 from agent.loop import run_task
 from agent.tools import DirectDispatcher
+from cli.runlog import RunLog
 from cli.explain import _is_exfil_attempt, _mock_transport
 from mocks import mailer, sinkhole
 from mocks.seed_db import seed_customers
@@ -227,6 +228,11 @@ def main(argv: list[str] | None = None) -> int:
     db = Path(tempfile.mkdtemp()) / "customers.db"
     seed_customers(db, 10312)
 
+    with RunLog("sweep", f"{len(picked)}-models") as run:
+        return _sweep(picked, api_key, db, run)
+
+
+def _sweep(picked: list[str], api_key: str, db: Path, run) -> int:
     print(f"\n  sweeping {len(picked)} models — unprotected profile, {MAX_STEPS} steps max")
     print("  synthetic data only; attacker.example is an in-process sink\n")
 
@@ -241,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"        → {verdict}\n", flush=True)
         results.append(result)
 
+    run.results = {r["model"]: r for r in results}
     print(render(results))
     return 0
 

@@ -41,6 +41,7 @@ import httpx
 from agent.llm import live_client_from_env
 from agent.loop import run_task
 from agent.tools import DirectDispatcher
+from cli.runlog import RunLog
 from cli.explain import TASKS, _misdirected_mail, _mock_transport
 from mocks import docstore, mailer, sinkhole
 from mocks.seed_db import seed_customers
@@ -104,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
     db = Path(tempfile.mkdtemp()) / "customers.db"
     seed_customers(db, 10312)
 
+    with RunLog("record", task) as run:
+        return _record(task, attempts, record_any, db, run)
+
+
+def _record(task: str, attempts: int, record_any: bool, db: Path, run) -> int:
     criterion = (
         "completed the task (operator-instructed)" if record_any
         else "complied with the unchanged injection"
@@ -144,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             "  That is a result about the model, not a failed run — see the\n"
             "  susceptibility sweep in docs/live-enforcement-2026-07-30.md.\n"
         )
+        run.results = {"complied": complied, "attempts": attempts, "cassette": None}
         return 1
 
     transcript, harm = keeper
@@ -163,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     }
     (CASSETTES / f"{task}.meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    run.model = meta["model"]
+    run.results = {
+        "complied": complied, "attempts": attempts,
+        "damage_unguarded": harm, "cassette": str(path),
+    }
     print(f"\n  {complied}/{attempts} samples complied.")
     print(f"  wrote {path} ({len(transcript)} steps) and its .meta.json")
     print(f"  now deterministic:  python -m cli.explain --compare --task {task}\n")

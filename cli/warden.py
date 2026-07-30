@@ -92,10 +92,26 @@ def render_replay(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="warden")
-    parser.add_argument("command", choices=["replay", "verify-chain"])
+    parser.add_argument("command", choices=["replay", "verify-chain", "verify-runs"])
     parser.add_argument("task_id", nargs="?", default=None)
     parser.add_argument("--audit", default="data/audit.jsonl")
     args = parser.parse_args(argv)
+
+    if args.command == "verify-runs":
+        # The run index, not the audit log: proof that the saved evidence of
+        # each run is the set that was written, in the order it was written.
+        from cli.runlog import INDEX, verify_index
+
+        if not INDEX.exists():
+            print(f"no runs recorded yet ({INDEX})")
+            return 0
+        ok, bad = verify_index()
+        count = sum(1 for line in INDEX.read_text().splitlines() if line.strip())
+        if ok:
+            print(f"run index intact: {count} runs")
+            return 0
+        print(f"run index BROKEN at seq {bad}")
+        return 1
 
     audit_path = Path(args.audit)
     if not audit_path.exists():

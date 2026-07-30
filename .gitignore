@@ -11,3 +11,4 @@ data/agent.pub
 .env.local
 *.key
 data/
+runs/
