@@ -14,6 +14,10 @@ from agent.tools import TOOL_SCHEMAS
 
 ANTHROPIC_MODEL = "claude-sonnet-5"
 GEMINI_MODEL = "gemini-3.6-flash"
+# OpenRouter needs a vendor-qualified id. Override with OPENROUTER_MODEL;
+# ids are listed at https://openrouter.ai/models and the client says so by
+# name if the gateway does not recognise this one.
+OPENROUTER_MODEL = "openai/gpt-4o-mini"
 MAX_TOKENS = 4096
 # Gemini counts thinking against the output budget, and current models think by
 # default. 4096 was enough to exhaust on reasoning alone and return a turn with
@@ -74,6 +78,7 @@ class Cassette:
     def __init__(self, path: Path) -> None:
         self._steps = json.loads(Path(path).read_text())
         self._index = 0
+        self.name = f"recorded — {Path(path).name}"
 
     def next_step(self, messages: list[dict]) -> dict:
         if self._index >= len(self._steps):
@@ -116,6 +121,7 @@ class LiveClient:
 
             client = anthropic.Anthropic(api_key=api_key)
         self._client = client
+        self.name = f"anthropic:{MODEL}"
         # Messages in Anthropic API shape, which is NOT the loop's shape.
         self._history: list[dict] = []
         self._pending_tool_use_id: str | None = None
@@ -218,6 +224,7 @@ class GeminiClient:
 
     def __init__(self, api_key: str, *, model: str | None = None, client=None) -> None:
         self._model = model or GEMINI_MODEL
+        self.name = f"gemini:{self._model}"
         if client is None:
             from google import genai
 
@@ -436,18 +443,274 @@ class GeminiClient:
         return {"type": "final", "text": "(unreachable: turn had neither call nor text)"}
 
 
+class OpenRouterClient:
+    """A third provider behind the same protocol — one key, many vendors.
+
+    OpenRouter speaks the OpenAI chat-completions shape, which is plain JSON
+    over HTTP, so this talks to it with `httpx` and adds NO dependency. That is
+    worth more than convenience: `google-genai` and `anthropic` are absent from
+    requirements.txt on purpose, so neither of the other live clients can be
+    exercised in CI. This one can be, and is — the provider with no SDK is the
+    only one with real test coverage.
+
+    It also turns the model into a variable rather than a rewrite. The finding
+    in docs/live-enforcement-2026-07-30.md — that a more capable model works
+    harder around a refusal and still cannot exceed the bound — is a claim
+    about models in general. One key that reaches dozens of them is how you
+    check that rather than assert it:
+
+        OPENROUTER_MODEL=anthropic/claude-sonnet-4.5 python -m cli.explain --live --task report
+        OPENROUTER_MODEL=openai/gpt-4o-mini          python -m cli.explain --live --task report
+
+    Shape notes, verified against the OpenAI-compatible schema rather than
+    written from memory:
+      · tools go in as {"type":"function","function":{name,description,parameters}}
+      · a call comes back as choices[0].message.tool_calls[], each with an `id`
+        and `function.arguments` as a JSON *string*, not an object
+      · the answer goes back as its own {"role":"tool","tool_call_id":…} message,
+        one per call — unlike Gemini, which wants them combined in one turn
+    """
+
+    URL = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        model: str | None = None,
+        client=None,
+        url: str | None = None,
+    ) -> None:
+        import httpx
+
+        self._key = api_key
+        self._model = model or OPENROUTER_MODEL
+        self._url = url or self.URL
+        self._client = client or httpx.Client(timeout=120.0)
+        self.name = f"openrouter:{self._model}"
+        self._history: list[dict] = []
+        # Same queue as GeminiClient, and for the same reason: a turn may carry
+        # several calls, the loop executes one at a time, and dropping the rest
+        # leaves the model's own turn holding a call that never gets answered.
+        self._pending_calls: list[dict] = []
+        self._awaiting: str | None = None
+
+    @staticmethod
+    def _tools() -> list[dict]:
+        """One tool definition, three providers. Only the wrapper changes."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": schema["name"],
+                    "description": schema["description"],
+                    "parameters": schema["input_schema"],
+                },
+            }
+            for schema in TOOL_SCHEMAS
+        ]
+
+    def _absorb(self, messages: list[dict]) -> None:
+        if not self._history:
+            self._history.extend(
+                {"role": "user", "content": m["content"]} for m in messages
+            )
+            return
+
+        latest = messages[-1]["content"]
+        if self._awaiting is not None:
+            # An unanswered tool call is a protocol error here as much as it is
+            # on the other two providers. Each answer is its own message, keyed
+            # by the call's id.
+            self._history.append(
+                {"role": "tool", "tool_call_id": self._awaiting, "content": latest}
+            )
+            self._awaiting = None
+        else:
+            self._history.append({"role": "user", "content": latest})
+
+    def _post(self, body: dict) -> dict:
+        """One request, retrying only what is worth retrying.
+
+        Same reasoning as the Gemini path: rate limits and 5xx are the expected
+        case on a shared gateway, and an unretried live run fails constantly.
+        A 401 or an unknown model are not transient and must surface at once
+        with the fix in the message.
+        """
+        import re
+        import time as _time
+
+        import httpx
+
+        last = None
+        for attempt in range(5):
+            response = self._client.post(
+                self._url,
+                headers={
+                    "Authorization": f"Bearer {self._key}",
+                    "Content-Type": "application/json",
+                    # OpenRouter attributes traffic with these. Harmless, and
+                    # it keeps the request identifiable in the dashboard.
+                    "HTTP-Referer": "https://github.com/slavikztsv/agent-security-broker",
+                    "X-Title": "warden agent security broker",
+                },
+                json=body,
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                # OpenRouter can answer 200 with an error body when an upstream
+                # provider fails. Treating that as success yields a confusing
+                # KeyError on 'choices' several frames away.
+                if "error" in payload and "choices" not in payload:
+                    raise RuntimeError(
+                        f"openrouter returned an error for {self._model}: "
+                        f"{str(payload['error'])[:300]}"
+                    )
+                return payload
+
+            text = response.text[:400]
+            if response.status_code in (401, 403):
+                raise RuntimeError(
+                    "openrouter rejected the credential. Check OPENROUTER_API_KEY "
+                    f"in .env. Provider said: {text}"
+                )
+            if response.status_code in (400, 404) and "model" in text.lower():
+                raise RuntimeError(
+                    f"openrouter does not recognise the model {self._model!r}. Set "
+                    "OPENROUTER_MODEL in .env to an id from https://openrouter.ai/models "
+                    f"(for example openai/gpt-4o-mini). Provider said: {text}"
+                )
+            if response.status_code not in (408, 409, 429, 500, 502, 503, 504):
+                raise RuntimeError(
+                    f"openrouter returned {response.status_code}: {text}"
+                )
+
+            last = f"{response.status_code}: {text}"
+            asked = response.headers.get("retry-after")
+            if asked and re.fullmatch(r"\d+", asked.strip()):
+                delay = min(float(asked) + 1, 65)
+            else:
+                delay = min(2 ** attempt * 5, 65)
+            print(
+                f"[llm] openrouter {response.status_code}, waiting {delay:.0f}s",
+                flush=True,
+            )
+            _time.sleep(delay)
+        raise RuntimeError(f"openrouter still failing after 5 attempts: {last}")
+
+    def _serve_queued(self) -> dict:
+        call = self._pending_calls.pop(0)
+        self._awaiting = call["id"]
+        function = call.get("function") or {}
+        raw = function.get("arguments") or "{}"
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (ValueError, TypeError):
+            # Left as {} rather than guessed at. The broker validates the shape
+            # of every call, so a malformed one is refused by `input.malformed`
+            # -- which is the correct outcome and visible in the audit log,
+            # where a silently repaired call would not be.
+            print(f"[llm] unparseable arguments for {function.get('name')}", flush=True)
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {"type": "tool_use", "tool": function.get("name"), "args": args}
+
+    def next_step(self, messages: list[dict]) -> dict:
+        self._absorb(messages)
+
+        if self._pending_calls:
+            return self._serve_queued()
+
+        body = {
+            "model": self._model,
+            "messages": self._history,
+            "tools": self._tools(),
+            "tool_choice": "auto",
+            "max_tokens": MAX_TOKENS,
+        }
+
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            payload = self._post(body)
+            choices = payload.get("choices") or []
+            if not choices:
+                message, finish = {}, "no choices"
+            else:
+                message = choices[0].get("message") or {}
+                finish = choices[0].get("finish_reason")
+            calls = message.get("tool_calls") or []
+            text = message.get("content") or ""
+            if calls or text.strip():
+                # Appended as returned. A reconstructed assistant turn drops
+                # fields the API validates on the next request.
+                self._history.append(message)
+                break
+            if attempt < attempts:
+                print(f"[llm] empty turn {attempt}/{attempts}, retrying", flush=True)
+        else:
+            return {
+                "type": "final",
+                "text": (
+                    f"(no text and no tool call after {attempts} attempts; "
+                    f"finish_reason={finish}. {self._model} may not support tool "
+                    "calling on OpenRouter — check the model's page, or set "
+                    "OPENROUTER_MODEL to one that lists 'tools' support.)"
+                ),
+            }
+
+        if calls:
+            self._pending_calls = list(calls)
+            return self._serve_queued()
+        return {"type": "final", "text": text}
+
+
 def live_client_from_env(env: dict) -> object:
     """Pick a provider from whatever credential is present.
 
     Deliberately not a flag: the demo's default is the cassette, and `--live`
     should work with whichever key the operator actually has rather than
     forcing one vendor.
+
+    Precedence is fixed and documented rather than clever, and
+    `WARDEN_PROVIDER` overrides it outright — a machine with several keys
+    should never leave you guessing which one a run used. Every client also
+    carries a `name`, which the runner prints, so the answer is on screen.
     """
-    if env.get("GEMINI_API_KEY"):
-        return GeminiClient(env["GEMINI_API_KEY"], model=env.get("GEMINI_MODEL") or None)
-    if env.get("ANTHROPIC_API_KEY"):
-        return LiveClient(env["ANTHROPIC_API_KEY"])
+    providers = {
+        "openrouter": lambda: OpenRouterClient(
+            env["OPENROUTER_API_KEY"], model=env.get("OPENROUTER_MODEL") or None
+        ),
+        "gemini": lambda: GeminiClient(
+            env["GEMINI_API_KEY"], model=env.get("GEMINI_MODEL") or None
+        ),
+        "anthropic": lambda: LiveClient(env["ANTHROPIC_API_KEY"]),
+    }
+    keys = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+    }
+
+    forced = (env.get("WARDEN_PROVIDER") or "").strip().lower()
+    if forced:
+        if forced not in providers:
+            raise RuntimeError(
+                f"WARDEN_PROVIDER={forced!r} is not one of: "
+                f"{', '.join(providers)}."
+            )
+        if not env.get(keys[forced]):
+            raise RuntimeError(
+                f"WARDEN_PROVIDER={forced} needs {keys[forced]} in the environment."
+            )
+        return providers[forced]()
+
+    for name in ("openrouter", "gemini", "anthropic"):
+        if env.get(keys[name]):
+            return providers[name]()
+
     raise RuntimeError(
-        "--live needs GEMINI_API_KEY or ANTHROPIC_API_KEY in the environment. "
-        "Without one, drop --live and the agent replays a cassette."
+        "--live needs one of OPENROUTER_API_KEY, GEMINI_API_KEY or "
+        "ANTHROPIC_API_KEY in the environment. Without one, drop --live and "
+        "the agent replays a cassette."
     )

@@ -23,10 +23,11 @@ rule stops it.
 ```
 
 The demo replays a recorded transcript so it cannot fail live. A real model can
-drive the same loop — `pip install -r requirements-live.txt`, put a
-`GEMINI_API_KEY` or `ANTHROPIC_API_KEY` in `.env`, and run
-`python -m agent.loop --live`. One provider is not privileged over the other:
-both sit behind the same interface and the broker never learns a model was
+drive the same loop: put an `OPENROUTER_API_KEY` in `.env` and run
+`python -m agent.loop --live` — OpenRouter speaks the OpenAI HTTP shape, so it
+needs no extra package at all. `GEMINI_API_KEY` and `ANTHROPIC_API_KEY` also
+work, with `pip install -r requirements-live.txt`. No provider is privileged:
+all three sit behind the same interface and the broker never learns a model was
 involved. A verified live run, including a model that refused the injection and
 a policy rule that caught a mistake it made anyway, is written up in
 [docs/live-run-2026-07-30.md](docs/live-run-2026-07-30.md).
@@ -117,7 +118,10 @@ Add `--live --task report` for the same table with a real model and nothing
 recorded: asked for a management report, it read the customer table twice with no
 broker, and got its full 50-row budget and five refusals with one — using *more*
 tool calls to get far less, because a refusal makes the agent try another way.
-`--help` lists every flag.
+`--help` lists every flag. `--live` takes `OPENROUTER_API_KEY`, `GEMINI_API_KEY`
+or `ANTHROPIC_API_KEY` — OpenRouter needs no extra package and reaches many
+vendors with one key, so `OPENROUTER_MODEL=…` re-runs the same scenario against
+a different model. Every run prints which provider and model it used.
 
 It also answers the two questions the demo does not: **who starts a task** (and
 how that wires into a real helpdesk or queue), and **what the model is actually
@@ -156,9 +160,13 @@ sinkhole received zero bytes. **The exploit is a regression test**, so the
 security property is verified continuously rather than demonstrated once.
 
 Cassettes replay model responses only — policy, egress, and the audit chain
-always execute for real. `python -m agent.loop --live` runs against the real
-API instead; it needs `pip install anthropic` (deliberately not in
-`requirements.txt`, since nothing else in the project depends on it) and an
-`ANTHROPIC_API_KEY`. **That path is not covered by CI**: the tests drive it
-through a stub, which pins the request shape and the message alternation but
-never calls the API.
+always execute for real. `python -m agent.loop --live` runs against a real API
+instead.
+
+The OpenRouter client is covered by CI, because it needs no vendor SDK: it
+speaks the OpenAI HTTP shape over `httpx`, which is already a dependency, so
+its tests drive the full request and response cycle through a mock transport.
+The Gemini and Anthropic clients are not — their packages are deliberately out
+of `requirements.txt` and CI never installs them, so their tests skip there and
+run only on a machine that has them. **No test of any provider calls a real
+API.**

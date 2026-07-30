@@ -6,7 +6,14 @@
 #
 #   pip install -r requirements-live.txt
 #
-# Provide GEMINI_API_KEY or ANTHROPIC_API_KEY in .env; the runtime picks
-# whichever is present.
+# NOT needed for OpenRouter, which is the third live provider: it speaks the
+# OpenAI HTTP shape, so httpx reaches it and httpx is already in
+# requirements.txt. Set OPENROUTER_API_KEY and `--live` works with nothing
+# installed from this file -- which is also why OpenRouterClient is the only
+# live client covered by tests that run in CI.
+#
+# Provide OPENROUTER_API_KEY, GEMINI_API_KEY or ANTHROPIC_API_KEY in .env; the
+# runtime picks the first of those three that is set, or whichever
+# WARDEN_PROVIDER names.
 google-genai==2.15.0
 anthropic==0.69.0

@@ -539,3 +539,158 @@ def test_gemini_serves_every_call_from_a_multi_call_turn():
         )
     ]
     assert len(turns_with_responses) == 1, "both responses belong to one user turn"
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter.
+#
+# The only live client with no vendor SDK: OpenRouter speaks the OpenAI
+# chat-completions shape, which is plain JSON over HTTP, so httpx reaches it and
+# httpx is already a hard dependency. That makes it the only provider these
+# tests can drive end to end in CI -- no importorskip, no package CI refuses to
+# install. The Gemini and Anthropic clients cannot be covered this way.
+# ---------------------------------------------------------------------------
+def _openrouter(handler, **kw):
+    from agent.llm import OpenRouterClient
+
+    return OpenRouterClient(
+        "key", client=httpx.Client(transport=httpx.MockTransport(handler)), **kw
+    )
+
+
+def _reply(*, calls=None, content=None, finish="stop"):
+    message = {"role": "assistant", "content": content}
+    if calls:
+        message["tool_calls"] = calls
+    return httpx.Response(200, json={"choices": [{"message": message, "finish_reason": finish}]})
+
+
+def _call(cid, name, args):
+    return {"id": cid, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def test_openrouter_sends_the_tools_and_returns_a_tool_call():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        seen["auth"] = request.headers.get("authorization")
+        return _reply(calls=[_call("c1", "read_document", {"doc_id": "ticket-4711"})])
+
+    step = _openrouter(handler).next_step([{"role": "user", "content": "triage"}])
+
+    assert seen["auth"] == "Bearer key"
+    names = [t["function"]["name"] for t in seen["body"]["tools"]]
+    assert "read_document" in names and "query_customers" in names
+    assert seen["body"]["tool_choice"] == "auto"
+    assert step == {"type": "tool_use", "tool": "read_document",
+                    "args": {"doc_id": "ticket-4711"}}
+
+
+def test_openrouter_answers_each_call_of_a_multi_call_turn_by_id():
+    """A turn can carry several calls; each needs its own answer, keyed by id.
+
+    Dropping the extras is the defect that made the Gemini path incoherent --
+    the model's own turn is left holding a call that never gets a response.
+    """
+    posts = []
+
+    def handler(request):
+        posts.append(json.loads(request.content))
+        if len(posts) == 1:
+            return _reply(calls=[_call("a", "read_document", {"doc_id": "kb/refund-policy"}),
+                                 _call("b", "query_customers", {"filter": "id=8812"})])
+        return _reply(content="done")
+
+    client = _openrouter(handler)
+    first = client.next_step([{"role": "user", "content": "triage"}])
+    second = client.next_step([{"role": "user", "content": '{"content": "kb"}'}])
+    assert first["tool"] == "read_document"
+    assert second["tool"] == "query_customers"
+    assert len(posts) == 1, "a queued call must not cost another request"
+
+    third = client.next_step([{"role": "user", "content": '{"content": "rows"}'}])
+    assert third == {"type": "final", "text": "done"}
+    answers = [m for m in posts[1]["messages"] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in answers] == ["a", "b"]
+
+
+def test_openrouter_malformed_arguments_become_an_empty_call_not_a_guess():
+    """The broker validates every call's shape, so a malformed one is refused
+    by `input.malformed` and lands in the audit log. A silently repaired call
+    would not."""
+    def handler(request):
+        return _reply(calls=[{"id": "c", "type": "function",
+                              "function": {"name": "query_customers",
+                                           "arguments": "{not json"}}])
+
+    step = _openrouter(handler).next_step([{"role": "user", "content": "go"}])
+    assert step == {"type": "tool_use", "tool": "query_customers", "args": {}}
+
+
+def test_openrouter_names_the_env_var_when_the_model_is_unknown():
+    def handler(request):
+        return httpx.Response(404, text='{"error":{"message":"model not found"}}')
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _openrouter(handler, model="vendor/nope").next_step([{"role": "user", "content": "go"}])
+    assert "OPENROUTER_MODEL" in str(excinfo.value) and "vendor/nope" in str(excinfo.value)
+
+
+def test_openrouter_surfaces_a_bad_credential_immediately():
+    def handler(request):
+        return httpx.Response(401, text="no key")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _openrouter(handler).next_step([{"role": "user", "content": "go"}])
+    assert "OPENROUTER_API_KEY" in str(excinfo.value)
+
+
+def test_openrouter_rejects_a_200_that_carries_an_error_body():
+    """The gateway can answer 200 when an upstream provider fails. Treating
+    that as success produces a KeyError several frames away from the cause."""
+    def handler(request):
+        return httpx.Response(200, json={"error": {"message": "upstream is down"}})
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _openrouter(handler).next_step([{"role": "user", "content": "go"}])
+    assert "upstream is down" in str(excinfo.value)
+
+
+def test_provider_selection_is_explicit_and_overridable():
+    from agent.llm import live_client_from_env
+
+    both = {"OPENROUTER_API_KEY": "o", "GEMINI_API_KEY": "g"}
+    assert live_client_from_env(both).name.startswith("openrouter:")
+    # An override must win, so a machine with several keys never leaves the
+    # question of which one a run used open.
+    forced = dict(both, WARDEN_PROVIDER="gemini")
+    pytest.importorskip("google.genai")
+    assert live_client_from_env(forced).name.startswith("gemini:")
+
+
+def test_provider_selection_reports_what_is_missing():
+    from agent.llm import live_client_from_env
+
+    with pytest.raises(RuntimeError) as excinfo:
+        live_client_from_env({})
+    assert "OPENROUTER_API_KEY" in str(excinfo.value)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        live_client_from_env({"WARDEN_PROVIDER": "openrouter"})
+    assert "OPENROUTER_API_KEY" in str(excinfo.value)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        live_client_from_env({"WARDEN_PROVIDER": "banana", "GEMINI_API_KEY": "g"})
+    assert "banana" in str(excinfo.value)
+
+
+def test_openrouter_model_defaults_and_can_be_named():
+    from agent.llm import OPENROUTER_MODEL, live_client_from_env
+
+    assert live_client_from_env({"OPENROUTER_API_KEY": "o"}).name == \
+        "openrouter:" + OPENROUTER_MODEL
+    named = live_client_from_env({"OPENROUTER_API_KEY": "o",
+                                  "OPENROUTER_MODEL": "anthropic/claude-sonnet-4.5"})
+    assert named.name == "openrouter:anthropic/claude-sonnet-4.5"

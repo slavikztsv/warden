@@ -154,6 +154,19 @@ Two attempts, both refused, done — it never even looked the customer up.
 one-row lookups and extracted its entire 50-row budget across 59 calls before
 being cut off.
 
+Reproducing this across other vendors takes one key and no extra packages.
+OpenRouter speaks the OpenAI HTTP shape, so `httpx` reaches it and `httpx` is
+already a dependency — the model becomes an environment variable rather than a
+rewrite:
+
+```bash
+OPENROUTER_MODEL=anthropic/claude-sonnet-4.5 python -m cli.explain --compare --live --task report
+OPENROUTER_MODEL=openai/gpt-4o-mini          python -m cli.explain --compare --live --task report
+```
+
+Each run prints the provider and model it actually reached, so a table of
+results cannot drift from the model that produced it.
+
 Two things follow, and they are the strongest claims in this document.
 
 **The call count measures the model, not the control.** It moves in either

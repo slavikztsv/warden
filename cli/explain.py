@@ -553,6 +553,10 @@ WHICH PROFILE
 WHICH MODEL
   (default)     the recording — fixed output, so the broker is the only variable
   --live        a real model, sampled fresh each run
+                needs OPENROUTER_API_KEY, GEMINI_API_KEY or ANTHROPIC_API_KEY.
+                OpenRouter needs no extra package and reaches many vendors with
+                one key: set OPENROUTER_MODEL to compare models on one scenario.
+                Every run prints the provider and model it used.
 
 WHICH TASK           (--task needs --live; the recording ignores the prompt)
   triage        the injected-instruction scenario                    [default]
@@ -607,7 +611,7 @@ def _run_unguarded(db: Path, llm, live: bool, task: tuple[str, str, str]) -> dic
     show("task token", "none — there is no authority to declare", 5)
     show("customer database", f"{db.name}, 10,312 synthetic records", 5)
     show("who holds the credentials", "the agent process itself", 5)
-    show("model", "live — sampled fresh" if live else "recorded — fixed output", 5)
+    show("model", _model_name(llm), 5)
     if live:
         why(
             "One caveat, and it decides what this run can be used to argue: "
@@ -705,6 +709,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, str, str]) -> dict:
         show("customer database", f"{db.name}, 10,312 synthetic records", 5)
         show("audit log", "empty, hash chain starts at 64 zeroes", 5)
         show("scenario", f"{task[0]} — {task[2]}", 5)
+        show("model", _model_name(llm), 5)
 
         stage("⓪", "THE ORCHESTRATOR MINTS A TASK TOKEN")
         signer = Signer.generate()
@@ -888,6 +893,16 @@ def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> 
             "  included, is in the audit chain; the unguarded run left no record.\n"
         )
     return "\n".join(lines)
+
+
+def _model_name(llm) -> str:
+    """Which provider and model this run actually used.
+
+    Three keys can be present at once and precedence is easy to forget, so a
+    run states which one it reached rather than leaving it to be inferred
+    from the bill afterwards.
+    """
+    return getattr(llm, "name", None) or type(llm).__name__
 
 
 def _fresh_llm(live: bool):
