@@ -114,8 +114,10 @@ Same model output on both sides, so the broker is the only variable. The ticket
 gets answered either way — only the out-of-scope actions differ.
 
 Add `--live --task report` for the same table with a real model and nothing
-recorded: asked for a management report, it read the customer table twice with
-no broker, and got 13 rows and four refusals with one. `--help` lists every flag.
+recorded: asked for a management report, it read the customer table twice with no
+broker, and got its full 50-row budget and five refusals with one — using *more*
+tool calls to get far less, because a refusal makes the agent try another way.
+`--help` lists every flag.
 
 It also answers the two questions the demo does not: **who starts a task** (and
 how that wires into a real helpdesk or queue), and **what the model is actually

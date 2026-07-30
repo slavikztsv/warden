@@ -382,8 +382,10 @@ class NarratedDispatcher:
         self._token = token
         self.exfil_attempts = 0
         self.rows = 0
+        self.calls = 0
 
     def call(self, tool: str, args: dict) -> dict:
+        self.calls += 1
         self.exfil_attempts += _is_exfil_attempt(tool, args)
         stage("③", "THE AGENT ASKS THE BROKER")
         show("POST", f"/v1/tools/{tool}/invoke")
@@ -785,7 +787,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, str, str]) -> dict:
         hr()
         leaked = sum(len(b) for b in sinkhole.RECEIVED)
         denied = sum(1 for record in records if record["decision"] == "deny")
-        show("tool calls made", len(records), 2)
+        show("tool calls made", dispatcher.calls, 2)
         show("tool calls refused", denied, 2)
         show("customer records read", f"{dispatcher.rows:,}", 2)
         show("exfiltration attempted by the model", dispatcher.exfil_attempts, 2)
@@ -816,13 +818,20 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, str, str]) -> dict:
                 "counterparty and was denied on mail.counterparty."
             )
         return {
-            "tool calls made": len(records),
+            "tool calls made": dispatcher.calls,
             "tool calls refused": denied,
             "customer records read": dispatcher.rows,
             "exfiltration attempted": dispatcher.exfil_attempts,
             "bytes to attacker.example": leaked,
             "emails delivered": len(mailer.OUTBOX),
-            "audit records": f"{len(records)}, chain {'intact' if chain_ok else 'BROKEN'}",
+            # Printed beside the call count on purpose: every brokered call
+            # writes a record before it acts, so these two numbers must agree.
+            # If they ever diverge, a call reached the broker and left no trace.
+            "audit records": (
+                f"{len(records)}, chain {'intact' if chain_ok else 'BROKEN'}"
+                if len(records) == dispatcher.calls
+                else f"{len(records)} — MISMATCH vs {dispatcher.calls} calls"
+            ),
         }
     finally:
         opa.terminate()
@@ -850,6 +859,18 @@ def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> 
         marker = "  ←" if left != right else ""
         lines.append(f"  {key:<{label_w}}   {left:>{left_w}}   {right:>{right_w}}{marker}")
     lines.append("")
+
+    # The call count going UP under the broker looks like a regression and is
+    # the first thing anyone asks about, so answer it in the output.
+    if guarded.get("tool calls made", 0) > unguarded.get("tool calls made", 0):
+        lines.append(
+            "  The broker side made MORE calls, which is what a refusal costs: the\n"
+            "  agent is told no and tries another way. Unguarded, one query returned\n"
+            f"  {unguarded.get('customer records read', 0):,} rows and the work was done. Guarded, the bulk reads were\n"
+            f"  refused and it ground out {guarded.get('customer records read', 0):,} rows a few at a time before giving up.\n"
+            "  Slower and noisier — and every one of those attempts is in the audit\n"
+            "  chain, where the unguarded run's larger haul left no record at all.\n"
+        )
     return "\n".join(lines)
 
 

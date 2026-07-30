@@ -607,18 +607,29 @@ it is all staged:
 ```
                               no broker        with broker
   ────────────────────────────────────────────────────────
-  tool calls made                     7                 24  ←
-  tool calls refused                  0                  4  ←
-  customer records read          20,624                 13  ←
+  tool calls made                     8                 59  ←
+  tool calls refused                  0                  5  ←
+  customer records read          20,625                 50  ←
   emails delivered                    1                  1
-  audit records                    none   24, chain intact  ←
+  audit records                    none   59, chain intact  ←
 ```
 
 Asked for a plan-distribution report, the model read the customer table **twice**
-when nothing stopped it. With the broker it got 13 rows and four refusals — and
-still answered the ticket. Two live runs are sampled independently, so this is an
-illustration rather than a controlled experiment; the deterministic command above
-is the controlled one. Both are printed with that caveat attached.
+when nothing stopped it. With the broker it got 50 rows — its entire per-task
+budget — and five refusals, and still answered the ticket. Exact numbers vary
+between runs because the model is sampled fresh; the shape does not.
+
+**Note the call count going up, not down.** That is what a refusal costs: the
+agent is told no and tries another way. Unguarded, one query returned the whole
+table and the work was done in eight calls. Guarded, the bulk reads were refused
+and it ground out fifty rows a few at a time across fifty-nine. The broker makes
+the agent slower and noisier — and every one of those attempts is in the audit
+chain, while the unguarded run's far larger haul left no record at all. The tool
+prints this explanation under the table whenever the counts invert.
+
+Two live runs are sampled independently, so this is an illustration rather than a
+controlled experiment; the deterministic command above is the controlled one.
+Both print that caveat themselves.
 
 `python -m cli.explain --help` lists every flag.
 
