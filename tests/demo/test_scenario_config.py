@@ -53,3 +53,49 @@ def test_the_declared_token_matches_the_golden_run():
     assert {r["task_id"] for r in records} == {task["task_id"]}
     assert {r["agent_id"] for r in records} == {task["agent_id"]}
     assert {r["purpose"] for r in records} == {task["purpose"]}
+
+
+def test_the_mock_transport_routes_to_the_declared_sinkhole_host(monkeypatch):
+    """`[scenario].sinkhole_host` must actually be consulted -- not just
+    declared alongside a hardcoded 'attacker.example' that ignores it.
+
+    `_mock_transport()`'s catch-all sends ANY unrecognised host to the
+    sinkhole already, so posting to some made-up hostname would land there
+    whether or not the config is actually wired in -- that check would prove
+    nothing. What discriminates: declare `sinkhole_host` as a hostname that
+    already has its OWN real backend (`docstore.internal`) and confirm the
+    SINKHOLE answers there instead. If the code still hardcoded
+    "attacker.example", `docstore.internal` would keep reaching the real
+    docstore app and this would fail.
+    """
+    import httpx
+
+    from demo.cli import explain as explain_module
+    from demo.mocks import sinkhole
+
+    monkeypatch.setitem(explain_module.SCENARIO, "sinkhole_host", "docstore.internal")
+    sinkhole.RECEIVED.clear()
+    client = httpx.Client(transport=explain_module._mock_transport())
+
+    response = client.post("http://docstore.internal/anything", content=b"probe")
+
+    assert response.json() == {"ok": True}, "docstore.internal's real backend answered, not the sinkhole"
+    assert sinkhole.RECEIVED == ["probe"]
+
+
+def test_every_task_and_scenario_key_is_read_somewhere():
+    """Config that nothing consumes is the exact drift risk this file exists
+    to remove -- someone changes it and nothing happens. Every key under
+    [task], [scenario] and [prompts] must appear as a subscript (`[...]` or
+    `.get(...)`) on TASK/SCENARIO/PROMPTS somewhere in demo/*.py."""
+    config = tomllib.loads((SCENARIO / "task.toml").read_text())
+    demo_src = "\n".join(
+        path.read_text() for path in SCENARIO.parent.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+    unread = []
+    for table in ("task", "scenario", "prompts"):
+        for key in config[table]:
+            if f'"{key}"' not in demo_src and f"'{key}'" not in demo_src:
+                unread.append(f"[{table}].{key}")
+    assert unread == []

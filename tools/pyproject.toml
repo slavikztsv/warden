@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warden-tools"
+version = "0.1.0"
+description = "Repo-local dev/test utilities: the pinned OPA resolver and the decision-corpus fixtures the test suite imports"
+requires-python = ">=3.11"
+# capture_expected.py imports warden.broker.pdp at module level.
+dependencies = ["warden"]
+
+# No console scripts: everything here is imported by the test suite
+# (tools.opa_version, tools.capture_expected) or run directly with
+# `python tools/whatever.py`, never invoked as an installed command.
+
+# Explicit, not packages.find -- same reason as warden/pyproject.toml and
+# demo/pyproject.toml: `where = [".."]` would put the repo root itself on
+# sys.path on an editable install, not just this package, leaking `demo`/
+# `warden` imports into any environment that installed only `tools`.
+[tool.setuptools]
+packages = ["tools"]
+
+[tool.setuptools.package-dir]
+tools = "."

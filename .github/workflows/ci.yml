@@ -16,7 +16,15 @@ jobs:
       - name: Install OPA
         run: ./scripts/fetch-opa.sh
       - name: Install
-        run: pip install -e ./warden -e ./demo && pip install pytest==9.1.1 pytest-asyncio==1.4.0
+        # ./tools is dev/test-only (the pinned OPA resolver, the decision-
+        # corpus fixtures) -- several test modules import it directly
+        # (`from tools.opa_version import resolve_opa`), which only resolves
+        # under a bare `pytest` (this job's "Python tests" step below,
+        # matching how a contributor would actually run it) if the package
+        # is installed. `python -m pytest` masked this locally: `-m` inserts
+        # the CWD onto sys.path, an accident of that invocation form, not
+        # something CI's `pytest -v` benefits from.
+        run: pip install -e ./warden -e ./demo -e ./tools && pip install pytest==9.1.1 pytest-asyncio==1.4.0
       - name: Policy unit tests
         # Two paths, not one: Task 22 moved data.json to demo/scenario/, and
         # authz_test.rego's "shipped-configuration tests" section evaluates

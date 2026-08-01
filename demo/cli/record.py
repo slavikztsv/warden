@@ -158,6 +158,12 @@ def _record(task: str, attempts: int, record_any: bool, db: Path, run) -> int:
     path.write_text(json.dumps(transcript, indent=2) + "\n")
     meta = {
         "task": task,
+        # The exact instruction this transcript is a recorded answer to.
+        # `tests/demo/test_cassette_provenance.py` checks every cassette's
+        # sidecar against TASKS[task]["say"] at test time, so changing a
+        # TASKS prompt without re-recording is caught instead of silently
+        # narrating a task the transcript never answered.
+        "prompt": TASKS[task]["say"],
         "poison": TASKS[task].get("poison", "backup"),
         "model": live_client_from_env(os.environ).name,
         "complied": complied,
