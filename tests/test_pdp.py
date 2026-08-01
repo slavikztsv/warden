@@ -142,12 +142,73 @@ def test_bundle_digest_rejects_an_empty_root(tmp_path):
         policy_bundle_digest([tmp_path, empty])
 
 
-def test_bundle_digest_distinguishes_which_root_a_file_came_from(tmp_path):
+def test_bundle_digest_depends_on_root_order(tmp_path):
     """Two roots each holding data.json must not hash the same as one root
-    holding both contents concatenated."""
+    holding both contents concatenated.
+
+    NOTE: this only proves the digest is sensitive to the ORDER of the roots
+    argument, which holds for any sequential implementation regardless of
+    whether it keys each file by root-relative path, bare name, or nothing
+    at all. It does not by itself prove same-named files across roots are
+    kept apart -- see test_bundle_digest_distinguishes_nested_from_root_level_same_basename
+    and test_bundle_digest_is_stable_when_the_mount_point_moves for that."""
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     (a / "data.json").write_text('{"x": 1}\n')
     (b / "data.json").write_text('{"y": 2}\n')
     assert policy_bundle_digest([a, b]) != policy_bundle_digest([b, a])
+
+
+def test_bundle_digest_distinguishes_nested_from_root_level_same_basename(tmp_path):
+    """A file's digest key must include the directories above it within its
+    root, not just its bare filename -- otherwise a nested file and a
+    root-level file that happen to share a name collapse onto the same
+    contribution regardless of where either one actually sits.
+
+    A flat two-root fixture (as in test_bundle_digest_depends_on_root_order)
+    can never catch this: relative-path and bare-name keys only diverge once
+    a file is nested. So: one root holds sub/x.rego, another holds x.rego at
+    its top level, same bytes in both. Under root-relative keying those are
+    the distinct keys "sub/x.rego" and "x.rego". Under bare-name keying they
+    are both just "x.rego" -- indistinguishable from a root-level file with
+    the same name and content.  Comparing against a second pairing that
+    replaces the nested file with an equivalent root-level one isolates
+    exactly that difference."""
+    nested_root = tmp_path / "nested_root"
+    flat_root = tmp_path / "flat_root"
+    nested_root.mkdir()
+    flat_root.mkdir()
+    (nested_root / "sub").mkdir()
+    (nested_root / "sub" / "x.rego").write_text("package warden.authz\n")
+    (flat_root / "x.rego").write_text("package warden.authz\n")
+    mixed = policy_bundle_digest([nested_root, flat_root])
+
+    both_flat_root = tmp_path / "both_flat_root"
+    both_flat_root.mkdir()
+    (both_flat_root / "x.rego").write_text("package warden.authz\n")
+    both_flat = policy_bundle_digest([both_flat_root, flat_root])
+
+    assert mixed != both_flat
+
+
+def test_bundle_digest_is_stable_when_the_mount_point_moves(tmp_path):
+    """The digest must depend only on each file's path relative to its own
+    root, never on where that root sits in the filesystem -- otherwise the
+    same bundle remounted at a different absolute path (a routine container
+    operation) would look like a policy change even though not one byte of
+    policy changed. This is the property that makes the relative-path key
+    correct where a bare absolute-path key would not be."""
+
+    def build_layout(parent):
+        root = parent / "policies"
+        root.mkdir(parents=True)
+        (root / "authz.rego").write_text("package warden.authz\n")
+        nested = root / "sub"
+        nested.mkdir()
+        (nested / "data.json").write_text('{"limits": {}}\n')
+        return root
+
+    a = build_layout(tmp_path / "mount_a")
+    b = build_layout(tmp_path / "somewhere" / "else" / "mount_b")
+    assert policy_bundle_digest([a]) == policy_bundle_digest([b])

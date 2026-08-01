@@ -176,6 +176,36 @@ def test_broker_refuses_a_public_key_file_that_is_not_ed25519(tmp_path):
         broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
 
 
+def test_broker_wiring_digests_every_policy_path_root(tmp_path):
+    """POLICY_PATH may name more than one root, colon-separated -- this is the
+    one production entry point the whole policy_bundle_digest signature
+    change exists for. A bundle split across a rules root and a data root
+    must be digested as one, so changing a file in the SECOND root must
+    change the digest the broker wires up at startup. The previous
+    single-directory digest would have silently ignored a second root:
+    max_rows_per_task 50 -> 5,000,000 with every audit record still claiming
+    the identical policy."""
+    _, public_path = write_keypair(tmp_path)
+
+    rules_root = tmp_path / "policy_rules"
+    data_root = tmp_path / "policy_data"
+    rules_root.mkdir()
+    data_root.mkdir()
+    (rules_root / "authz.rego").write_text("package warden.authz\n")
+    (data_root / "data.json").write_text('{"limits": {"max_rows_per_task": 50}}\n')
+
+    env = broker_env(tmp_path, public_path)
+    env["POLICY_PATH"] = f"{rules_root}:{data_root}"
+
+    _, deps_before = broker_main.build(env, client=stub_client())
+
+    (data_root / "data.json").write_text('{"limits": {"max_rows_per_task": 5000000}}\n')
+
+    _, deps_after = broker_main.build(env, client=stub_client())
+
+    assert deps_before["policy_digest"] != deps_after["policy_digest"]
+
+
 # --- The control process: the only minter ----------------------------------
 
 
