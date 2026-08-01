@@ -1,5 +1,6 @@
 {
   "adversarial-1-mislabelled-db-target": {
+    "allow": false,
     "deny_reasons": [
       "input.malformed",
       "rows.bounded"
@@ -7,12 +8,14 @@
     "rule": "input.malformed"
   },
   "adversarial-2-undeclared-tool": {
+    "allow": false,
     "deny_reasons": [
       "input.malformed"
     ],
     "rule": "input.malformed"
   },
   "adversarial-3-mail-with-doc-target": {
+    "allow": false,
     "deny_reasons": [
       "input.malformed",
       "mail.counterparty"
@@ -20,6 +23,7 @@
     "rule": "input.malformed"
   },
   "adversarial-4-db-with-mail-target": {
+    "allow": false,
     "deny_reasons": [
       "input.malformed",
       "rows.scope"
@@ -27,28 +31,41 @@
     "rule": "input.malformed"
   },
   "adversarial-5-egress-allowlisted": {
+    "allow": true,
     "deny_reasons": [],
     "rule": "allow"
   },
   "adversarial-6-egress-tainted-to-unapproved": {
+    "allow": false,
     "deny_reasons": [
       "egress.pii_sink"
     ],
     "rule": "egress.pii_sink"
   },
+  "adversarial-7-tool-not-in-token": {
+    "allow": false,
+    "deny_reasons": [
+      "tools.allowed"
+    ],
+    "rule": "tools.allowed"
+  },
   "demo-1-read-ticket": {
+    "allow": true,
     "deny_reasons": [],
     "rule": "allow"
   },
   "demo-2-read-poisoned-kb": {
+    "allow": true,
     "deny_reasons": [],
     "rule": "allow"
   },
   "demo-3-read-one-customer": {
+    "allow": true,
     "deny_reasons": [],
     "rule": "allow"
   },
   "demo-4-bulk-read": {
+    "allow": false,
     "deny_reasons": [
       "rows.bounded",
       "rows.scope"
@@ -56,6 +73,7 @@
     "rule": "rows.bounded"
   },
   "demo-5-exfil-to-attacker": {
+    "allow": false,
     "deny_reasons": [
       "egress.allowlist",
       "egress.pii_sink"
@@ -63,12 +81,14 @@
     "rule": "egress.allowlist"
   },
   "demo-6-exfil-to-allowlisted-sink": {
+    "allow": false,
     "deny_reasons": [
       "egress.pii_sink"
     ],
     "rule": "egress.pii_sink"
   },
   "demo-7-reply-to-customer": {
+    "allow": true,
     "deny_reasons": [],
     "rule": "allow"
   }
