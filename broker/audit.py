@@ -102,7 +102,12 @@ class AuditLog:
             record = dict(body)
             record["hash"] = record_hash(body)
             with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record) + "\n")
+                # sort_keys, matching canonical_json. Without it the file's
+                # byte layout tracks dict insertion order, so a target built
+                # in a different order changes the file while every hash
+                # still verifies -- a diff that reads as tampering and
+                # checks as clean.
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
                 handle.flush()
             return record
 

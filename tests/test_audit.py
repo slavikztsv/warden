@@ -106,3 +106,33 @@ def test_injected_field_is_detected_as_tampering(tmp_path):
     ok, bad_seq = AuditLog(path).verify_chain()
     assert ok is False
     assert bad_seq == 1
+
+
+def test_written_lines_are_key_sorted(tmp_path):
+    """The file's bytes must not depend on dict insertion order.
+
+    canonical_json already sorts for hashing; the write did not, so a target
+    dict built in a different order changed the file while every hash still
+    verified. That is a diff a reader reads as tampering and every check
+    reads as clean.
+    """
+    log = AuditLog(tmp_path / "audit.jsonl")
+    log.append(
+        task_id="t",
+        agent_id="a",
+        purpose="p",
+        # Deliberately reverse-alphabetical, so insertion order and sorted
+        # order cannot coincide by accident.
+        target={"kind": "db", "host": "", "estimated_rows": 3},
+        action={"type": "tool_call", "tool": "x"},
+        args_digest="sha256:d",
+        decision="allow",
+        rule="allow",
+        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        policy_bundle_digest="sha256:b",
+    )
+    line = (tmp_path / "audit.jsonl").read_text().strip()
+    keys = list(json.loads(line).keys())
+    assert keys == sorted(keys), keys
+    nested = list(json.loads(line)["target"].keys())
+    assert nested == sorted(nested), nested
