@@ -94,9 +94,30 @@ def test_mail_sends_only_declared_fields():
     adapter.execute({"to": ["customer:8812"], "subject": "s", "body": "b",
                      "cc": ["attacker@evil.example"]})
     import json
-    sent = json.loads(calls[0][2])
+    method, url, body = calls[0]
+    assert method == "POST"
+    assert url == "http://mailer.internal/send"
+    sent = json.loads(body)
     assert sent == {"to": ["customer:8812"], "subject": "s", "body": "b"}
     assert "cc" not in sent
+
+
+def test_mail_respects_custom_path():
+    """Non-default path binding is exercised and honored."""
+    calls: list = []
+    adapter = MailAdapter(
+        binding={"base_url": "http://mailer.internal",
+                 "path": "/deliver",
+                 "fields": ["to", "subject", "body"]},
+        client=recording_client(calls),
+    )
+    adapter.execute({"to": ["user@example.com"], "subject": "test", "body": "msg"})
+    method, url, body = calls[0]
+    assert method == "POST"
+    assert url == "http://mailer.internal/deliver"
+    import json
+    sent = json.loads(body)
+    assert sent == {"to": ["user@example.com"], "subject": "test", "body": "msg"}
 
 
 def test_mail_records_no_read():
@@ -105,6 +126,48 @@ def test_mail_records_no_read():
         client=recording_client([]),
     )
     assert adapter.execute({"to": [], "subject": "", "body": ""}).data_class is None
+
+
+def test_docstore_execute_propagates_http_errors():
+    """Ensure non-2xx responses raise HTTPStatusError, not silently ignored."""
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    client = httpx.Client(transport=httpx.MockTransport(failing_handler))
+    adapter = DocstoreAdapter(
+        binding={"base_url": "http://docstore.internal", "data_class": "public"},
+        client=client,
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.execute({"doc_id": "ticket-1"})
+
+
+def test_http_execute_propagates_http_errors():
+    """Ensure non-2xx responses raise HTTPStatusError."""
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Server Error")
+
+    client = httpx.Client(transport=httpx.MockTransport(failing_handler))
+    adapter = HttpAdapter(
+        binding={"data_class": "public"},
+        client=client,
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.execute({"url": "http://example.com"})
+
+
+def test_mail_execute_propagates_http_errors():
+    """Ensure non-2xx responses raise HTTPStatusError."""
+    def failing_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Mail Service Error")
+
+    client = httpx.Client(transport=httpx.MockTransport(failing_handler))
+    adapter = MailAdapter(
+        binding={"base_url": "http://mailer.internal", "fields": ["to", "subject", "body"]},
+        client=client,
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.execute({"to": ["user@example.com"], "subject": "test", "body": "msg"})
 
 
 @pytest.mark.parametrize("adapter_cls,kind", [
