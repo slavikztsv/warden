@@ -1,11 +1,11 @@
 """Run the scenario with every stage narrated and explained.
 
-    python -m cli.explain               # guarded: recorded model, full narration
-    python -m cli.explain --unguarded   # the same run with no broker at all
-    python -m cli.explain --pause       # wait for Enter between steps
-    python -m cli.explain --live        # a real model instead of the recording
-    python -m cli.explain --quiet-why   # drop the explanations, keep the data
-    python -m cli.explain --live --task report   # live run that gets refused
+    warden-demo explain               # guarded: recorded model, full narration
+    warden-demo explain --unguarded   # the same run with no broker at all
+    warden-demo explain --pause       # wait for Enter between steps
+    warden-demo explain --live        # a real model instead of the recording
+    warden-demo explain --quiet-why   # drop the explanations, keep the data
+    warden-demo explain --live --task report   # live run that gets refused
 
 `--task` swaps the operator's instruction for one that asks directly for an
 out-of-scope action (see TASKS). It exists because a live model mostly declines
@@ -665,7 +665,7 @@ def _start_opa() -> tuple[subprocess.Popen, str]:
 
 USAGE = """warden — narrated debug runner
 
-  python -m cli.explain [--compare] [--unguarded] [--live] [--task NAME]
+  warden-demo explain [--compare] [--unguarded] [--live] [--task NAME]
                         [--pause] [--quiet-why]
 
 WHICH PROFILE
@@ -705,12 +705,12 @@ EVIDENCE
   full narration, which includes whatever the agent read.
 
 THE TWO COMMANDS WORTH MEMORISING
-  python -m cli.explain --compare --quiet-why
+  warden-demo explain --compare --quiet-why
       Deterministic. Same model output both sides, so the broker is the only
       difference: 121 bytes leak without it, 0 with it, ticket answered either
       way.
 
-  python -m cli.explain --compare --live --task report --quiet-why
+  warden-demo explain --compare --live --task report --quiet-why
       Live and unscripted. A real model asked for the whole customer table:
       10,312 records without the broker, 50 with it.
 """

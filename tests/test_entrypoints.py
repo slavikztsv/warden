@@ -619,6 +619,17 @@ def test_demo_script_rebuilds_before_starting_containers():
     allowlisted internal endpoint SUCCEEDED -- the demo's central claim,
     inverted, under a chain that reported itself intact.
 
+    `docker compose ... up` is not the only invocation that can start a
+    stale container: `docker compose ... run` does too, and `run` is what
+    starts agent-runtime -- the service most likely to go stale, because it
+    carries the scenario code Task 20 moved. Observed directly during that
+    task's own Docker verification: a `run` line with no `--build` silently
+    reused a pre-move image and crashed on an import the pre-move image
+    never had -- the exact failure mode this test exists to catch, just on
+    the invocation kind it did not yet check. Both `up` and `run` are
+    checked here now, each against its own expected count, so neither kind
+    can silently gain an unguarded line.
+
     Scans logical lines, not physical ones: an invocation split across a
     `\\` continuation must still be caught, and a comment merely narrating
     an invocation (this file's own established style, immediately above the
@@ -627,6 +638,8 @@ def test_demo_script_rebuilds_before_starting_containers():
     script = (REPO_ROOT / "demo" / "scripts" / "demo.sh").read_text()
     logical_lines = _shell_logical_lines(script)
     ups = [line for line in logical_lines if "docker compose" in line and " up " in line]
+    runs = [line for line in logical_lines if "docker compose" in line and " run " in line]
     assert len(ups) == 2, f"expected exactly one `docker compose ... up` per profile, found {len(ups)}: {ups}"
-    for line in ups:
-        assert "--build" in line, f"up without --build: {line.strip()}"
+    assert len(runs) == 2, f"expected exactly one `docker compose ... run` per profile, found {len(runs)}: {runs}"
+    for line in ups + runs:
+        assert "--build" in line, f"docker compose invocation without --build: {line.strip()}"

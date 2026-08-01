@@ -34,7 +34,7 @@ if [ "$PROFILE" = "unprotected" ]; then
   # allowlisted internal endpoint went through -- with the chain reporting
   # itself intact.
   docker compose --profile unprotected up -d --build docstore mailer sinkhole
-  docker compose --profile unprotected run --rm agent-runtime-unprotected
+  docker compose --profile unprotected run --build --rm agent-runtime-unprotected
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
 else
@@ -62,7 +62,7 @@ else
          "data_classes":["public","internal"],"counterparties":["customer:8812"]}' \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
   TASK_TOKEN="$TOKEN" AGENT_ARGS="$AGENT_ARGS" \
-    docker compose --profile guarded run --rm agent-runtime
+    docker compose --profile guarded run --build --rm agent-runtime
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
   echo

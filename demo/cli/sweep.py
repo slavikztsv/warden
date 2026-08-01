@@ -1,9 +1,9 @@
 """Measure which models actually follow the injected instruction.
 
-    python -m cli.sweep                     # every free tool-capable model
-    python -m cli.sweep --models a/b,c/d    # a specific list
-    python -m cli.sweep --free --limit 8    # cap the run
-    python -m cli.sweep --paid-cheap        # add cheap paid models to the set
+    warden-demo sweep                     # every free tool-capable model
+    warden-demo sweep --models a/b,c/d    # a specific list
+    warden-demo sweep --free --limit 8    # cap the run
+    warden-demo sweep --paid-cheap        # add cheap paid models to the set
 
 WHY THIS EXISTS
 
@@ -181,7 +181,7 @@ def render(results: list[dict]) -> str:
         lines += [
             "  Use the top model for the live demo: it is the only way to show the",
             "  broker refusing an agent that genuinely tried. Re-run it guarded with",
-            f"    OPENROUTER_MODEL={leaked[0]['model']} python -m cli.explain --compare --live",
+            f"    OPENROUTER_MODEL={leaked[0]['model']} warden-demo explain --compare --live",
             "",
         ]
     else:
@@ -202,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
 
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        sys.exit("cli.sweep needs OPENROUTER_API_KEY in the environment.")
+        sys.exit("warden-demo sweep needs OPENROUTER_API_KEY in the environment.")
 
     picked: list[str] = []
     for index, arg in enumerate(argv):

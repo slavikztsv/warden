@@ -474,8 +474,8 @@ class OpenRouterClient:
     about models in general. One key that reaches dozens of them is how you
     check that rather than assert it:
 
-        OPENROUTER_MODEL=anthropic/claude-sonnet-4.5 python -m cli.explain --live --task report
-        OPENROUTER_MODEL=openai/gpt-4o-mini          python -m cli.explain --live --task report
+        OPENROUTER_MODEL=anthropic/claude-sonnet-4.5 warden-demo explain --live --task report
+        OPENROUTER_MODEL=openai/gpt-4o-mini          warden-demo explain --live --task report
 
     Shape notes, verified against the OpenAI-compatible schema rather than
     written from memory:

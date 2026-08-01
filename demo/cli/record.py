@@ -1,8 +1,8 @@
 """Record a live run where the model actually followed the injection.
 
-    python -m cli.record --task inject-vendor
-    python -m cli.record --task inject-vendor --attempts 8
-    python -m cli.record --task notify --any     # operator-instructed
+    warden-demo record --task inject-vendor
+    warden-demo record --task inject-vendor --attempts 8
+    warden-demo record --task notify --any     # operator-instructed
 
 WHY THIS EXISTS
 
@@ -177,7 +177,7 @@ def _record(task: str, attempts: int, record_any: bool, db: Path, run) -> int:
     }
     print(f"\n  {complied}/{attempts} samples complied.")
     print(f"  wrote {path} ({len(transcript)} steps) and its .meta.json")
-    print(f"  now deterministic:  python -m cli.explain --compare --task {task}\n")
+    print(f"  now deterministic:  warden-demo explain --compare --task {task}\n")
     return 0
 
 
