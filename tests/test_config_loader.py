@@ -126,3 +126,62 @@ def test_invalid_toml_names_the_file(tmp_path):
     path = write(tmp_path, "[broker\n")
     with pytest.raises(ConfigError, match="warden.toml"):
         load_broker_config(path, env={})
+
+
+# Finding 1 (Important) — empty strings must be rejected, not silently accepted
+def test_an_empty_string_literal_is_rejected(tmp_path):
+    """An empty string in the config is as bad as an empty environment variable."""
+    text = COMPLETE.replace('"http://opa:8181"', '""')
+    with pytest.raises(ConfigError, match="policy.opa_url.*must not be empty"):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+def test_an_empty_interpolated_string_is_rejected(tmp_path):
+    """Setting OPA_URL= (empty) in the environment should also fail."""
+    text = COMPLETE.replace('"http://opa:8181"', '"${OPA_URL}"')
+    with pytest.raises(ConfigError, match="policy.opa_url.*must not be empty"):
+        load_broker_config(write(tmp_path, text), env={"OPA_URL": ""})
+
+
+def test_empty_bundle_root_entry_is_rejected(tmp_path):
+    """An empty path in bundle_roots must be rejected."""
+    text = COMPLETE.replace('bundle_roots  = ["/policies"]', 'bundle_roots  = [""]')
+    with pytest.raises(ConfigError, match="policy.bundle_roots.*must not be empty"):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+# Finding 2 (Important) — IPv6 and port range validation
+def test_ipv6_without_brackets_is_rejected(tmp_path):
+    """A bare IPv6 address like ::1 splits incorrectly and must be rejected."""
+    text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "::1"')
+    with pytest.raises(ConfigError, match="broker.listen.*host contains"):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+def test_ipv6_with_brackets_is_accepted(tmp_path):
+    """The standard IPv6 literal form [::1]:8080 should be accepted."""
+    text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "[::1]:8080"')
+    config = load_broker_config(write(tmp_path, text), env={})
+    assert config.listen == ("::1", 8080)
+
+
+def test_port_zero_is_rejected(tmp_path):
+    """Port 0 is not usable for binding."""
+    text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "0.0.0.0:0"')
+    with pytest.raises(ConfigError, match="broker.listen.*port must be 1-65535"):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+def test_port_out_of_range_is_rejected(tmp_path):
+    """Ports above 65535 are invalid."""
+    text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "0.0.0.0:70000"')
+    with pytest.raises(ConfigError, match="broker.listen.*port must be 1-65535"):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+# Finding 3 (Minor) — the bool guard needs a test
+def test_a_boolean_ttl_is_rejected(tmp_path):
+    """bool is an int subclass; ttl_seconds = true should error, not become 1."""
+    text = COMPLETE.replace("ttl_seconds = 300", "ttl_seconds = true")
+    with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
+        load_broker_config(write(tmp_path, text), env={})

@@ -66,7 +66,10 @@ def _string(section: dict, table: str, key: str, env: Mapping[str, str]) -> str:
     value = section.get(key)
     if not isinstance(value, str):
         raise ConfigError(f"{table}.{key} must be a string")
-    return interpolate(value, env)
+    result = interpolate(value, env)
+    if not result:
+        raise ConfigError(f"{table}.{key} must not be empty")
+    return result
 
 
 def _integer(section: dict, table: str, key: str) -> int:
@@ -82,7 +85,21 @@ def _address(section: dict, table: str, key: str, env: Mapping[str, str]) -> tup
     host, separator, port = raw.rpartition(":")
     if not separator or not host or not port.isdigit():
         raise ConfigError(f"{table}.{key} must be host:port, got {raw!r}")
-    return host, int(port)
+
+    # Reject unbracketed IPv6 addresses: if host contains : and is not bracketed, it's bare IPv6
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        raise ConfigError(f"{table}.{key}: host contains ':'; bracket an IPv6 literal as [::1]:8080")
+
+    # Handle IPv6 literals: [::1]:8080 -> host=::1, port=8080
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+
+    # Validate port range: must be 1-65535
+    port_num = int(port)
+    if port_num < 1 or port_num > 65535:
+        raise ConfigError(f"{table}.{key}: port must be 1-65535, got {port_num}")
+
+    return host, port_num
 
 
 def _paths(section: dict, table: str, key: str, env: Mapping[str, str]) -> tuple[Path, ...]:
@@ -93,7 +110,10 @@ def _paths(section: dict, table: str, key: str, env: Mapping[str, str]) -> tuple
     for entry in value:
         if not isinstance(entry, str):
             raise ConfigError(f"{table}.{key} entries must be strings")
-        roots.append(Path(interpolate(entry, env)))
+        interpolated = interpolate(entry, env)
+        if not interpolated:
+            raise ConfigError(f"{table}.{key} entries must not be empty")
+        roots.append(Path(interpolated))
     return tuple(roots)
 
 
