@@ -23,12 +23,13 @@ TARGET_KIND_BY_ADAPTER: Mapping[str, str] = {
 from broker.adapters.docstore import DocstoreAdapter
 from broker.adapters.http import HttpAdapter
 from broker.adapters.mail import MailAdapter
+from broker.adapters.sql import SqlAdapter
 
-# Filled by Tasks 10 and 11.
 ADAPTERS: dict[str, type] = {
     "docstore": DocstoreAdapter,
     "http": HttpAdapter,
     "mail": MailAdapter,
+    "sql": SqlAdapter,
 }
 
 
