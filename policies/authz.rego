@@ -144,7 +144,7 @@ deny_reasons contains "input.malformed" if {
 	not is_array(safe_target_recipients)
 }
 
-# R1b — tool/target agreement and value sanity. Two more fail-opens lived here.
+# R1b — tool/target agreement and value sanity. Three fail-opens lived here.
 #
 # First: R5's row check keys off `action.tool`, but the estimated_rows shape
 # check above keys off `target.kind == "db"`. A `query_customers` call carrying
@@ -156,13 +156,11 @@ deny_reasons contains "input.malformed" if {
 # row read evaluated to allow. Counts are cardinalities; they cannot be
 # negative.
 #
-# Written against the safe_* accessors, which are always defined, so the
-# negated-equality form is reliable here.
-# R1b — tool/target agreement, over the deployment's declared catalog.
-#
-# The literal {read_document: doc, ...} map that lived here was the last place
-# the product knew a tool name. Replacing it is where this generalization can
-# fail open, and the obvious spelling DOES:
+# Third — the pairing check below now reads "each tool's target" from the
+# deployment's declared catalog (data.tools) instead of a literal map. The
+# literal {read_document: doc, ...} map that lived here was the last place
+# the product knew a tool name, and replacing it is where this
+# generalization can fail open. The obvious spelling DOES:
 #
 #   expected := data.tools[safe_action_tool].target_kind
 #   not input.target.kind == expected
@@ -176,8 +174,25 @@ deny_reasons contains "input.malformed" if {
 # mechanism substitutes reliably when the primary definition is undefined at
 # any depth.
 #
-# is_object guards an array or scalar data.tools; is_string guards a null or
-# non-string target_kind. Both were measured firing.
+# Written against the safe_* accessors, which are always defined, so the
+# negated-equality form is reliable here.
+#
+# is_object and is_string below are belt-and-braces, not independently
+# necessary today: deleting either one alone left `opa test` at 53/53. Every
+# malformed-catalog shape in the suite (array, absent tool, null entry,
+# misspelled key) already makes the *lookup itself* undefined -- data.tools
+# indexed by a string when it is an array, or a missing key, or `.target_kind`
+# on `null` -- so safe_tool_catalog / safe_expected_target_kind fall back to
+# their `default` regardless of these two calls. Nor does a DEFINED
+# wrong-type target_kind need is_string: tried a catalog entry with
+# target_kind 42, is_string deleted -- the pairing rule below still denied,
+# because R0 guarantees input.target.kind is always a string and Rego never
+# considers a string equal to a number. Given R0's invariant, is_string(kind)
+# has no case left to catch. They stay because they keep these two accessors
+# honest to the file's safe_* idiom -- an always-defined value of the
+# DECLARED type, not just any defined value -- which is what the rest of this
+# file relies on to reason about each accessor locally, without re-deriving
+# what upstream rules already guarantee.
 default safe_tool_catalog := {}
 
 safe_tool_catalog := catalog if {
@@ -192,14 +207,23 @@ safe_expected_target_kind := kind if {
 	is_string(kind)
 }
 
-# This rule REPLACES the four-name allowlist; it does not merely complement
-# the pairing check. It says "this tool_call names a tool the deployment's
-# catalog does not declare", with no tool name embedded. Without it an
-# undeclared tool passes R1b even under a perfectly correct catalog, because
-# every other rule keys off target.kind.
+# The PAIRING rule below is what actually catches an undeclared tool today,
+# on its own: safe_expected_target_kind defaults to null for any tool not in
+# the catalog, and R0 (top of file) already guarantees input.target.kind is
+# one of doc/db/http/mail and therefore never null -- so a valid target kind
+# can never equal null, and the pairing rule fires without help. Verified by
+# deleting the is_string rule immediately below, on its own: opa test stayed
+# at 53/53, including the undeclared-tool test.
 #
-# The tool_call guard is load-bearing: egress carries no action.tool, so
-# safe_action_tool is null and an ungated rule denies every CONNECT.
+# The is_string rule is kept anyway, as defense in depth against that R0
+# coupling being weakened later (a target kind added without updating R0,
+# say), not because it is doing the work today. Together the two rules
+# REPLACE the four-name allowlist that used to live here, with no tool name
+# embedded in either.
+#
+# The tool_call guard is load-bearing on both rules: egress carries no
+# action.tool, so safe_action_tool is null and an ungated rule denies every
+# CONNECT.
 deny_reasons contains "input.malformed" if {
 	input.action.type == "tool_call"
 	not is_string(safe_expected_target_kind)
