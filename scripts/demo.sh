@@ -24,7 +24,13 @@ mkdir -p data
 python3 -c "from mocks.seed_db import seed_customers; seed_customers('data/customers.db', 10312)"
 
 if [ "$PROFILE" = "unprotected" ]; then
-  docker compose --profile unprotected up -d docstore mailer sinkhole
+  # --build on every run.  Without it Compose reuses whatever image exists,
+  # so a code change silently does not reach the containers: an image
+  # predating the `subjects` field made the policy deny every db read as
+  # input.malformed, the task never became tainted, and the PII POST to the
+  # allowlisted internal endpoint went through -- with the chain reporting
+  # itself intact.
+  docker compose --profile unprotected up -d --build docstore mailer sinkhole
   docker compose --profile unprotected run --rm agent-runtime-unprotected
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
@@ -43,7 +49,7 @@ else
   fi
   openssl pkey -in data/agent.key -pubout -out data/agent.pub
 
-  docker compose --profile guarded up -d opa docstore mailer sinkhole broker broker-control
+  docker compose --profile guarded up -d --build opa docstore mailer sinkhole broker broker-control
   sleep 3
   # localhost:8081 is broker-control, published to the host. The agent runtime
   # cannot reach it: broker-control is on backend-net only.

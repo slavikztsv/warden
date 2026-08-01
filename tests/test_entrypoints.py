@@ -332,3 +332,19 @@ def test_the_inspection_scanner_can_actually_see_a_network_attachment():
     happily against a scanner that reads the wrong block or an empty string."""
     assert "agent-net" in _compose_service_block("agent-runtime")
     assert "agent-net" in _compose_service_block("broker")
+
+
+def test_demo_script_rebuilds_before_starting_containers():
+    """A stale image runs old code while the run looks current.
+
+    Observed: an image predating the R7 `subjects` change emitted a target
+    dict without that key, the policy denied it input.malformed (correctly),
+    the task therefore never became tainted, and the PII POST to the
+    allowlisted internal endpoint SUCCEEDED -- the demo's central claim,
+    inverted, under a chain that reported itself intact.
+    """
+    script = (REPO_ROOT / "scripts" / "demo.sh").read_text()
+    ups = [line for line in script.splitlines() if "docker compose" in line and " up " in line]
+    assert ups, "no `docker compose up` found in demo.sh"
+    for line in ups:
+        assert "--build" in line, f"up without --build: {line.strip()}"
