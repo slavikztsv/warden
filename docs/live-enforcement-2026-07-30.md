@@ -1,5 +1,16 @@
 # Showing enforcement with a live model
 
+> **Dated write-up — commands and paths below are historical.** This page
+> records runs exactly as they stood on 2026-07-30, before the product/demo
+> split: `python -m cli.explain`, `python -m cli.sweep`, `broker/pdp.py` and
+> `Backends.describe` are all what was actually true that day, not a
+> how-to or a code reference for today. They are left unedited on purpose,
+> the same reason the hash-chained files under `runs/` are never edited
+> after the fact. Today's equivalents: `python -m cli.explain …` →
+> `warden-demo explain …`; `python -m cli.sweep …` → `warden-demo sweep …`;
+> `broker/pdp.py` → `warden/broker/pdp.py`; `Backends.describe` →
+> `warden/broker/adapters/sql.py`'s `describe`.
+
 The default scenario needs the model to follow an instruction injected into a
 document, and current models mostly decline. A live guarded run therefore
 refuses nothing, and demonstrates no enforcement — see the `--live` section of

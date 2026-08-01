@@ -26,9 +26,9 @@ confused-deputy problem, not a content problem.
 
   Found by building `--task crosscheck`, not by reading the rules — a live
   model asked to "check a few other customers" read three records with zero
-  refusals. `Backends.describe` now resolves a query into the subjects it
-  names, and R7 denies any that the token did not declare. The same scenario
-  now reads one record and refuses two.
+  refusals. `warden/broker/adapters/sql.py`'s `describe` now resolves a query
+  into the subjects it names, and R7 denies any that the token did not
+  declare. The same scenario now reads one record and refuses two.
 
   Two design notes worth stating. A read reaching an unbounded set (`plan=pro`,
   or no filter) reports the subject `"*"`, which can never appear in a
@@ -164,7 +164,15 @@ quietly fixed. Each is a real property of the system as shipped.
   connection's lifetime. The decision is recorded; the traffic is not.
 - **A failed audit write inside the proxy's refusal path is silent to the
   client**, where the same failure on the tool API returns 503. Asymmetric
-  because a refusal must still happen even when it cannot be recorded.
+  because a refusal must still happen even when it cannot be recorded. The
+  proxy and the tool API are asymmetric a second way, deliberately: the proxy
+  builds its own `target` dict inline from the CONNECT authority
+  (`warden/broker/proxy.py`) rather than going through an adapter's
+  `describe()`, so a CONNECT record carries six keys (`kind`, `host`, `port`,
+  `path`, `estimated_rows`, `recipients`) where a tool-call record carries
+  seven — the extra `subjects` key exists only for `ToolTarget`
+  (`warden/broker/adapters/base.py`), because only a database read has
+  subjects to name, and CONNECT has nothing to hand it.
 - **The policy is only as good as its input.** Six fail-open paths were found
   and closed during development, all invisible to a passing test suite: in
   Rego, an undefined sub-expression makes a rule body undefined, an undefined
