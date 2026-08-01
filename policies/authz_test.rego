@@ -13,6 +13,12 @@ mock_data := {
         "pii_approved_sinks": ["mailer.internal"],
     }},
     "limits": {"max_rows_per_task": 50},
+    "tools": {
+        "read_document": {"target_kind": "doc"},
+        "query_customers": {"target_kind": "db"},
+        "http_fetch": {"target_kind": "http"},
+        "send_email": {"target_kind": "mail"},
+    },
 }
 
 principal := {
@@ -613,6 +619,107 @@ test_a_db_target_with_wrong_typed_subjects_is_malformed if {
         "target": {"kind": "db", "subjects": "customer:8812", "estimated_rows": 1},
         "task_state": clean_state,
     }
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+# --- R1b: the tool/target map comes from the deployment's catalog ----------
+#
+# A correct data.tools mock in every case would reintroduce the blindness the
+# R1c comment describes, on a new key: verified that the mechanical mock edit
+# yields opa test PASS 44/44 over a policy that approves the mislabelled
+# 5,000,000-row read below at runtime. These mock the catalog BROKEN, the way
+# the existing R1c tests above mock an incomplete `data`.
+
+mislabelled_db_read := {
+    "principal": {
+        "agent_id": "a", "task_id": "t", "purpose": "support-triage",
+        "allowed_tools": ["query_customers"], "counterparties": [],
+    },
+    "action": {"type": "tool_call", "tool": "query_customers", "args_digest": "x"},
+    "target": {
+        "kind": "doc", "host": "", "port": 0, "path": "",
+        "estimated_rows": 5000000, "recipients": [], "subjects": [],
+    },
+    "task_state": {"data_classes_held": [], "rows_returned_so_far": 0},
+}
+
+test_absent_tool_catalog_denies if {
+    "input.malformed" in authz.deny_reasons with input as mislabelled_db_read
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+}
+
+test_empty_tool_catalog_denies if {
+    "input.malformed" in authz.deny_reasons with input as mislabelled_db_read
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as {}
+}
+
+test_tool_absent_from_the_catalog_denies if {
+    "input.malformed" in authz.deny_reasons with input as mislabelled_db_read
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as {"read_document": {"target_kind": "doc"}}
+}
+
+test_null_catalog_entry_denies if {
+    "input.malformed" in authz.deny_reasons with input as mislabelled_db_read
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as {"query_customers": null}
+}
+
+test_array_catalog_denies if {
+    "input.malformed" in authz.deny_reasons with input as mislabelled_db_read
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as ["query_customers"]
+}
+
+# A hyphen is a natural TOML-to-JSON transcription slip, and it is the shape
+# that fails OPEN with the naive accessor.
+test_misspelled_target_kind_key_denies if {
+    "input.malformed" in authz.deny_reasons with input as mislabelled_db_read
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as {"query_customers": {"target-kind": "db"}}
+}
+
+# An undeclared tool must be malformed even under a PERFECTLY CORRECT catalog.
+# This is what the deleted four-name allowlist did; nothing else covers it.
+test_undeclared_tool_denies_under_a_correct_catalog if {
+    "input.malformed" in authz.deny_reasons with input as object.union(
+        mislabelled_db_read,
+        {"action": {"type": "tool_call", "tool": "exfiltrate", "args_digest": "x"}},
+    )
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as mock_data.tools
+}
+
+# Egress carries no action.tool, so safe_action_tool is null. An ungated rule
+# makes every CONNECT malformed and the agent loses all model-API egress.
+allowlisted_egress := {
+    "principal": principal,
+    "action": {"type": "egress"},
+    "target": {
+        "kind": "http", "host": "docstore.internal", "port": 443, "path": "",
+        "estimated_rows": 0, "recipients": [],
+    },
+    "task_state": clean_state,
+}
+
+test_egress_is_unaffected_by_the_catalog if {
+    authz.allow with input as allowlisted_egress
+        with data.purposes as mock_data.purposes
+        with data.limits as mock_data.limits
+        with data.tools as {}
+}
+
+test_egress_is_unaffected_by_an_absent_catalog if {
+    authz.allow with input as allowlisted_egress
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
 }

@@ -1,4 +1,10 @@
 {
+  "tools": {
+    "read_document":   {"target_kind": "doc"},
+    "query_customers": {"target_kind": "db"},
+    "http_fetch":      {"target_kind": "http"},
+    "send_email":      {"target_kind": "mail"}
+  },
   "purposes": {
     "support-triage": {
       "egress_allow": [

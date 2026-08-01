@@ -158,25 +158,56 @@ deny_reasons contains "input.malformed" if {
 #
 # Written against the safe_* accessors, which are always defined, so the
 # negated-equality form is reliable here.
-expected_target_kind := {
-	"read_document": "doc",
-	"query_customers": "db",
-	"http_fetch": "http",
-	"send_email": "mail",
+# R1b — tool/target agreement, over the deployment's declared catalog.
+#
+# The literal {read_document: doc, ...} map that lived here was the last place
+# the product knew a tool name. Replacing it is where this generalization can
+# fail open, and the obvious spelling DOES:
+#
+#   expected := data.tools[safe_action_tool].target_kind
+#   not input.target.kind == expected
+#
+# `:=` with an undefined right-hand side makes the assignment undefined, so
+# the body is undefined and the rule contributes NO deny reason -- the exact
+# shape the R1c comment below documents. Measured on OPA 1.19.0 against the
+# shipped data.json before `tools` existed: combined with R5 keyed on target
+# kind, a 5,000,000-row read carrying a mislabelled target evaluated to
+# allow:true with an empty deny_reasons set. Only the rule-level `default`
+# mechanism substitutes reliably when the primary definition is undefined at
+# any depth.
+#
+# is_object guards an array or scalar data.tools; is_string guards a null or
+# non-string target_kind. Both were measured firing.
+default safe_tool_catalog := {}
+
+safe_tool_catalog := catalog if {
+	catalog := data.tools
+	is_object(catalog)
+}
+
+default safe_expected_target_kind := null
+
+safe_expected_target_kind := kind if {
+	kind := safe_tool_catalog[safe_action_tool].target_kind
+	is_string(kind)
+}
+
+# This rule REPLACES the four-name allowlist; it does not merely complement
+# the pairing check. It says "this tool_call names a tool the deployment's
+# catalog does not declare", with no tool name embedded. Without it an
+# undeclared tool passes R1b even under a perfectly correct catalog, because
+# every other rule keys off target.kind.
+#
+# The tool_call guard is load-bearing: egress carries no action.tool, so
+# safe_action_tool is null and an ungated rule denies every CONNECT.
+deny_reasons contains "input.malformed" if {
+	input.action.type == "tool_call"
+	not is_string(safe_expected_target_kind)
 }
 
 deny_reasons contains "input.malformed" if {
 	input.action.type == "tool_call"
-	not safe_action_tool == "read_document"
-	not safe_action_tool == "query_customers"
-	not safe_action_tool == "http_fetch"
-	not safe_action_tool == "send_email"
-}
-
-deny_reasons contains "input.malformed" if {
-	input.action.type == "tool_call"
-	expected := expected_target_kind[safe_action_tool]
-	not input.target.kind == expected
+	not input.target.kind == safe_expected_target_kind
 }
 
 # Egress is by definition a network action, so it must carry an http target.
