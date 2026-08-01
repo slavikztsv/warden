@@ -1,0 +1,39 @@
+{
+  "action": {
+    "args_digest": "sha256:f5f4a4188ffebc917db8a08274d1c8027153b12bbd2997aecc0e808694b6131a",
+    "tool": "send_email",
+    "type": "tool_call"
+  },
+  "principal": {
+    "agent_id": "triage-bot",
+    "allowed_tools": [
+      "read_document",
+      "query_customers",
+      "http_fetch",
+      "send_email"
+    ],
+    "counterparties": [
+      "customer:8812"
+    ],
+    "purpose": "support-triage",
+    "task_id": "4711"
+  },
+  "target": {
+    "estimated_rows": 0,
+    "host": "",
+    "kind": "mail",
+    "path": "",
+    "port": 0,
+    "recipients": [
+      "customer:8812"
+    ],
+    "subjects": []
+  },
+  "task_state": {
+    "data_classes_held": [
+      "pii",
+      "public"
+    ],
+    "rows_returned_so_far": 1
+  }
+}

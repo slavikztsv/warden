@@ -1,0 +1,37 @@
+{
+  "action": {
+    "args_digest": "sha256:422d67a5c51b9d5efeb8f0636e10d33e0ad0218f54b733ff7b31f7a564a37512",
+    "tool": "http_fetch",
+    "type": "tool_call"
+  },
+  "principal": {
+    "agent_id": "triage-bot",
+    "allowed_tools": [
+      "read_document",
+      "query_customers",
+      "http_fetch",
+      "send_email"
+    ],
+    "counterparties": [
+      "customer:8812"
+    ],
+    "purpose": "support-triage",
+    "task_id": "4711"
+  },
+  "target": {
+    "estimated_rows": 0,
+    "host": "docstore.internal",
+    "kind": "http",
+    "path": "/feedback",
+    "port": 80,
+    "recipients": [],
+    "subjects": []
+  },
+  "task_state": {
+    "data_classes_held": [
+      "pii",
+      "public"
+    ],
+    "rows_returned_so_far": 1
+  }
+}

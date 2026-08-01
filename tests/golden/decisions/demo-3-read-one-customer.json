@@ -1,0 +1,38 @@
+{
+  "action": {
+    "args_digest": "sha256:18073da6c45db90278ac1e8862c0504af47048218d16c85a3527e29f26c1364e",
+    "tool": "query_customers",
+    "type": "tool_call"
+  },
+  "principal": {
+    "agent_id": "triage-bot",
+    "allowed_tools": [
+      "read_document",
+      "query_customers",
+      "http_fetch",
+      "send_email"
+    ],
+    "counterparties": [
+      "customer:8812"
+    ],
+    "purpose": "support-triage",
+    "task_id": "4711"
+  },
+  "target": {
+    "estimated_rows": 1,
+    "host": "",
+    "kind": "db",
+    "path": "",
+    "port": 0,
+    "recipients": [],
+    "subjects": [
+      "customer:8812"
+    ]
+  },
+  "task_state": {
+    "data_classes_held": [
+      "public"
+    ],
+    "rows_returned_so_far": 0
+  }
+}

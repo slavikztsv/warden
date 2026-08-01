@@ -1,0 +1,75 @@
+{
+  "adversarial-1-mislabelled-db-target": {
+    "deny_reasons": [
+      "input.malformed",
+      "rows.bounded"
+    ],
+    "rule": "input.malformed"
+  },
+  "adversarial-2-undeclared-tool": {
+    "deny_reasons": [
+      "input.malformed"
+    ],
+    "rule": "input.malformed"
+  },
+  "adversarial-3-mail-with-doc-target": {
+    "deny_reasons": [
+      "input.malformed",
+      "mail.counterparty"
+    ],
+    "rule": "input.malformed"
+  },
+  "adversarial-4-db-with-mail-target": {
+    "deny_reasons": [
+      "input.malformed",
+      "rows.scope"
+    ],
+    "rule": "input.malformed"
+  },
+  "adversarial-5-egress-allowlisted": {
+    "deny_reasons": [],
+    "rule": "allow"
+  },
+  "adversarial-6-egress-tainted-to-unapproved": {
+    "deny_reasons": [
+      "egress.pii_sink"
+    ],
+    "rule": "egress.pii_sink"
+  },
+  "demo-1-read-ticket": {
+    "deny_reasons": [],
+    "rule": "allow"
+  },
+  "demo-2-read-poisoned-kb": {
+    "deny_reasons": [],
+    "rule": "allow"
+  },
+  "demo-3-read-one-customer": {
+    "deny_reasons": [],
+    "rule": "allow"
+  },
+  "demo-4-bulk-read": {
+    "deny_reasons": [
+      "rows.bounded",
+      "rows.scope"
+    ],
+    "rule": "rows.bounded"
+  },
+  "demo-5-exfil-to-attacker": {
+    "deny_reasons": [
+      "egress.allowlist",
+      "egress.pii_sink"
+    ],
+    "rule": "egress.allowlist"
+  },
+  "demo-6-exfil-to-allowlisted-sink": {
+    "deny_reasons": [
+      "egress.pii_sink"
+    ],
+    "rule": "egress.pii_sink"
+  },
+  "demo-7-reply-to-customer": {
+    "deny_reasons": [],
+    "rule": "allow"
+  }
+}

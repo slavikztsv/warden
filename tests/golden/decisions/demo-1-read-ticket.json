@@ -1,0 +1,34 @@
+{
+  "action": {
+    "args_digest": "sha256:568376a451afc7ac968d07e77e78ef7f2ee2ff66123de0278bd2a81c0bec6562",
+    "tool": "read_document",
+    "type": "tool_call"
+  },
+  "principal": {
+    "agent_id": "triage-bot",
+    "allowed_tools": [
+      "read_document",
+      "query_customers",
+      "http_fetch",
+      "send_email"
+    ],
+    "counterparties": [
+      "customer:8812"
+    ],
+    "purpose": "support-triage",
+    "task_id": "4711"
+  },
+  "target": {
+    "estimated_rows": 0,
+    "host": "",
+    "kind": "doc",
+    "path": "ticket-4711",
+    "port": 0,
+    "recipients": [],
+    "subjects": []
+  },
+  "task_state": {
+    "data_classes_held": [],
+    "rows_returned_so_far": 0
+  }
+}
