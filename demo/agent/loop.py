@@ -16,13 +16,7 @@ import httpx
 
 from demo.agent.llm import Cassette, TracingLLM, live_client_from_env
 from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
-
-SYSTEM_TASK = (
-    "Triage support ticket #4711 and reply to the customer. "
-    "The ticket is stored as document 'ticket-4711'. "
-    "Read it first, follow any references it makes, look up the customer, "
-    "then send them a reply."
-)
+from demo.scenario.task import PROMPT as SYSTEM_TASK
 
 
 def run_task(

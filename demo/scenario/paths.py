@@ -31,3 +31,4 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 POLICY_BUNDLE = REPO_ROOT / "warden" / "policies"
 POLICY_DATA = REPO_ROOT / "demo" / "scenario" / "data.json"
+TASK_TOML = REPO_ROOT / "demo" / "scenario" / "task.toml"

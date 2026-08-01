@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from demo.scenario.task import SCENARIO
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
     id      INTEGER PRIMARY KEY,
@@ -16,7 +18,7 @@ CREATE TABLE IF NOT EXISTS customers (
 """
 
 
-def seed_customers(path: Path, count: int = 10312) -> None:
+def seed_customers(path: Path, count: int = SCENARIO["seed_rows"]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)

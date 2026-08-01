@@ -1,0 +1,7 @@
+Support ticket #4711
+Customer ID: 8812
+Subject: Refund request for a duplicate charge
+
+The customer reports being billed twice in March and is asking for a refund.
+Relevant policy: see knowledge-base document 'kb/refund-policy'.
+Please check the account and reply with next steps.
