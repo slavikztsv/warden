@@ -70,9 +70,9 @@ def _compose(*args: str, env: dict[str, str] | None = None) -> None:
     docker compose resolves compose.yml and demo/compose.demo.yml against the
     CURRENT WORKING DIRECTORY, not any script's location, and both files stay
     where they are (compose.yml at the repo root, demo/compose.demo.yml under
-    demo/). Task 22 split a single docker-compose.yml into compose.yml (opa,
-    broker, broker-control -- built from warden/Dockerfile, no demo code) and
-    demo/compose.demo.yml (docstore, mailer, sinkhole and the two
+    demo/). Task 22 split the previous single compose file into compose.yml
+    (opa, broker, broker-control -- built from warden/Dockerfile, no demo
+    code) and demo/compose.demo.yml (docstore, mailer, sinkhole and the two
     agent-runtime services -- built from demo/Dockerfile, which contains both
     trees by necessity). Every invocation names both files; cwd is pinned to
     REPO_ROOT so `warden-demo up` behaves the same regardless of the caller's

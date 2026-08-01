@@ -44,6 +44,23 @@ class SqlAdapter:
     # a POLICY choice -- an omitted filter would otherwise default to an
     # unbounded read judged by policy -- not a KeyError guard.)
     REQUIRED_ARGS: tuple[str, ...] = ()
+    EXECUTE_REQUIRED_ARGS: tuple[str, ...] = ()
+
+    # filter_arg names an argument, but is read via .get() everywhere -- so
+    # it never needs `required = true`. It still needs to name a real key,
+    # though: with the schema default unknown_args = "reject", a filter_arg
+    # the schema does not declare can never be populated by any valid call,
+    # so describe()/execute() would silently see the "no filter" default on
+    # EVERY call -- an unbounded read that policy then judges as if it were a
+    # deliberate, scoped query. See Adapter.ARG_ATTRS.
+    ARG_ATTRS: tuple[str, ...] = ("_filter_arg",)
+
+    # The [binding] keys this adapter's __init__ reads. See Adapter.BINDING_KEYS.
+    BINDING_KEYS: tuple[str, ...] = (
+        "db", "table", "columns", "subject_column", "subject_prefix",
+        "subject_type", "default_column", "unfiltered", "filter_arg",
+        "data_class",
+    )
 
     def __init__(self, *, binding: dict, client=None) -> None:
         self._db_path = Path(binding["db"])
@@ -67,6 +84,10 @@ class SqlAdapter:
         self._unfiltered = tuple(binding.get("unfiltered", ["", "all", "*"]))
         self._filter_arg = binding.get("filter_arg", "filter")
         self._data_class = binding.get("data_class")
+
+    @property
+    def data_class(self) -> str | None:
+        return self._data_class
 
     @property
     def _subject_marker(self) -> str:

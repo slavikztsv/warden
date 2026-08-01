@@ -14,13 +14,12 @@ still claim the identical policy.
 A root may also be a single FILE, not just a directory. In the container the
 compose flat-mounts authz.rego and data.json into the same /policies
 directory (Task 22), so that one directory is still the whole bundle and the
-directory form is all production ever needs. Locally, though, data.json's
-real path (demo/scenario/data.json) sits beside tools.toml, warden.toml,
-control.toml and catalog.py -- files that are not part of what OPA loads --
-so demo/cli/explain.py and the test suite that starts its own local `opa
-run` need to name that one file without pulling its siblings into the
-digest. A file root contributes itself, keyed by its own name rather than a
-path relative to a directory it is not inside.
+directory form is all production ever needs. Locally, though, a deployment's
+data.json commonly sits beside its other config -- tools.toml, warden.toml,
+control.toml -- files that are not part of what OPA loads, so a local CLI or
+test suite that starts its own `opa run` needs to name that one file without
+pulling its siblings into the digest. A file root contributes itself, keyed
+by its own name rather than a path relative to a directory it is not inside.
 """
 
 from __future__ import annotations

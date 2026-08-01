@@ -13,6 +13,19 @@ class MailAdapter:
     # is guarded by `if name in args` -- nothing here is dereferenced
     # unconditionally.
     REQUIRED_ARGS: tuple[str, ...] = ()
+    EXECUTE_REQUIRED_ARGS: tuple[str, ...] = ()
+
+    # recipients_arg names an argument, read via .get() in describe(), so it
+    # never needs `required = true` -- but it does need to name a real schema
+    # key, the same reasoning as SqlAdapter.ARG_ATTRS. (recipients_arg is
+    # separately required to be one of `fields` -- see
+    # broker/config/catalog.py's _check_mail_binding -- which is a different
+    # defect: this one is about the ARGS schema, that one is about the wire
+    # payload.)
+    ARG_ATTRS: tuple[str, ...] = ("_recipients_arg",)
+
+    # The [binding] keys this adapter's __init__ reads. See Adapter.BINDING_KEYS.
+    BINDING_KEYS: tuple[str, ...] = ("base_url", "path", "recipients_arg", "fields", "data_class")
 
     def __init__(self, *, binding: dict, client) -> None:
         self._base_url = str(binding["base_url"]).rstrip("/")
@@ -25,6 +38,10 @@ class MailAdapter:
         self._fields = tuple(binding["fields"])
         self._data_class = binding.get("data_class")
         self._client = client
+
+    @property
+    def data_class(self) -> str | None:
+        return self._data_class
 
     def describe(self, args: dict) -> ToolTarget:
         return ToolTarget(

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from warden.broker.adapters.base import ToolTarget
-from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
+from warden.broker.adapters.registry import ADAPTERS, TARGET_KIND_BY_ADAPTER, build_adapter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -34,6 +34,16 @@ def test_every_adapter_kind_maps_to_something():
     assert TARGET_KIND_BY_ADAPTER == {
         "docstore": "doc", "sql": "db", "http": "http", "mail": "mail",
     }
+
+
+def test_target_kind_by_adapter_agrees_with_each_adapter_classs_own_attribute():
+    """TARGET_KIND_BY_ADAPTER and each adapter class's own `target_kind`
+    class attribute are two hand-written literals pinned to the same values,
+    but not to EACH OTHER -- nothing stopped one from drifting while the
+    other stayed put. This links them structurally."""
+    assert {kind: cls.target_kind for kind, cls in ADAPTERS.items()} == dict(
+        TARGET_KIND_BY_ADAPTER
+    )
 
 
 def test_building_an_unknown_kind_is_an_error():

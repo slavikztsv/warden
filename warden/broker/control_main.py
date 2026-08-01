@@ -4,7 +4,7 @@ Run as `python -m warden.broker.control_main`. This is the only process that loa
 the private key and therefore the only process that can mint a token.
 
 The separation is topological, not a policy check. The `broker-control`
-service in docker-compose.yml is attached to `backend-net` only -- never to
+service in compose.yml is attached to `backend-net` only -- never to
 `agent-net` -- so no route exists from the agent runtime to this listener at
 all. That is the design's actual claim ("the agent can never mint itself a
 broader token"), and it is worth more than an auth check on the route, because

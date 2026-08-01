@@ -67,6 +67,42 @@ class Adapter(Protocol):
     # attribute, rather than pattern-matched from source.
     REQUIRED_ARGS: tuple[str, ...] = ()
 
+    # The execute()-time twin of REQUIRED_ARGS. describe() and execute() can
+    # disagree about which arguments they dereference unconditionally --
+    # DocstoreAdapter's describe() reads args.get(self._arg, ""), but its
+    # execute() reads args[self._arg]. A manifest that leaves that arg
+    # optional lets describe() (and therefore the policy decision) succeed on
+    # a call that then KeyErrors in execute() -- AFTER the allow is durably
+    # audited, so the log asserts an authorised action that never happened.
+    # `warden config check` requires the matching schema entry to be
+    # `required = true` for every name listed here, the same way it does for
+    # REQUIRED_ARGS.
+    EXECUTE_REQUIRED_ARGS: tuple[str, ...] = ()
+
+    # Every instance attribute (not just the unconditionally-dereferenced
+    # ones above) whose value is an argument name -- i.e. every binding key
+    # that the adapter uses to pick WHICH key of `args` to read, whether via
+    # args[name] or args.get(name, ...). `warden config check` requires each
+    # one to name a key that [tools.<tool>.args] actually declares. Without
+    # this, a binding like SqlAdapter's filter_arg can point at an argument
+    # name the schema never mentions: with the schema's default
+    # unknown_args = "reject", no valid call can ever populate that key, so
+    # the adapter silently falls back to its "no filter" default on every
+    # single call -- an unbounded read that policy then judges as if it were
+    # a real, deliberate query. A superset of REQUIRED_ARGS and
+    # EXECUTE_REQUIRED_ARGS (both of those are also argument-name attributes,
+    # just ones held to the stricter `required = true` bar too).
+    ARG_ATTRS: tuple[str, ...] = ()
+
+    # The [binding] keys this adapter's __init__ actually reads. Enforced at
+    # LOAD time (broker/config/catalog.py), not by `warden config check`: a
+    # binding key this tuple does not list is a ConfigError before the
+    # broker ever serves a request. The alternative -- silently ignoring it
+    # -- is how omitting a tool's `data_class = "pii"` binding used to
+    # disable the PII data-flow control with no error at all. Declared as
+    # data on each concrete class, the same shape as REQUIRED_ARGS.
+    BINDING_KEYS: tuple[str, ...] = ()
+
     def describe(self, args: dict) -> ToolTarget: ...
 
     def execute(self, args: dict) -> ToolResult: ...

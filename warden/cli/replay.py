@@ -96,12 +96,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=["replay", "verify-chain", "config"])
     parser.add_argument("task_id", nargs="?", default=None)
     parser.add_argument("--audit", default="data/audit.jsonl")
-    parser.add_argument("--catalog", default="demo/scenario/tools.toml")
-    parser.add_argument("--data", default="demo/scenario/data.json")
+    # No defaults for --catalog/--data: a default path into this repo's own
+    # bundled demo scenario is exactly the scenario knowledge
+    # tests/test_seam.py exists to keep out of warden/ -- `config` run with
+    # no flags must ask for them rather than silently checking a demo it has
+    # never heard of.
+    # Validated below (only "config" uses them; "replay" and "verify-chain"
+    # never pass them at all, so this cannot be plain argparse required=True
+    # on a parser shared by all three commands).
+    parser.add_argument("--catalog", default=None, help="path to your tools.toml")
+    parser.add_argument("--data", default=None, help="path to your policy data.json")
     parser.add_argument("--opa", default=None)
     args = parser.parse_args(argv)
 
     if args.command == "config":
+        if not args.catalog or not args.data:
+            print("error: config requires --catalog and --data", file=sys.stderr)
+            return 2
         # Offline, this compares tools.toml against data.json: two files
         # authored independently on purpose, so R1b stays a real check on a
         # broker that mislabels a target rather than a value compared with
@@ -111,13 +122,16 @@ def main(argv: list[str] | None = None) -> int:
         # from a running server: the only way to catch a bundle mounted
         # where OPA namespaces the document to something other than
         # data.tools, which no file comparison can see.
-        from warden.broker.config.check import check_catalog
+        from warden.broker.config.check import check_catalog, check_catalog_findings
 
         problems = check_catalog(
             Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
         )
         for problem in problems:
             print(f"✗ {problem}", file=sys.stderr)
+        # Advisory, never a reason to exit 1 -- see check.py's own docstring.
+        for finding in check_catalog_findings(Path(args.catalog), env=os.environ):
+            print(f"ℹ {finding}", file=sys.stderr)
         if problems:
             return 1
         print("config consistent")
@@ -181,10 +195,12 @@ def main(argv: list[str] | None = None) -> int:
     # exit code said success, and the verdict would live only in stdout. This is
     # the same command that used to assert integrity it had never checked --
     # it must not now check it and then shrug. `verify-chain` already exits 1;
-    # so does this. scripts/demo.sh runs under `set -euo pipefail` and will
-    # therefore abort on a broken chain, which is the behaviour we want: a
-    # demo that completes cheerfully over a tampered audit log is worse than
-    # one that stops.
+    # so does this. `warden-demo up` (demo/cli/main.py's `_cmd_up`) propagates
+    # this exact exit code as its own return value, unmodified, so a broken
+    # chain still aborts the run loudly -- the same property the retired
+    # shell script got for free from `set -euo pipefail`. A demo that
+    # completes cheerfully over a tampered audit log is worse than one that
+    # stops.
     return 0 if chain_ok else 1
 
 

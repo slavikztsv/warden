@@ -20,8 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = REPO_ROOT / "tests" / "golden"
 CORPUS = GOLDEN / "decisions"
 
-# From the token scripts/demo.sh mints. Not in the audit record, because a
-# record states what was decided, not what the token permitted.
+# From the token `warden-demo up` mints (demo/cli/main.py's `_mint_token`).
+# Not in the audit record, because a record states what was decided, not
+# what the token permitted.
 TOKEN_FIELDS = {
     "allowed_tools": ["read_document", "query_customers", "http_fetch", "send_email"],
     "counterparties": ["customer:8812"],

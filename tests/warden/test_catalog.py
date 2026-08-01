@@ -137,6 +137,50 @@ body    = { type = "string", required = true }
         load_catalog(write(tmp_path, text), env={"MAILER_URL": "http://m"}, client=None)
 
 
+# --- Every [binding] key must be one the adapter kind actually reads -------
+#
+# Before the split, `data_class = "pii"` was compiled into broker/backends.py
+# -- there was no key to misspell or drop. Moving it into config made it
+# OMISSIBLE: an adapter's __init__ reads binding keys with dict.get(...), so
+# an unrecognised key was silently IGNORED rather than rejected. This is the
+# same shape of gap schema.py's `unknown_args` closes for [args]; catalog.py's
+# _check_binding_keys closes it for [binding].
+
+
+def test_a_misspelled_binding_key_is_a_startup_failure(tmp_path):
+    """The reviewer's reproduction: `dataclass` (missing the underscore)
+    where `data_class` belongs used to load cleanly and silently disable the
+    PII data-flow control -- the tool's results would never taint the task."""
+    text = MANIFEST.replace("data_class = \"public\"", "dataclass = \"public\"")
+    with pytest.raises(ConfigError, match="dataclass"):
+        load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
+
+
+def test_a_binding_key_that_belongs_to_a_different_adapter_kind_is_a_startup_failure(tmp_path):
+    """`filter_arg` is a real key -- for SqlAdapter, not DocstoreAdapter. A
+    key valid for one kind and typoed onto another must still fail, or a
+    copy-pasted binding from one tool to another of a different kind loads
+    cleanly and silently does nothing."""
+    text = MANIFEST.replace(
+        'data_class = "public"', 'data_class = "public"\nfilter_arg = "x"'
+    )
+    with pytest.raises(ConfigError, match="filter_arg"):
+        load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
+
+
+def test_the_shipped_demo_manifest_declares_only_recognised_binding_keys():
+    """Positive control: the real manifest must keep loading cleanly under
+    this check -- it is not exercised by test_the_shipped_demo_manifest_loads
+    alone failing loudly if it broke, since that test does not assert
+    anything binding-key-specific."""
+    from tests.support.catalog import demo_catalog
+
+    demo_catalog(
+        docstore_url="http://docstore.internal", db_path="data/customers.db",
+        mailer_url="http://mailer.internal", client=None,
+    )
+
+
 def test_a_mail_tool_with_an_explicit_recipients_arg_not_in_fields_is_a_startup_failure(tmp_path):
     text = """
 [tools.send_email]

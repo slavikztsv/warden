@@ -1,7 +1,7 @@
 # The control plane's wiring: where it listens, the private key it is the
 # only process allowed to load, and the token issuer/TTL it mints under.
 # Mounted read-only into the `broker-control` service at
-# /config/control.toml (see docker-compose.yml) and pointed to by
+# /config/control.toml (see compose.yml) and pointed to by
 # WARDEN_CONTROL_CONFIG.
 #
 # [tokens].issuer must match warden.toml's [tokens].issuer exactly -- the

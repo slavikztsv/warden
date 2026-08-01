@@ -18,12 +18,32 @@ class DocstoreAdapter:
     # so nothing here is dereferenced unconditionally.
     REQUIRED_ARGS: tuple[str, ...] = ()
 
+    # execute() below, unlike describe(), reads args[self._arg] with no
+    # default. A manifest that leaves that arg optional in the schema lets
+    # describe() (and the policy decision built on it) succeed on a call that
+    # then KeyErrors here -- AFTER the allow is already durably audited, so
+    # the log asserts an authorised read that never actually happened. See
+    # Adapter.EXECUTE_REQUIRED_ARGS.
+    EXECUTE_REQUIRED_ARGS: tuple[str, ...] = ("_arg",)
+
+    # Superset of the above: every attribute whose value names an argument,
+    # required or not, so `warden config check` can require it to be a key
+    # [tools.<tool>.args] actually declares. See Adapter.ARG_ATTRS.
+    ARG_ATTRS: tuple[str, ...] = ("_arg",)
+
+    # The [binding] keys this adapter's __init__ reads. See Adapter.BINDING_KEYS.
+    BINDING_KEYS: tuple[str, ...] = ("base_url", "path_template", "arg", "data_class")
+
     def __init__(self, *, binding: dict, client) -> None:
         self._base_url = str(binding["base_url"]).rstrip("/")
         self._template = binding.get("path_template", "/docs/{doc_id}")
         self._arg = binding.get("arg", "doc_id")
         self._data_class = binding.get("data_class")
         self._client = client
+
+    @property
+    def data_class(self) -> str | None:
+        return self._data_class
 
     def describe(self, args: dict) -> ToolTarget:
         # The BARE id, not the resolved request path. describe() and execute()

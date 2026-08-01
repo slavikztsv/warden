@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from warden.broker.adapters.base import ToolResult, ToolTarget, UnknownTool
-from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
+from warden.broker.adapters.registry import ADAPTERS, TARGET_KIND_BY_ADAPTER, build_adapter
 from warden.broker.config.loader import ConfigError, interpolate
 from warden.broker.config.schema import ToolSchema, parse_tool_schema
 
@@ -86,18 +86,54 @@ class ToolCatalog:
 
 
 def _interpolate_binding(binding: dict, env: Mapping[str, str], where: str) -> dict:
+    """`where` names the tool this binding belongs to, so a missing ${VAR}
+    reads as "tool 'some_tool': ${SOME_VAR} is not set" at boot rather than
+    the bare, tool-less message interpolate() raises on its own -- the
+    difference between one manifest to check and a deployment with a dozen
+    tools sharing that same variable name."""
     resolved = {}
     for key, value in binding.items():
-        if isinstance(value, str):
-            resolved[key] = interpolate(value, env)
-        elif isinstance(value, list):
-            resolved[key] = [
-                interpolate(item, env) if isinstance(item, str) else item
-                for item in value
-            ]
-        else:
-            resolved[key] = value
+        try:
+            if isinstance(value, str):
+                resolved[key] = interpolate(value, env)
+            elif isinstance(value, list):
+                resolved[key] = [
+                    interpolate(item, env) if isinstance(item, str) else item
+                    for item in value
+                ]
+            else:
+                resolved[key] = value
+        except ConfigError as exc:
+            raise ConfigError(f"tool {where!r}: {exc}") from exc
     return resolved
+
+
+def _check_binding_keys(tool: str, kind: str, binding: dict) -> None:
+    """Every [binding] key must be one the adapter actually reads.
+
+    Before the split, `data_class="pii"` was compiled straight into the
+    broker's own source -- there was no key to misspell or drop. Moving it
+    into config made it OMISSIBLE, and this is the guard that answers it: an
+    adapter's __init__ reads binding keys with dict.get(...), so an unknown
+    key (a typo, or a key that belongs to a different adapter kind) is not a
+    KeyError anywhere -- it is silently IGNORED, the same way `unknown_args`
+    schema.py exists to make impossible for [args] (see its own comment: "a
+    typo that silently disables a check is precisely the failure this module
+    exists to make impossible"). [binding] had no equivalent until now.
+    Concretely: deleting a `data_class = "pii"` binding line, or misspelling
+    it `dataclass`, used to load cleanly, report "config consistent", and
+    produce a task that can never be tainted -- the PII-sink rule (R7 in
+    authz.rego) has nothing to fire on if the task never holds pii to begin
+    with. Each adapter class declares its own accepted keys via
+    BINDING_KEYS (see broker/adapters/*.py), next to REQUIRED_ARGS.
+    """
+    allowed = ADAPTERS[kind].BINDING_KEYS
+    for key in binding:
+        if key not in allowed:
+            raise ConfigError(
+                f"tool {tool!r}: binding.{key!r} is not a recognised key for "
+                f"adapter kind {kind!r}; expected one of {sorted(allowed)}"
+            )
 
 
 def _check_mail_binding(tool: str, binding: dict) -> None:
@@ -146,6 +182,7 @@ def load_catalog(path: Path, env: Mapping[str, str], client) -> ToolCatalog:
         if not isinstance(binding, dict):
             raise ConfigError(f"tool {tool!r}: [binding] must be a table")
         resolved_binding = _interpolate_binding(binding, env, tool)
+        _check_binding_keys(tool, kind, resolved_binding)
         if kind == "mail":
             _check_mail_binding(tool, resolved_binding)
         entries[tool] = CatalogEntry(

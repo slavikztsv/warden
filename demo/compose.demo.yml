@@ -10,6 +10,14 @@
 # code at all.
 
 services:
+  # Adds to compose.yml's own `broker: depends_on: [opa]` -- Compose MERGES
+  # depends_on across files by service key, it does not replace it, so this
+  # does not need to repeat `opa` here. Named here rather than in the base
+  # file because docstore and mailer are demo services that do not exist
+  # when compose.yml runs alone (see compose.yml's own comment on this).
+  broker:
+    depends_on: [docstore, mailer]
+
   docstore:
     build:
       context: .

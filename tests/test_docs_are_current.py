@@ -39,14 +39,47 @@ STALE = ("python -m cli.", "python -m agent.", "python -m broker",
 # same way" -- it would flag every correct mention forever. Only a match
 # NOT immediately preceded by "warden/" is genuinely the old, unprefixed
 # path, so this one needle gets a regex with a negative lookbehind instead
-# of joining the tuple above.
-STALE_POLICY_PATH = re.compile(r"(?<!warden/)policies/authz\.rego")
+# of joining the tuple above. Also not preceded by "/": the CONTAINER mount
+# path (compose.yml binds warden/policies/authz.rego to /policies/authz.rego)
+# is a third, equally-current spelling that source comments use and docs
+# never happened to -- excluded here rather than after the fact.
+STALE_POLICY_PATH = re.compile(r"(?<!warden/)(?<!/)policies/authz\.rego")
 
 
 @pytest.mark.parametrize("doc", CURRENT_DOCS, ids=lambda p: p.name)
 def test_no_stale_invocation_or_path(doc):
     text = doc.read_text()
     offenders = [needle for needle in STALE if needle in text]
+    if STALE_POLICY_PATH.search(text):
+        offenders.append("policies/authz.rego (not under warden/)")
+    assert offenders == [], offenders
+
+
+# --- The same scan, over source comments -----------------------------------
+#
+# This codebase's comments are load-bearing documentation: several of them
+# name specific files (docker-compose.yml, cli/warden.py, scripts/demo.sh)
+# that this branch deleted or renamed, discovered only by hand-grepping
+# during a whole-branch review. Running the same stale-reference scan over
+# warden/**/*.py and demo/**/*.py -- not just the top-level docs -- is what
+# keeps that from recurring silently. Two additions apply only here: docs
+# never happened to mention either deleted/renamed path, so adding them to
+# the shared STALE tuple above would not change docs coverage, only widen
+# what source comments are held to.
+SOURCE_STALE = STALE + ("docker-compose.yml", "cli/warden.py")
+
+
+def source_files() -> list[Path]:
+    return [
+        p for tree in ("warden", "demo") for p in (REPO_ROOT / tree).rglob("*.py")
+        if "__pycache__" not in p.parts and "egg-info" not in p.parts
+    ]
+
+
+@pytest.mark.parametrize("path", source_files(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_stale_invocation_or_path_in_source_comments(path):
+    text = path.read_text()
+    offenders = [needle for needle in SOURCE_STALE if needle in text]
     if STALE_POLICY_PATH.search(text):
         offenders.append("policies/authz.rego (not under warden/)")
     assert offenders == [], offenders

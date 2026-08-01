@@ -21,11 +21,29 @@ class HttpAdapter:
     # named "url", so a binding that overrides url_arg is honoured too.
     REQUIRED_ARGS: tuple[str, ...] = ("_url_arg",)
 
+    # execute() below also does args[self._url_arg] unconditionally, but
+    # describe() always runs first and already demands `required = true` for
+    # it via REQUIRED_ARGS above -- a call missing it is denied input.malformed
+    # before execute() is ever reached, so nothing further is needed here.
+    EXECUTE_REQUIRED_ARGS: tuple[str, ...] = ()
+
+    # body_arg names an argument but is read via .get() (None deliberately
+    # selects GET over POST) -- never `required = true` -- but it still needs
+    # to name a real schema key, the same reasoning as SqlAdapter.ARG_ATTRS.
+    ARG_ATTRS: tuple[str, ...] = ("_url_arg", "_body_arg")
+
+    # The [binding] keys this adapter's __init__ reads. See Adapter.BINDING_KEYS.
+    BINDING_KEYS: tuple[str, ...] = ("url_arg", "body_arg", "data_class")
+
     def __init__(self, *, binding: dict, client) -> None:
         self._url_arg = binding.get("url_arg", "url")
         self._body_arg = binding.get("body_arg", "body")
         self._data_class = binding.get("data_class")
         self._client = client
+
+    @property
+    def data_class(self) -> str | None:
+        return self._data_class
 
     def describe(self, args: dict) -> ToolTarget:
         parts = urlsplit(args[self._url_arg])

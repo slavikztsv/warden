@@ -181,6 +181,20 @@ def test_serve_reaches_no_signer():
     assert seen, "walked no modules -- SERVE_ENTRYPOINT is wrong"
 
 
+def test_the_broker_dockerfile_copies_no_demo_path():
+    """warden/Dockerfile's own comment claims this: "tests/test_seam.py's
+    Dockerfile check asserts no COPY line here mentions demo either." That
+    claim named a test that did not exist -- the Dockerfile itself was
+    correct, but an assertion nobody makes true is worse than no comment at
+    all. This is that test."""
+    copy_lines = [
+        line for line in (REPO_ROOT / "warden" / "Dockerfile").read_text().splitlines()
+        if line.strip().startswith("COPY")
+    ]
+    assert copy_lines, "no COPY lines found -- the scan below would pass vacuously"
+    assert not any("demo" in line for line in copy_lines), copy_lines
+
+
 def test_a_catalog_tool_without_an_args_table_refuses_to_load(tmp_path):
     from warden.broker.config.catalog import load_catalog
     from warden.broker.config.loader import ConfigError
@@ -194,12 +208,38 @@ def test_a_catalog_tool_without_an_args_table_refuses_to_load(tmp_path):
 # --- Task 22: two images, two compose files ---------------------------------
 
 
-def test_the_demo_compose_declares_no_product_service():
+def test_the_demo_compose_never_redefines_a_product_service():
+    """The overlay may not redefine what a product service (broker,
+    broker-control, opa) builds from, exposes, or runs -- compose.yml is the
+    single source of truth for that, and re-declaring it here would let a
+    demo-only file silently change product behaviour.
+
+    It MAY extend `broker`'s depends_on: Compose merges depends_on lists
+    across files by service key rather than replacing them, so the overlay
+    adding `docstore` and `mailer` here is what lets compose.yml's own
+    `depends_on: [opa]` stay valid on its own (compose.yml's own comment
+    explains why docstore/mailer cannot live in the base file at all). That
+    is the only shape a product-service stanza may take in this file: a bare
+    depends_on and nothing else -- no build, no image, no command, no
+    networks.
+    """
     import re
 
     overlay = (REPO_ROOT / "demo" / "compose.demo.yml").read_text()
     for service in ("broker:", "broker-control:", "opa:"):
-        assert not re.search(rf"^  {service}", overlay, re.M), service
+        match = re.search(
+            rf"^  {re.escape(service)}\n(.*?)(?=^  \S|\Z)", overlay, re.M | re.S
+        )
+        if match is None:
+            continue
+        lines = [
+            line for line in match.group(1).splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert lines, service
+        assert all(re.match(r"^\s+depends_on:\s*\[", line) for line in lines), (
+            service, lines
+        )
 
 
 def test_the_product_compose_keeps_the_guarded_profile():
@@ -223,4 +263,4 @@ def test_the_product_compose_keeps_the_guarded_profile():
         )
         assert match, service
         block = match.group(1)
-        assert "profiles: [guarded]" in block or "guarded" in block, service
+        assert "profiles: [guarded]" in block, service

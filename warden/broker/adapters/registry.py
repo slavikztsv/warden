@@ -3,7 +3,8 @@
 tools.toml names adapter kinds; authz.rego names target kinds. The mapping
 lived nowhere, and getting it wrong fails closed but silently: every call to
 that tool denies input.malformed and the replay prints a bare `tool()`
-because cli/warden.py matches no branch for an unrecognised kind.
+because warden/cli/replay.py's _describe matches no branch for an
+unrecognised kind.
 
 tests/test_adapter_registry.py parses R0 out of the policy and asserts this
 mapping's image equals it, so the two cannot drift apart unnoticed.

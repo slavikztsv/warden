@@ -76,7 +76,14 @@ services:
       - ./demo/scenario/warden.toml:/config/warden.toml:ro
       - ./demo/scenario/tools.toml:/config/tools.toml:ro
     networks: [agent-net, backend-net, egress-net]
-    depends_on: [opa, docstore, mailer]
+    # opa only, here. docstore and mailer are demo services -- they do not
+    # exist in this file, only in demo/compose.demo.yml -- so naming them
+    # here would make `docker compose -f compose.yml ...` an invalid project
+    # on its own, which is exactly what this file's own header claims not to
+    # be ("the product base"). Compose MERGES depends_on across files by key,
+    # so demo/compose.demo.yml adds `broker: depends_on: [docstore, mailer]`
+    # on top of this one rather than repeating it.
+    depends_on: [opa]
     profiles: [guarded]
 
   # The control plane: the only process holding the private key, and the only

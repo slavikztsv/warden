@@ -66,13 +66,19 @@ def _cmd_verify_chain(args: argparse.Namespace) -> int:
 
 
 def _cmd_config_check(args: argparse.Namespace) -> int:
-    from warden.broker.config.check import check_catalog
+    from warden.broker.config.check import check_catalog, check_catalog_findings
 
     problems = check_catalog(
         Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
     )
     for problem in problems:
         print(f"✗ {problem}", file=sys.stderr)
+    # Findings are advisory -- printed either way, never a reason to exit 1.
+    # A tool declaring no data_class is legitimate for a write (send_email),
+    # so this must stay visible without becoming a hard failure the way an
+    # actual inconsistency does.
+    for finding in check_catalog_findings(Path(args.catalog), env=os.environ):
+        print(f"ℹ {finding}", file=sys.stderr)
     if problems:
         return 1
     print("config consistent")
@@ -117,10 +123,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_config = sub.add_parser("config", help="catalog / policy consistency checks")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)
     p_check = config_sub.add_parser(
-        "check", help="cross-check the tool catalog against demo/scenario/data.json"
+        "check", help="cross-check a deployment's tool catalog against its policy data document"
     )
-    p_check.add_argument("--catalog", default="demo/scenario/tools.toml")
-    p_check.add_argument("--data", default="demo/scenario/data.json")
+    # No defaults. A default path into this repo's own bundled demo scenario
+    # is exactly the scenario knowledge tests/test_seam.py exists to keep out
+    # of warden/ -- `warden config check` run with no flags by a customer
+    # must fail loudly asking for --catalog/--data, not silently check a demo
+    # it has never heard of and report "config consistent" on the strength of
+    # nothing.
+    p_check.add_argument("--catalog", required=True, help="path to your tools.toml")
+    p_check.add_argument("--data", required=True, help="path to your policy data.json")
     p_check.add_argument("--opa", default=None)
     p_check.set_defaults(func=_cmd_config_check)
 

@@ -1,13 +1,14 @@
 # The DEMO's tool catalog.
 #
-# The product ships none of this.  warden/reference/tools.toml declares zero
-# tools, because an empty catalog is a broker that permits nothing -- the
-# correct default for a deny-by-default system.
+# The product ships none of this.  warden/ has no tools.toml anywhere in it
+# -- not even an empty placeholder -- because an empty catalog is a broker
+# that permits nothing, the correct default for a deny-by-default system.
+# See warden/reference/README.md, "The shipped catalog is empty, on purpose".
 #
 # `kind` names an ADAPTER kind (docstore/sql/http/mail).  The policy reasons
 # about TARGET kinds (doc/db/http/mail).  The mapping lives in
-# broker/adapters/registry.py and is asserted against authz.rego R0; do not
-# write a target kind here.
+# warden/broker/adapters/registry.py and is asserted against authz.rego R0;
+# do not write a target kind here.
 
 [tools.read_document]
 kind = "docstore"

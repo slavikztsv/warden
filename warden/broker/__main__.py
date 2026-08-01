@@ -68,8 +68,9 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         # DOCSTORE_URL, DB_PATH and MAILER_URL are read from the process
         # environment here rather than from config: they interpolate the
         # ${VAR} bindings inside the tool manifest itself (config.catalog_path
-        # -- e.g. demo/scenario/tools.toml), the same three values
-        # docker-compose.yml sets on the broker service's `environment:`.
+        # -- a deployment-supplied tools.toml, mounted from outside the
+        # product tree), the same three values compose.yml sets on the
+        # broker service's `environment:`.
         catalog=load_catalog(config.catalog_path, os.environ, client),
         **components.as_app_kwargs(),
     )

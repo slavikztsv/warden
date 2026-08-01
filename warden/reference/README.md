@@ -60,6 +60,36 @@ file under `warden/` ever contains one of this repo's own demo strings
    comments explaining what its binding fields mean and why its args are
    shaped the way they are.
 
+   **Every `[tools.<name>.binding]` accepts a `data_class` key, and it is the
+   single most consequential field in this file.** It is a plain string (this
+   repo's demo uses `"public"` and `"pii"`; the vocabulary is yours to define
+   — whatever `authz.rego`'s PII-sink rule, R7, checks it against) that
+   labels what a *successful call to this tool* puts into the task. Every
+   adapter attaches it to the result it returns, and the broker feeds that
+   into `broker/taint.py`'s `TaintTracker`: from that call onward, the task
+   is recorded as holding that data class, and every later call is judged
+   against it — that is how the demo's second beat (read a customer record,
+   then get denied posting it to an unapproved sink) actually happens.
+
+   **Omitting `data_class` means the tool's results never taint the task —
+   and a task that never becomes tainted cannot be stopped by the PII-sink
+   rule, no matter what the tool actually returned.** This is not a hard
+   error, because it is sometimes correct: a write-only tool (a mail-send,
+   say) has nothing to attach — it produces no readable result to taint the
+   task with. But on any tool whose result *feeds back into the task* — a
+   database read, a document fetch, an HTTP GET — leaving `data_class` unset
+   silently disables the one control it exists to be checked against, while
+   `warden config check` still reports the catalog as consistent. Set it
+   deliberately on every tool that reads; `warden config check` reports
+   (as an advisory finding, not a failure — see below) any tool that
+   declares none, precisely so an omission like this is visible rather than
+   discovered the same way the demo's own review found it: a config that
+   loads cleanly, checks cleanly, and quietly permits everything anyway.
+   A misspelled binding key (`dataclass` for `data_class`, or any key an
+   adapter does not read) is a harder failure: `warden config check`'s
+   underlying loader rejects it at load time, the same way an unrecognised
+   `[tools.<name>.args]` key already does.
+
 3. **Mirror your tools' target kinds in `data.json`.** The policy never
    reasons about tool *names* — `warden/policies/authz.rego`'s R0 and R1b
    deny any call whose declared target kind disagrees with the catalog, and
@@ -81,12 +111,19 @@ file under `warden/` ever contains one of this repo's own demo strings
 
    (Whatever `${VAR}` names your own `tools.toml` bindings use belong on that
    command line — `warden config check` interpolates them exactly as
-   `warden serve` will.) This cross-checks your catalog against your data
-   document — every declared tool's target kind agrees, every adapter's
-   unconditionally-dereferenced argument is marked required in its schema —
-   and, when `--opa` is given, against a running policy bundle too. It is
-   the same consistency `warden serve`'s startup silently depends on
-   holding, made inspectable and CI-able on its own; see
+   `warden serve` will. `--catalog` and `--data` are required — there is no
+   default, on purpose: a default pointed at this repo's own demo would let a
+   deployment run the command, see "config consistent", and never have
+   checked its own files at all.) This cross-checks your catalog against your
+   data document — every declared tool's target kind agrees, every binding
+   value that names an argument (`arg`, `filter_arg`, `url_arg`, ...) names a
+   key your `[args]` schema actually declares, and every one of those an
+   adapter dereferences unconditionally is marked `required = true` — and,
+   when `--opa` is given, against a running policy bundle too. It also prints
+   an advisory (never a reason to fail) for any tool declaring no
+   `data_class`, so an omission like the one described above is visible
+   rather than silent. It is the same consistency `warden serve`'s startup
+   silently depends on holding, made inspectable and CI-able on its own; see
    `warden/broker/config/check.py`.
 
 5. **Run it.**
