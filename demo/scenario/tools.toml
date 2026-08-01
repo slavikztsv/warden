@@ -1,0 +1,78 @@
+# The DEMO's tool catalog.
+#
+# The product ships none of this.  warden/reference/tools.toml declares zero
+# tools, because an empty catalog is a broker that permits nothing -- the
+# correct default for a deny-by-default system.
+#
+# `kind` names an ADAPTER kind (docstore/sql/http/mail).  The policy reasons
+# about TARGET kinds (doc/db/http/mail).  The mapping lives in
+# broker/adapters/registry.py and is asserted against authz.rego R0; do not
+# write a target kind here.
+
+[tools.read_document]
+kind = "docstore"
+
+[tools.read_document.binding]
+base_url   = "${DOCSTORE_URL}"
+data_class = "public"
+
+[tools.read_document.args]
+doc_id = { type = "string", required = true, non_empty = true }
+
+
+[tools.query_customers]
+kind = "sql"
+
+[tools.query_customers.binding]
+db      = "${DB_PATH}"
+table   = "customers"
+columns = ["id", "name", "email", "plan", "balance"]
+# Only a `id=` filter names a bounded subject set; anything else reaches "*",
+# which can never appear in a token's counterparties, so an unbounded read is
+# out of scope by construction rather than by a second rule.
+subject_column = "id"
+# The join to the token's counterparties.  The colon is load-bearing: without
+# it this yields customer8812 against a declared customer:8812, R7 rows.scope
+# denies the ALLOWED read, the task never becomes tainted, and the egress to
+# the allowlisted internal sink stops being refused.
+subject_prefix = "customer:"
+subject_type   = "integer"
+# A bare token means plan = <token>.
+default_column = "plan"
+unfiltered     = ["", "all", "*"]
+data_class     = "pii"
+
+[tools.query_customers.args]
+# required, though both stages default it.  This mirrors the check being
+# replaced, NOT what the adapter can default: relaxing it turns a refusal into
+# a full-table COUNT judged by policy.
+filter = { type = "string", required = true }
+
+
+[tools.http_fetch]
+kind = "http"
+
+[tools.http_fetch.binding]
+data_class = "public"
+
+[tools.http_fetch.args]
+url = { type = "string", required = true, non_empty = true }
+# null must validate and reach execute() as None: that is how GET and POST are
+# chosen, and exfiltration is a write.
+body = { type = "string", required = false, null_is_absent = true }
+
+
+[tools.send_email]
+kind = "mail"
+
+[tools.send_email.binding]
+base_url = "${MAILER_URL}"
+# The ONLY keys that go on the wire.  backends.py forwarded the whole args
+# dict, so an undeclared cc reached the mailer on a call whose audited
+# recipients was the approved one.
+fields = ["to", "subject", "body"]
+
+[tools.send_email.args]
+to      = { type = "array", items = "string", required = true }
+subject = { type = "string", required = true }
+body    = { type = "string", required = true }

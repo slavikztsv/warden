@@ -157,3 +157,18 @@ def test_defaults_are_the_permissive_ones_that_match_today():
     spec = parse_tool_schema({"args": {"filter": {"type": "string"}}}, "t").args["filter"]
     assert spec == ArgSpec(type="string", items=None, required=False,
                            non_empty=False, null_is_absent=False)
+
+
+def test_tool_schema_is_hashable_and_equal_instances_hash_equal():
+    """ToolSchema.args is a MappingProxyType over a dict, and a dict is
+    unhashable. Left to the dataclass-generated __hash__, hashing an instance
+    would raise TypeError deep inside that dict the first time anything
+    (e.g. a set or dict key, or a CatalogEntry that holds a ToolSchema)
+    actually hashed one -- not here, not obviously. __hash__ is overridden to
+    hash a sorted tuple of the args items instead, and it must stay
+    consistent with equality: two schemas built from the same table hash the
+    same."""
+    a = schema("read_document")
+    b = schema("read_document")
+    assert a == b
+    assert hash(a) == hash(b)

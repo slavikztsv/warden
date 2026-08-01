@@ -65,6 +65,23 @@ class ToolSchema:
     args: Mapping[str, ArgSpec]
     unknown_args: str = "reject"
 
+    def __hash__(self) -> int:
+        # `args` is a MappingProxyType wrapping a dict, and a dict is
+        # unhashable. Left alone, frozen=True's default eq=True would still
+        # synthesize a __hash__ that hashes the field tuple (args,
+        # unknown_args) -- it would look fine at every call site until the
+        # first one that actually calls hash() on an instance, which would
+        # then raise TypeError deep inside the dict, not here. ArgSpec is
+        # itself a frozen dataclass of hashable primitives, so hashing a
+        # sorted tuple of (name, ArgSpec) pairs is well-defined, and it stays
+        # consistent with the dataclass-generated __eq__: instances that
+        # compare equal still hash equal. Chosen over eq=False (which would
+        # make hashing "work" via object identity but silently drop
+        # structural equality) because nothing here needs identity
+        # semantics, and value equality is the more useful, less surprising
+        # default for a config object.
+        return hash((tuple(sorted(self.args.items())), self.unknown_args))
+
     def validate(self, args: dict) -> bool:
         if self.unknown_args == "reject":
             if any(name not in self.args for name in args):
