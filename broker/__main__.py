@@ -61,7 +61,9 @@ def build(env: dict[str, str] | None = None, *, client: httpx.Client | None = No
         # Computed once at startup, never lazily per request: a missing or
         # unreadable policy bundle must crash before the first decision, not
         # be discovered halfway through serving one.
-        "policy_digest": policy_bundle_digest(Path(env.get("POLICY_PATH", "/policies"))),
+        "policy_digest": policy_bundle_digest(
+            [Path(part) for part in env.get("POLICY_PATH", "/policies").split(":")]
+        ),
     }
     app = create_app(
         backends=Backends(

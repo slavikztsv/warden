@@ -78,7 +78,7 @@ def _digest() -> str:
     try:
         from broker.policy_digest import policy_bundle_digest
 
-        return policy_bundle_digest(Path("policies"))
+        return policy_bundle_digest([Path("policies")])
     except Exception:  # noqa: BLE001 — provenance is best-effort, never fatal
         return "unknown"
 

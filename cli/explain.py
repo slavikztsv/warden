@@ -838,7 +838,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
     opa, opa_url = _start_opa()
     try:
         banner("SETUP — what exists before the agent starts")
-        show("policy bundle", f"policies/  digest {policy_bundle_digest(Path('policies'))[:22]}…", 5)
+        show("policy bundle", f"policies/  digest {policy_bundle_digest([Path('policies')])[:22]}…", 5)
         show("policy engine", f"real OPA server at {opa_url}", 5)
         show("customer database", f"{db.name}, 10,312 synthetic records", 5)
         show("audit log", "empty, hash chain starts at 64 zeroes", 5)
@@ -908,7 +908,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
                     client=httpx.Client(transport=_mock_transport()),
                 )
             ),
-            policy_digest=policy_bundle_digest(Path("policies")),
+            policy_digest=policy_bundle_digest([Path("policies")]),
         )
 
         broker_client = TestClient(app)

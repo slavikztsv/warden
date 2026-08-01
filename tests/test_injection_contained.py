@@ -156,7 +156,7 @@ def stack(tmp_path, opa_url, monkeypatch):
             mailer_url="http://mailer.internal",
             client=httpx.Client(transport=httpx.MockTransport(route)),
         ),
-        policy_digest=policy_bundle_digest(Path("policies")),
+        policy_digest=policy_bundle_digest([Path("policies")]),
     )
     token = signer.mint(
         agent_id="triage-bot",

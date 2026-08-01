@@ -80,16 +80,74 @@ def test_opa_error_status_fails_closed():
 def test_bundle_digest_is_stable_and_content_sensitive(tmp_path):
     (tmp_path / "authz.rego").write_text("package warden.authz\n")
     (tmp_path / "data.json").write_text('{"limits": {}}\n')
-    first = policy_bundle_digest(tmp_path)
-    assert first == policy_bundle_digest(tmp_path)
+    first = policy_bundle_digest([tmp_path])
+    assert first == policy_bundle_digest([tmp_path])
     assert first.startswith("sha256:")
 
     (tmp_path / "data.json").write_text('{"limits": {"max_rows_per_task": 50}}\n')
-    assert policy_bundle_digest(tmp_path) != first
+    assert policy_bundle_digest([tmp_path]) != first
 
 
 def test_bundle_digest_ignores_test_files(tmp_path):
     (tmp_path / "authz.rego").write_text("package warden.authz\n")
-    before = policy_bundle_digest(tmp_path)
+    before = policy_bundle_digest([tmp_path])
     (tmp_path / "authz_test.rego").write_text("package warden.authz_test\n")
-    assert policy_bundle_digest(tmp_path) == before
+    assert policy_bundle_digest([tmp_path]) == before
+
+
+def test_bundle_digest_covers_nested_files(tmp_path):
+    """iterdir() dropped subdirectories entirely, so a bundle laid out in
+    subdirectories was digested as if those files were not there."""
+    (tmp_path / "authz.rego").write_text("package warden.authz\n")
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    (nested / "data.json").write_text('{"limits": {}}\n')
+    before = policy_bundle_digest([tmp_path])
+    (nested / "data.json").write_text('{"limits": {"max_rows_per_task": 5000000}}\n')
+    assert policy_bundle_digest([tmp_path]) != before
+
+
+def test_bundle_digest_covers_every_root(tmp_path):
+    """The whole reason for the signature change: a bundle split across two
+    mounts must be digested as one.  Dropping the data root silently stopped
+    the digest covering max_rows_per_task."""
+    rules = tmp_path / "rules"
+    data = tmp_path / "data"
+    rules.mkdir()
+    data.mkdir()
+    (rules / "authz.rego").write_text("package warden.authz\n")
+    (data / "data.json").write_text('{"limits": {"max_rows_per_task": 50}}\n')
+
+    both = policy_bundle_digest([rules, data])
+    assert both != policy_bundle_digest([rules])
+
+    (data / "data.json").write_text('{"limits": {"max_rows_per_task": 5000000}}\n')
+    assert policy_bundle_digest([rules, data]) != both
+
+
+def test_bundle_digest_rejects_a_missing_root(tmp_path):
+    (tmp_path / "authz.rego").write_text("package warden.authz\n")
+    with pytest.raises(ValueError, match="does not exist"):
+        policy_bundle_digest([tmp_path, tmp_path / "absent"])
+
+
+def test_bundle_digest_rejects_an_empty_root(tmp_path):
+    """An empty root is a mount that did not happen.  Digesting it as the
+    empty string would make a missing data.json indistinguishable from a
+    data.json that is genuinely absent from the design."""
+    (tmp_path / "authz.rego").write_text("package warden.authz\n")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="no policy files"):
+        policy_bundle_digest([tmp_path, empty])
+
+
+def test_bundle_digest_distinguishes_which_root_a_file_came_from(tmp_path):
+    """Two roots each holding data.json must not hash the same as one root
+    holding both contents concatenated."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "data.json").write_text('{"x": 1}\n')
+    (b / "data.json").write_text('{"y": 2}\n')
+    assert policy_bundle_digest([a, b]) != policy_bundle_digest([b, a])
