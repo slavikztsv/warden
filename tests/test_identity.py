@@ -1,6 +1,6 @@
 import pytest
 
-from broker.identity import Signer, TokenInvalid, Verifier
+from warden.broker.identity import Signer, TokenInvalid, Verifier
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ def test_mint_still_defaults_to_the_module_constant_when_unconfigured():
     """Direct construction (Signer.generate() with no issuer/ttl_seconds) is
     still how tests and cli/explain.py's standalone demo signer work -- the
     module constants are the default, not a value that vanished."""
-    from broker.identity import DEFAULT_TTL_SECONDS, ISSUER
+    from warden.broker.identity import DEFAULT_TTL_SECONDS, ISSUER
 
     signer = Signer.generate()
     verifier = Verifier(signer.public_key_pem())

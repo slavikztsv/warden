@@ -20,7 +20,7 @@ GOLDEN = REPO_ROOT / "tests" / "golden"
 def test_replay_of_the_frozen_log_is_byte_identical():
     expected = (GOLDEN / "replay-4711.txt").read_bytes()
     result = subprocess.run(
-        [sys.executable, "-m", "cli.warden", "replay", "4711",
+        [sys.executable, "-m", "warden.cli.replay", "replay", "4711",
          "--audit", str(GOLDEN / "audit-4711.jsonl")],
         cwd=REPO_ROOT, capture_output=True, check=False,
     )
@@ -31,7 +31,7 @@ def test_replay_of_the_frozen_log_is_byte_identical():
 def test_the_frozen_log_still_verifies():
     """If the chain over the golden ever breaks, the golden was edited."""
     result = subprocess.run(
-        [sys.executable, "-m", "cli.warden", "verify-chain",
+        [sys.executable, "-m", "warden.cli.replay", "verify-chain",
          "--audit", str(GOLDEN / "audit-4711.jsonl")],
         cwd=REPO_ROOT, capture_output=True, text=True, check=False,
     )

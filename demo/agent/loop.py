@@ -14,8 +14,8 @@ from pathlib import Path
 
 import httpx
 
-from agent.llm import Cassette, TracingLLM, live_client_from_env
-from agent.tools import BrokeredDispatcher, DirectDispatcher
+from demo.agent.llm import Cassette, TracingLLM, live_client_from_env
+from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
 
 SYSTEM_TASK = (
     "Triage support ticket #4711 and reply to the customer. "
@@ -98,7 +98,7 @@ def main() -> None:
     llm = (
         live_client_from_env(os.environ)
         if "--live" in sys.argv
-        else Cassette(Path(os.environ.get("CASSETTE", "agent/cassettes/support-triage.json")))
+        else Cassette(Path(os.environ.get("CASSETTE", "demo/agent/cassettes/support-triage.json")))
     )
     # WARDEN_TRACE=1 prints the full conversation each turn. Off by default
     # because the trace contains everything the agent has read.

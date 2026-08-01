@@ -30,6 +30,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from demo.scenario.paths import POLICY_BUNDLE
+
 RUNS = Path("runs")
 INDEX = RUNS / "index.jsonl"
 GENESIS_HASH = "0" * 64
@@ -76,11 +78,15 @@ def _commit() -> str:
 
 def _digest() -> str:
     try:
-        from broker.policy_digest import policy_bundle_digest
+        from warden.broker.policy_digest import policy_bundle_digest
 
-        return policy_bundle_digest([Path("policies")])
-    except Exception:  # noqa: BLE001 — provenance is best-effort, never fatal
-        return "unknown"
+        return policy_bundle_digest([POLICY_BUNDLE])
+    except Exception as exc:  # noqa: BLE001 — provenance is best-effort, never fatal
+        # A broken bundle path must be visible in the evidence, not
+        # indistinguishable from "no bundle was ever configured" -- verify-runs
+        # accepted "unknown" happily either way, which is exactly the silent
+        # failure this exists to surface instead.
+        return f"unavailable: {exc}"
 
 
 def _body_hash(record: dict) -> str:

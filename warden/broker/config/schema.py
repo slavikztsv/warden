@@ -27,7 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from broker.config.loader import ConfigError
+from warden.broker.config.loader import ConfigError
 
 _TYPES = ("string", "array")
 _ARG_KEYS = ("type", "items", "required", "non_empty", "null_is_absent")

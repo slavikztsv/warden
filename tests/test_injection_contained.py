@@ -19,17 +19,18 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.llm import Cassette
-from agent.loop import run_task
-from agent.tools import BrokeredDispatcher
-from broker.app import create_app
-from broker.audit import AuditLog
-from broker.identity import Signer, Verifier
-from broker.pdp import PolicyDecisionPoint
-from broker.policy_digest import policy_bundle_digest
-from broker.taint import TaintTracker
-from mocks import docstore, mailer, sinkhole
-from mocks.seed_db import seed_customers
+from demo.agent.llm import Cassette
+from demo.agent.loop import run_task
+from demo.agent.tools import BrokeredDispatcher
+from warden.broker.app import create_app
+from warden.broker.audit import AuditLog
+from warden.broker.identity import Signer, Verifier
+from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.policy_digest import policy_bundle_digest
+from warden.broker.taint import TaintTracker
+from demo.mocks import docstore, mailer, sinkhole
+from demo.mocks.seed_db import seed_customers
+from demo.scenario.paths import POLICY_BUNDLE
 from tests.support.catalog import demo_catalog
 from tools.opa_version import resolve_opa
 
@@ -72,7 +73,7 @@ def opa_url():
     binary = _resolve_opa()
     port = _free_port()
     process = subprocess.Popen(
-        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", "policies"],
+        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", str(POLICY_BUNDLE)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -139,7 +140,7 @@ def stack(tmp_path, opa_url, monkeypatch):
             mailer_url="http://mailer.internal",
             client=httpx.Client(transport=httpx.MockTransport(route)),
         ),
-        policy_digest=policy_bundle_digest([Path("policies")]),
+        policy_digest=policy_bundle_digest([POLICY_BUNDLE]),
     )
     token = signer.mint(
         agent_id="triage-bot",

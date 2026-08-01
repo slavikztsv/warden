@@ -19,11 +19,19 @@ live = ["google-genai==2.15.0", "anthropic==0.69.0"]
 [project.scripts]
 warden-demo = "demo.cli.main:main"
 
-# `where` is relative to THIS file's directory (demo/), so it must look one
-# level up (the repo root) to find the "demo" package -- demo/__init__.py
-# sits beside this pyproject.toml, not inside a further-nested demo/demo/.
-# See warden/pyproject.toml for the same note; verified empirically that
-# `where = ["."]` finds nothing for this layout.
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["demo*"]
+# See warden/pyproject.toml for why this is an explicit list rather than
+# packages.find with `where = [".."]`: that form (needed pre-Task-20, when
+# demo/ held only demo/cli/ and demo/scenario/) puts the REPO ROOT on
+# sys.path on an editable install, not just the demo package -- verified via
+# `import broker` succeeding from a demo-only install before this fix.
+[tool.setuptools]
+packages = [
+    "demo",
+    "demo.agent",
+    "demo.cli",
+    "demo.mocks",
+    "demo.scenario",
+]
+
+[tool.setuptools.package-dir]
+demo = "."

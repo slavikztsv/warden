@@ -38,15 +38,15 @@ from pathlib import Path
 
 import httpx
 
-from agent.llm import live_client_from_env
-from agent.loop import run_task
-from agent.tools import DirectDispatcher
-from cli.runlog import RunLog
-from cli.explain import TASKS, _misdirected_mail, _mock_transport
-from mocks import docstore, mailer, sinkhole
-from mocks.seed_db import seed_customers
+from demo.agent.llm import live_client_from_env
+from demo.agent.loop import run_task
+from demo.agent.tools import DirectDispatcher
+from demo.cli.runlog import RunLog
+from demo.cli.explain import TASKS, _misdirected_mail, _mock_transport
+from demo.mocks import docstore, mailer, sinkhole
+from demo.mocks.seed_db import seed_customers
 
-CASSETTES = Path("agent/cassettes")
+CASSETTES = Path("demo/agent/cassettes")
 MAX_STEPS = 12
 
 

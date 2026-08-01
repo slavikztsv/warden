@@ -1,10 +1,9 @@
 """The product: a policy-enforcing broker for AI agent tool calls and network egress.
 
 Kept as a package (not a bare directory), mirroring demo/__init__.py, so that
-warden/pyproject.toml's [tool.setuptools.packages.find] can discover it.
+warden/pyproject.toml's explicit [tool.setuptools] packages list can name it.
 
-Phase 3 (Task 20) moves broker/ and policies/ in here as warden/broker and
-warden/policies. Until then this package holds only warden/cli/ -- the
-dispatcher created in Task 19 still imports the top-level broker.* and cli.*
-packages that live at the repo root.
+broker/ and policies/ (Task 20) live in here as warden/broker and
+warden/policies -- the product wheel is self-contained: every import under
+this package resolves without the demo/ tree present on disk at all.
 """

@@ -16,7 +16,24 @@ RUN pip install --no-cache-dir -r requirements.txt
 ARG LIVE=0
 RUN if [ "$LIVE" = "1" ]; then pip install --no-cache-dir -r requirements-live.txt; fi
 
-COPY broker/ broker/
-COPY agent/ agent/
-COPY mocks/ mocks/
-COPY cli/ cli/
+# Copied to match the dotted import paths (warden.broker.*, demo.agent.*,
+# demo.mocks.*, demo.scenario.*) rather than flattened to their old
+# top-level names: every module inside warden/broker now imports its
+# siblings as `warden.broker.*` (Task 20), so the package's own __init__.py
+# has to land in the image alongside it or those imports fail. demo/scenario
+# is needed too -- not for its warden.toml/control.toml/tools.toml (those
+# reach the broker and broker-control containers as read-only bind mounts at
+# /config/*, kept out of the image on purpose), but because
+# demo/agent/tools.py's DirectDispatcher (the unprotected profile, which
+# talks to backends directly with no broker in the loop) builds its own
+# catalog from demo.scenario.catalog.demo_catalog(), which loads
+# demo/scenario/tools.toml by a path relative to catalog.py's own location,
+# not from the mount. No warden/cli or demo/cli here -- no container command
+# reaches either; only serve, control_main, agent.loop and the three mock
+# apps run in-container.
+COPY warden/__init__.py warden/__init__.py
+COPY warden/broker/ warden/broker/
+COPY demo/__init__.py demo/__init__.py
+COPY demo/agent/ demo/agent/
+COPY demo/mocks/ demo/mocks/
+COPY demo/scenario/ demo/scenario/

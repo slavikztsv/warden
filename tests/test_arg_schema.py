@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from broker.config.loader import ConfigError
-from broker.config.schema import ArgSpec, ToolSchema, parse_tool_schema
+from warden.broker.config.loader import ConfigError
+from warden.broker.config.schema import ArgSpec, ToolSchema, parse_tool_schema
 
 DEMO = {
     "read_document": {"doc_id": {"type": "string", "required": True, "non_empty": True}},

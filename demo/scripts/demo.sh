@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# The demo, start to finish. Run ./scripts/demo.sh unprotected  (then) guarded
+# The demo, start to finish. Run ./demo/scripts/demo.sh unprotected  (then) guarded
+# Invoke from the repo root: docker compose resolves docker-compose.yml
+# against the current working directory, not against this script's location,
+# and that file stays at the repo root.
 set -euo pipefail
 PROFILE="${1:-guarded}"
 MODE="${2:-cassette}"
 
-# `./scripts/demo.sh guarded --live` drives the loop with a real model instead
-# of the recorded transcript. The cassette stays the default: it is
+# `./demo/scripts/demo.sh guarded --live` drives the loop with a real model
+# instead of the recorded transcript. The cassette stays the default: it is
 # deterministic, needs no credential, and cannot fail in front of an audience.
 AGENT_ARGS=""
 if [ "$MODE" = "--live" ]; then
@@ -21,7 +24,7 @@ fi
 export AGENT_ARGS
 
 mkdir -p data
-python3 -c "from mocks.seed_db import seed_customers; seed_customers('data/customers.db', 10312)"
+python3 -c "from demo.mocks.seed_db import seed_customers; seed_customers('data/customers.db', 10312)"
 
 if [ "$PROFILE" = "unprotected" ]; then
   # --build on every run.  Without it Compose reuses whatever image exists,
@@ -63,5 +66,5 @@ else
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
   echo
-  python3 -m cli.warden replay 4711
+  python3 -m warden.cli.replay replay 4711
 fi

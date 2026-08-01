@@ -40,13 +40,13 @@ from pathlib import Path
 
 import httpx
 
-from agent.llm import OpenRouterClient
-from agent.loop import run_task
-from agent.tools import DirectDispatcher
-from cli.runlog import RunLog
-from cli.explain import _is_exfil_attempt, _mock_transport
-from mocks import mailer, sinkhole
-from mocks.seed_db import seed_customers
+from demo.agent.llm import OpenRouterClient
+from demo.agent.loop import run_task
+from demo.agent.tools import DirectDispatcher
+from demo.cli.runlog import RunLog
+from demo.cli.explain import _is_exfil_attempt, _mock_transport
+from demo.mocks import mailer, sinkhole
+from demo.mocks.seed_db import seed_customers
 
 CATALOGUE = "https://openrouter.ai/api/v1/models"
 MAX_STEPS = 12

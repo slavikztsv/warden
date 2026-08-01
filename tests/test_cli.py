@@ -1,4 +1,4 @@
-from cli.warden import main, render_replay
+from warden.cli.replay import main, render_replay
 
 RECORDS = [
     {"seq": 1, "task_id": "4711", "agent_id": "triage-bot", "purpose": "support-triage",
@@ -83,7 +83,7 @@ def test_replay_command_exits_zero(tmp_path, capsys):
     # them is by definition replaying a tampered log. The assertion this test
     # was always making -- a normal replay exits zero -- needs a valid input
     # to make it against.
-    from broker.audit import AuditLog
+    from warden.broker.audit import AuditLog
 
     path = tmp_path / "audit.jsonl"
     log = AuditLog(path)
@@ -147,7 +147,7 @@ def test_verify_chain_exits_zero_on_an_intact_chain(tmp_path, capsys):
     # This fixture record's hash/prev_hash don't form a real chain (the
     # brief's fixtures hardcode "a"*64 etc.), so use AuditLog itself to
     # produce a genuinely intact chain instead of hand-rolled hashes.
-    from broker.audit import AuditLog
+    from warden.broker.audit import AuditLog
 
     log_path = tmp_path / "real_audit.jsonl"
     log = AuditLog(log_path)
@@ -234,7 +234,7 @@ def test_describe_shows_the_recipient_for_mail():
 # Eight records for task 4711, built through the actual AuditLog and
 # TaintTracker (not hand-rolled dicts), so every hash link and every
 # task_state snapshot is exactly what the real broker and proxy would
-# produce. Mirrors agent/cassettes/support-triage.json — the ticket read,
+# produce. Mirrors demo/agent/cassettes/support-triage.json — the ticket read,
 # the poisoned kb article, the targeted customer lookup, the blocked bulk
 # export, the blocked direct exfil, the blocked fallback to the allowlisted
 # but pii-tainted docstore endpoint, and the final legitimate reply — plus
@@ -243,8 +243,8 @@ def test_describe_shows_the_recipient_for_mail():
 
 
 def _build_demo_records(path) -> list[dict]:
-    from broker.audit import AuditLog
-    from broker.taint import TaintTracker
+    from warden.broker.audit import AuditLog
+    from warden.broker.taint import TaintTracker
 
     log = AuditLog(path)
     taint = TaintTracker()
@@ -310,7 +310,7 @@ def _build_demo_records(path) -> list[dict]:
 
 
 def test_the_full_demo_sequence_tells_the_right_story(tmp_path):
-    from broker.audit import AuditLog
+    from warden.broker.audit import AuditLog
 
     path = tmp_path / "demo.jsonl"
     records = _build_demo_records(path)
@@ -367,7 +367,7 @@ def _tampered_log(path) -> None:
     exactly the edit someone hiding a blocked exfil attempt would make."""
     import json
 
-    from broker.audit import AuditLog
+    from warden.broker.audit import AuditLog
 
     log = AuditLog(path)
     common = dict(
@@ -418,7 +418,7 @@ def test_replay_of_a_tampered_log_is_reported_as_broken(tmp_path, capsys):
 def test_replay_of_an_intact_log_reports_the_chain_as_intact(tmp_path, capsys):
     """Positive control: the banner above must be caused by the tamper, not
     by replay now calling everything broken."""
-    from broker.audit import AuditLog
+    from warden.broker.audit import AuditLog
 
     path = tmp_path / "audit.jsonl"
     AuditLog(path).append(
@@ -481,7 +481,7 @@ def test_replay_exit_code_follows_the_chain_verdict(tmp_path, capsys):
     over a modified audit chain is worse than one that stops. Both halves
     asserted together, because the pair is the contract: verify-chain already
     exits 1, and replay shrugging would read as an oversight."""
-    from broker.audit import AuditLog
+    from warden.broker.audit import AuditLog
 
     intact = tmp_path / "intact.jsonl"
     AuditLog(intact).append(
@@ -516,7 +516,7 @@ def test_run_task_uses_the_supplied_instruction():
     """
     import pytest
 
-    from agent.loop import SYSTEM_TASK, run_task
+    from demo.agent.loop import SYSTEM_TASK, run_task
 
     seen = []
 
@@ -533,7 +533,7 @@ def test_run_task_uses_the_supplied_instruction():
 def test_explain_rejects_an_unknown_task_name():
     import pytest
 
-    from cli.explain import _pick_task
+    from demo.cli.explain import _pick_task
 
     with pytest.raises(SystemExit) as excinfo:
         _pick_task(["--task", "nonsense"], live=True)
@@ -550,13 +550,13 @@ def test_explain_refuses_an_alternative_task_without_a_live_model():
 
     from pathlib import Path
 
-    from cli.explain import TASKS, _pick_task
+    from demo.cli.explain import TASKS, _pick_task
 
     for name in TASKS:
         # A scenario with its own recording is deterministic and needs no key;
         # one without would replay the default transcript, showing steps this
         # instruction had no part in causing.
-        has_recording = Path(f"agent/cassettes/{name}.json").exists()
+        has_recording = Path(f"demo/agent/cassettes/{name}.json").exists()
         if name == "triage" or has_recording:
             assert _pick_task(["--task", name], live=False)[0] == name
             continue
@@ -571,7 +571,7 @@ def test_every_scenario_declares_what_it_trips_and_what_it_costs():
     A scenario with no stated damage is one nobody can present, and a scenario
     whose `trips` does not name a real rule is a claim the run cannot back up.
     """
-    from cli.explain import TASKS
+    from demo.cli.explain import TASKS
 
     rules = {"input.malformed", "tools.allowed", "egress.allowlist",
              "egress.pii_sink", "rows.bounded", "rows.scope", "mail.counterparty"}
@@ -594,11 +594,11 @@ def test_the_precedence_list_covers_every_rule_the_policy_can_return():
     pdp.unavailable — fail-closed, but it reports the wrong cause and hides
     which control fired. Adding a rule means adding it here."""
     import re
-    from pathlib import Path
 
-    from broker.pdp import DENY_PRECEDENCE
+    from warden.broker.pdp import DENY_PRECEDENCE
+    from demo.scenario.paths import POLICY_BUNDLE
 
-    rego = Path("policies/authz.rego").read_text()
+    rego = (POLICY_BUNDLE / "authz.rego").read_text()
     emitted = set(re.findall(r'deny_reasons contains "([^"]+)"', rego))
     assert emitted <= set(DENY_PRECEDENCE), (
         f"rules the PDP cannot name: {emitted - set(DENY_PRECEDENCE)}"
@@ -610,7 +610,7 @@ def test_comparison_table_marks_only_the_rows_that_differ():
     Every row is a measured value from the two runs; nothing in it is asserted
     by the narration, which is the point of printing them side by side.
     """
-    from cli.explain import render_comparison
+    from demo.cli.explain import render_comparison
 
     table = render_comparison(
         {"records read": 10313, "emails delivered": 1, "audit records": "none"},
@@ -632,7 +632,7 @@ def test_comparison_table_marks_only_the_rows_that_differ():
 # prints is the artifact, so its ordering and its honest-empty case are worth
 # pinning.
 def test_sweep_table_ranks_by_bytes_that_actually_left():
-    from cli.sweep import render
+    from demo.cli.sweep import render
 
     table = render([
         {"model": "a/clean", "calls": 4, "rows": 1, "attempted": 0, "bytes": 0,
@@ -656,7 +656,7 @@ def test_sweep_table_ranks_by_bytes_that_actually_left():
 def test_sweep_reports_no_compliance_as_a_result_not_a_failure():
     """A sweep where nothing leaks is a finding about models, and the reason
     the recorded cassette is treated as a fixed adversarial model."""
-    from cli.sweep import render
+    from demo.cli.sweep import render
 
     table = render([
         {"model": "a/one", "calls": 4, "rows": 1, "attempted": 0, "bytes": 0,
@@ -668,7 +668,7 @@ def test_sweep_reports_no_compliance_as_a_result_not_a_failure():
 
 
 def test_sweep_selects_only_tool_capable_models():
-    from cli.sweep import tool_capable
+    from demo.cli.sweep import tool_capable
 
     catalogue = [
         {"id": "v/free-tools", "supported_parameters": ["tools"],
@@ -689,7 +689,7 @@ def test_openrouter_retry_budget_is_configurable():
     import httpx
     import pytest
 
-    from agent.llm import OpenRouterClient
+    from demo.agent.llm import OpenRouterClient
 
     tries = []
 
@@ -709,7 +709,7 @@ def test_openrouter_retry_budget_is_configurable():
 def test_agent_loop_can_be_capped():
     """Unbounded, the loop runs until the model chooses to stop. The sweep runs
     models it has never seen, some of which never choose to."""
-    from agent.loop import run_task
+    from demo.agent.loop import run_task
 
     class NeverFinishes:
         def next_step(self, messages):
@@ -743,10 +743,10 @@ def test_a_recorded_scenario_drives_both_profiles_from_one_transcript():
     """
     from pathlib import Path
 
-    from cli.explain import TASKS, _fresh_llm, _pick_task
+    from demo.cli.explain import TASKS, _fresh_llm, _pick_task
 
     recorded = [
-        name for name in TASKS if Path(f"agent/cassettes/{name}.json").exists()
+        name for name in TASKS if Path(f"demo/agent/cassettes/{name}.json").exists()
     ]
     assert recorded, "no scenario has a recording yet"
     for name in recorded:
@@ -768,7 +768,7 @@ def test_a_recording_is_accompanied_by_its_compliance_rate():
     import json
     from pathlib import Path
 
-    for meta_path in Path("agent/cassettes").glob("*.meta.json"):
+    for meta_path in Path("demo/agent/cassettes").glob("*.meta.json"):
         meta = json.loads(meta_path.read_text())
         assert 0 < meta["complied"] <= meta["attempts"], meta_path
         assert meta["model"], meta_path
@@ -789,7 +789,7 @@ def test_the_live_matrix_replays_one_sample_through_both_profiles():
     broker — which is not hypothetical: inject-vendor once leaked 119 bytes
     unguarded and recorded zero refusals guarded, in one command.
     """
-    from agent.llm import Cassette
+    from demo.agent.llm import Cassette
 
     steps = [
         {"type": "tool_use", "tool": "read_document", "args": {"doc_id": "ticket-4711"}},
@@ -813,7 +813,7 @@ def test_the_live_matrix_replays_one_sample_through_both_profiles():
 def test_matrix_header_says_which_model_produced_it():
     """A live matrix and a recorded one look identical otherwise, and the
     difference decides what the table can be used to argue."""
-    from cli.explain import render_matrix
+    from demo.cli.explain import render_matrix
 
     rows = [{"scenario": "export", "rule": "egress.allowlist",
              "harm": "155 bytes out", "guarded": "1 refused, 0 bytes out"}]
@@ -825,7 +825,7 @@ def test_the_matrix_records_each_decision_not_only_the_totals():
     """"43 refused" is a summary. Which calls, against what, and under which
     rule is the part a reader can check — and the part that makes a saved run
     evidence rather than a claim."""
-    from cli.explain import _target_label
+    from demo.cli.explain import _target_label
 
     assert _target_label({"kind": "doc", "path": "ticket-4711"}) == "ticket-4711"
     assert _target_label(

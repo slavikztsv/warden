@@ -1,6 +1,6 @@
 import pytest
 
-from broker.taint import TaintTracker
+from warden.broker.taint import TaintTracker
 
 
 def test_a_fresh_task_is_clean():

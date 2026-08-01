@@ -20,13 +20,13 @@ services:
     image: openpolicyagent/opa:1.19.0
     command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
     volumes:
-      - ./policies:/policies:ro
+      - ./warden/policies:/policies:ro
     networks: [backend-net]
     profiles: [guarded]
 
   docstore:
     build: .
-    command: ["uvicorn", "mocks.docstore:app", "--host", "0.0.0.0", "--port", "80"]
+    command: ["uvicorn", "demo.mocks.docstore:app", "--host", "0.0.0.0", "--port", "80"]
     networks:
       backend-net:
         aliases: [docstore.internal]
@@ -34,7 +34,7 @@ services:
 
   mailer:
     build: .
-    command: ["uvicorn", "mocks.mailer:app", "--host", "0.0.0.0", "--port", "80"]
+    command: ["uvicorn", "demo.mocks.mailer:app", "--host", "0.0.0.0", "--port", "80"]
     networks:
       backend-net:
         aliases: [mailer.internal]
@@ -42,7 +42,7 @@ services:
 
   sinkhole:
     build: .
-    command: ["uvicorn", "mocks.sinkhole:app", "--host", "0.0.0.0", "--port", "80"]
+    command: ["uvicorn", "demo.mocks.sinkhole:app", "--host", "0.0.0.0", "--port", "80"]
     networks:
       backend-net:
         aliases: [attacker.example]
@@ -56,7 +56,7 @@ services:
   # container, so compromising it does not yield the ability to mint a token.
   broker:
     build: .
-    command: ["python", "-m", "broker"]
+    command: ["python", "-m", "warden.broker"]
     environment:
       # Consumed as ${VAR} by demo/scenario/tools.toml at catalog-load time,
       # not read directly by Python -- ports, the OPA URL, the audit path and
@@ -67,8 +67,8 @@ services:
       WARDEN_CONFIG: /config/warden.toml
     volumes:
       - ./data:/data
-      - ./policies:/policies:ro
-      - ./warden.toml:/config/warden.toml:ro
+      - ./warden/policies:/policies:ro
+      - ./demo/scenario/warden.toml:/config/warden.toml:ro
       - ./demo/scenario/tools.toml:/config/tools.toml:ro
     networks: [agent-net, backend-net, egress-net]
     depends_on: [opa, docstore, mailer]
@@ -88,12 +88,12 @@ services:
   # from agent-net.
   broker-control:
     build: .
-    command: ["python", "-m", "broker.control_main"]
+    command: ["python", "-m", "warden.broker.control_main"]
     environment:
       WARDEN_CONTROL_CONFIG: /config/control.toml
     volumes:
       - ./data:/data
-      - ./control.toml:/config/control.toml:ro
+      - ./demo/scenario/control.toml:/config/control.toml:ro
     networks: [backend-net, host-net]
     ports: ["8081:8081"]
     profiles: [guarded]
@@ -102,7 +102,7 @@ services:
     build:
       context: .
       args: { LIVE: "1" }
-    command: ["sh", "-c", "exec python -m agent.loop $$AGENT_ARGS"]
+    command: ["sh", "-c", "exec python -m demo.agent.loop $$AGENT_ARGS"]
     environment:
       BROKER_URL: http://broker:8080
       TASK_TOKEN: ${TASK_TOKEN}
@@ -144,7 +144,7 @@ services:
     build:
       context: .
       args: { LIVE: "1" }
-    command: ["python", "-m", "agent.loop"]
+    command: ["python", "-m", "demo.agent.loop"]
     environment:
       DOCSTORE_URL: http://docstore.internal
       MAILER_URL: http://mailer.internal

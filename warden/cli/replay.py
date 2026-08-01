@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-from broker.audit import AuditLog
+from warden.broker.audit import AuditLog
 
 
 def _describe(record: dict) -> str:
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("task_id", nargs="?", default=None)
     parser.add_argument("--audit", default="data/audit.jsonl")
     parser.add_argument("--catalog", default="demo/scenario/tools.toml")
-    parser.add_argument("--data", default="policies/data.json")
+    parser.add_argument("--data", default="warden/policies/data.json")
     parser.add_argument("--opa", default=None)
     args = parser.parse_args(argv)
 
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         # from a running server: the only way to catch a bundle mounted
         # where OPA namespaces the document to something other than
         # data.tools, which no file comparison can see.
-        from broker.config.check import check_catalog
+        from warden.broker.config.check import check_catalog
 
         problems = check_catalog(
             Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "verify-runs":
         # The run index, not the audit log: proof that the saved evidence of
         # each run is the set that was written, in the order it was written.
-        from cli.runlog import INDEX, verify_index
+        from demo.cli.runlog import INDEX, verify_index
 
         if not INDEX.exists():
             print(f"no runs recorded yet ({INDEX})")

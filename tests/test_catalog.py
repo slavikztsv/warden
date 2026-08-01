@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from broker.adapters.base import UnknownTool
-from broker.config.catalog import ToolCatalog, load_catalog
-from broker.config.loader import ConfigError
+from warden.broker.adapters.base import UnknownTool
+from warden.broker.config.catalog import ToolCatalog, load_catalog
+from warden.broker.config.loader import ConfigError
 
 MANIFEST = """
 [tools.read_document]

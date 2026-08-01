@@ -19,8 +19,8 @@ import re
 import sqlite3
 from pathlib import Path
 
-from broker.adapters.base import ToolResult, ToolTarget
-from broker.config.loader import ConfigError
+from warden.broker.adapters.base import ToolResult, ToolTarget
+from warden.broker.config.loader import ConfigError
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

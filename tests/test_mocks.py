@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
-from mocks.docstore import app as docstore_app
-from mocks.mailer import app as mailer_app
-from mocks.sinkhole import app as sinkhole_app
+from demo.mocks.docstore import app as docstore_app
+from demo.mocks.mailer import app as mailer_app
+from demo.mocks.sinkhole import app as sinkhole_app
 
 
 def test_docstore_serves_the_ticket():
@@ -59,7 +59,7 @@ def test_feedback_accepts_the_json_array_the_cassette_actually_posts():
     from pathlib import Path
 
     cassette = (
-        Path(__file__).resolve().parent.parent / "agent/cassettes/support-triage.json"
+        Path(__file__).resolve().parent.parent / "demo/agent/cassettes/support-triage.json"
     )
     steps = json.loads(cassette.read_text())
     bodies = [
@@ -95,7 +95,7 @@ def test_feedback_records_what_lands_in_it():
     damage was real and unmeasured until this endpoint recorded bodies."""
     from fastapi.testclient import TestClient
 
-    from mocks import docstore
+    from demo.mocks import docstore
 
     docstore.RECEIVED.clear()
     client = TestClient(docstore.app)
@@ -111,7 +111,7 @@ def test_every_poison_keeps_the_document_plausible_and_names_a_destination():
     to read. It must still read as the refund policy, or the scenario is
     testing whether a model notices nonsense rather than whether the broker
     holds."""
-    from mocks import docstore
+    from demo.mocks import docstore
 
     for name, text in docstore.POISONS.items():
         assert "Refund policy" in text, name
@@ -126,7 +126,7 @@ def test_set_poison_swaps_the_referenced_document_only():
     """The ticket always points at kb/refund-policy. Swapping what that
     document contains keeps the operator's instruction identical, so the model
     is fooled by something it read rather than told by its principal."""
-    from mocks import docstore
+    from demo.mocks import docstore
 
     original = docstore.DOCUMENTS["kb/refund-policy"]
     try:

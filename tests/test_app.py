@@ -6,14 +6,14 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from broker.adapters.base import ToolResult
-from broker.app import create_app
-from broker.audit import AuditLog
-from broker.control import create_control_app
-from broker.identity import Signer, Verifier
-from broker.pdp import PolicyDecisionPoint
-from broker.taint import TaintTracker
-from mocks.seed_db import seed_customers
+from warden.broker.adapters.base import ToolResult
+from warden.broker.app import create_app
+from warden.broker.audit import AuditLog
+from warden.broker.control import create_control_app
+from warden.broker.identity import Signer, Verifier
+from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.taint import TaintTracker
+from demo.mocks.seed_db import seed_customers
 from tests.support.catalog import demo_catalog
 
 
@@ -150,7 +150,7 @@ def test_missing_token_is_rejected(tmp_path, signer):
 def test_expired_token_is_rejected(tmp_path, signer):
     client, _ = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
     stale = token_for(signer)
-    import broker.app as app_module
+    import warden.broker.app as app_module
 
     original = app_module.now
     app_module.now = lambda: 10**12
@@ -693,7 +693,7 @@ def test_expired_token_never_reaches_pdp_or_backend(tmp_path, signer):
     client, decide_calls, describe_calls = _build_with_spies(tmp_path, signer)
     stale = token_for(signer)
 
-    import broker.app as app_module
+    import warden.broker.app as app_module
 
     original = app_module.now
     app_module.now = lambda: 10**12
@@ -880,7 +880,7 @@ def _unauthenticated_requests(client, signer):
         json={"args": {"doc_id": "a"}},
         headers={"Authorization": "Bearer not-a-jwt-at-all"},
     )
-    import broker.app as app_module
+    import warden.broker.app as app_module
 
     original = app_module.now
     app_module.now = lambda: 10**12
@@ -967,8 +967,8 @@ def test_a_missing_required_arg_is_audited_not_a_silent_502(tmp_path):
     agent probing with no trace -- the same defect _refuse_unauthenticated
     exists to close on the auth path.
     """
-    from broker.config.catalog import CatalogEntry, ToolCatalog
-    from broker.config.schema import ArgSpec, ToolSchema
+    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
+    from warden.broker.config.schema import ArgSpec, ToolSchema
 
     class Dereferences:
         target_kind = "doc"

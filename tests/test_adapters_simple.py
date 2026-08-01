@@ -5,9 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from broker.adapters.docstore import DocstoreAdapter
-from broker.adapters.http import HttpAdapter
-from broker.adapters.mail import MailAdapter
+from warden.broker.adapters.docstore import DocstoreAdapter
+from warden.broker.adapters.http import HttpAdapter
+from warden.broker.adapters.mail import MailAdapter
 
 
 def recording_client(record: list) -> httpx.Client:

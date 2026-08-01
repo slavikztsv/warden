@@ -1,6 +1,6 @@
 """The control plane: a separate process, on a separate network.
 
-Run as `python -m broker.control_main`. This is the only process that loads
+Run as `python -m warden.broker.control_main`. This is the only process that loads
 the private key and therefore the only process that can mint a token.
 
 The separation is topological, not a policy check. The `broker-control`
@@ -21,9 +21,9 @@ from pathlib import Path
 
 import uvicorn
 
-from broker.config.loader import ControlConfig, load_control_config
-from broker.control import create_control_app
-from broker.identity import Signer
+from warden.broker.config.loader import ControlConfig, load_control_config
+from warden.broker.control import create_control_app
+from warden.broker.identity import Signer
 
 
 def build(config: ControlConfig):

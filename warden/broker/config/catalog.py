@@ -19,10 +19,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from broker.adapters.base import ToolResult, ToolTarget, UnknownTool
-from broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
-from broker.config.loader import ConfigError, interpolate
-from broker.config.schema import ToolSchema, parse_tool_schema
+from warden.broker.adapters.base import ToolResult, ToolTarget, UnknownTool
+from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
+from warden.broker.config.loader import ConfigError, interpolate
+from warden.broker.config.schema import ToolSchema, parse_tool_schema
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from broker.adapters.sql import SqlAdapter
-from broker.config.loader import ConfigError
+from warden.broker.adapters.sql import SqlAdapter
+from warden.broker.config.loader import ConfigError
 
 BINDING = {
     "table": "customers",

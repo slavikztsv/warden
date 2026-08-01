@@ -20,12 +20,36 @@ dependencies = [
 [project.scripts]
 warden = "warden.cli.main:main"
 
-# `where` is relative to THIS file's directory (warden/), so it must look one
-# level up (the repo root) to find the "warden" package -- warden/__init__.py
-# sits beside this pyproject.toml, not inside a further-nested warden/warden/.
-# Verified: `where = ["."]` (as it reads in a project laid out with its
-# packages a level below the pyproject.toml) finds nothing here, because the
-# root being scanned never names itself.
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["warden*"]
+# Explicit, not packages.find: `where = [".."]` (needed pre-Task-20, when
+# warden/ held only warden/cli/ and the rest of the "warden" package lived at
+# the repo root as sibling broker/ and policies/ directories) makes
+# setuptools add the REPO ROOT ITSELF to sys.path on an editable install --
+# not just the warden package. Verified: with only `warden` installed
+# editable, `import demo` succeeded from outside any project context, purely
+# because the whole checkout was importable. `where = ["."]` looks tempting
+# as the fix but is wrong for a different reason: relative to THIS file's
+# directory (warden/), it would discover "broker" and "cli" as their OWN
+# top-level packages (their __init__.py sits directly under the scanned
+# root), not as "warden.broker" / "warden.cli".
+#
+# The fix is to say what the "warden" package's root directory IS (".", i.e.
+# this directory) and enumerate its members explicitly. setuptools resolves
+# each nested name's location by walking that one mapping plus the dotted
+# path, e.g. warden.broker -> ./broker, warden.broker.adapters ->
+# ./broker/adapters -- so every one of these must be listed, or a real
+# subpackage silently fails to install. This produces a MAPPING-based
+# editable finder (one entry per package, resolved at import time) rather
+# than a repo-root .pth file, which is what stops the leak: importing
+# anything outside this explicit list -- `demo`, `broker`, `cli` -- now
+# raises ModuleNotFoundError even with this package installed editable.
+[tool.setuptools]
+packages = [
+    "warden",
+    "warden.broker",
+    "warden.broker.adapters",
+    "warden.broker.config",
+    "warden.cli",
+]
+
+[tool.setuptools.package-dir]
+warden = "."

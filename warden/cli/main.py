@@ -1,22 +1,18 @@
 """The `warden` console script: five subcommands over the product.
 
-NOT YET MOVED. broker/, cli/ and policies/ still live at the repo root
-(Task 20 relocates them to warden/broker, warden/cli/replay.py and
-warden/policies). This module therefore imports the top-level `broker.*`
-and `cli.*` packages -- the same ones `python -m broker`, `python -m
-broker.control_main` and `python -m cli.warden` already import -- rather
-than anything under `warden.*`. That only works because this package is
-installed editable from a checkout that still has those directories as
-siblings on sys.path; Task 20 rewrites every import here to `warden.broker.*`
-/ `warden.cli.replay`, at which point the product wheel will actually be
-self-contained.
+Moved (Task 20): broker/, cli/ and policies/ now live under warden/broker,
+warden/cli/replay.py and warden/policies. This module imports `warden.broker.*`
+and `warden.cli.replay` exclusively -- nothing at the repo root -- so the
+product wheel is self-contained: installed alone (no demo/ sibling on disk),
+every one of these imports still resolves.
 
-`replay` and `verify-chain` delegate to cli.warden.main() UNCHANGED -- that
-function (not a reimplementation of it) is what test_golden_replay.py pins
-byte-for-byte. `serve` and `control` load TOML and call the Phase 1
-entrypoints (broker/__main__.py, broker/control_main.py). `config check`
-calls broker.config.check.check_catalog directly, the same function
-cli/warden.py's own (still-live, still-used-by-CI) `config` command calls.
+`replay` and `verify-chain` delegate to warden.cli.replay.main() UNCHANGED --
+that function (not a reimplementation of it) is what test_golden_replay.py
+pins byte-for-byte. `serve` and `control` load TOML and call the Phase 1
+entrypoints (warden/broker/__main__.py, warden/broker/control_main.py).
+`config check` calls warden.broker.config.check.check_catalog directly, the
+same function warden/cli/replay.py's own (still-live, still-used-by-CI)
+`config` command calls.
 """
 
 from __future__ import annotations
@@ -32,13 +28,13 @@ from pathlib import Path
 # Signer -- `control` legitimately does import Signer, and serve/control
 # share this one binary, so the walk needs a named starting point rather
 # than warden.cli.main itself (which imports both, lazily, below).
-SERVE_ENTRYPOINT = "broker.__main__"
+SERVE_ENTRYPOINT = "warden.broker.__main__"
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     if args.config:
         os.environ["WARDEN_CONFIG"] = args.config
-    import broker.__main__ as serve_mod
+    import warden.broker.__main__ as serve_mod
 
     asyncio.run(serve_mod.main())
     return 0
@@ -47,14 +43,14 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def _cmd_control(args: argparse.Namespace) -> int:
     if args.config:
         os.environ["WARDEN_CONTROL_CONFIG"] = args.config
-    import broker.control_main as control_mod
+    import warden.broker.control_main as control_mod
 
     control_mod.main()
     return 0
 
 
 def _cmd_replay(args: argparse.Namespace) -> int:
-    from cli.warden import main as cli_warden_main
+    from warden.cli.replay import main as cli_warden_main
 
     argv = ["replay"]
     if args.task_id is not None:
@@ -64,13 +60,13 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify_chain(args: argparse.Namespace) -> int:
-    from cli.warden import main as cli_warden_main
+    from warden.cli.replay import main as cli_warden_main
 
     return cli_warden_main(["verify-chain", "--audit", args.audit])
 
 
 def _cmd_config_check(args: argparse.Namespace) -> int:
-    from broker.config.check import check_catalog
+    from warden.broker.config.check import check_catalog
 
     problems = check_catalog(
         Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
@@ -121,10 +117,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_config = sub.add_parser("config", help="catalog / policy consistency checks")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)
     p_check = config_sub.add_parser(
-        "check", help="cross-check the tool catalog against policies/data.json"
+        "check", help="cross-check the tool catalog against warden/policies/data.json"
     )
     p_check.add_argument("--catalog", default="demo/scenario/tools.toml")
-    p_check.add_argument("--data", default="policies/data.json")
+    p_check.add_argument("--data", default="warden/policies/data.json")
     p_check.add_argument("--opa", default=None)
     p_check.set_defaults(func=_cmd_config_check)
 

@@ -3,14 +3,14 @@
 import json
 from pathlib import Path
 
-from agent.tools import TOOL_SCHEMAS
+from demo.agent.tools import TOOL_SCHEMAS
 from tests.support.catalog import demo_catalog
 
 CATALOG = demo_catalog(
     docstore_url="http://d", db_path="data/customers.db", mailer_url="http://m", client=None
 )
 
-CASSETTE = Path("agent/cassettes/support-triage.json")
+CASSETTE = Path("demo/agent/cassettes/support-triage.json")
 EXPECTED = [
     "read_document",
     "read_document",

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from broker.config.catalog import ToolCatalog, load_catalog
+from warden.broker.config.catalog import ToolCatalog, load_catalog
 
 MANIFEST = Path(__file__).resolve().parent / "tools.toml"
 

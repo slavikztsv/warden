@@ -30,8 +30,8 @@ from pathlib import Path
 
 import httpx
 
-from broker.adapters.registry import TARGET_KIND_BY_ADAPTER
-from broker.config.catalog import load_catalog
+from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER
+from warden.broker.config.catalog import load_catalog
 
 
 def _policy_tools(document: Mapping) -> dict:

@@ -2,7 +2,7 @@ import json
 import threading
 from pathlib import Path
 
-from broker.audit import GENESIS_HASH, AuditLog, canonical_json
+from warden.broker.audit import GENESIS_HASH, AuditLog, canonical_json
 
 
 def _append(log, **overrides):

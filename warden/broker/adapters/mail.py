@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from broker.adapters.base import ToolResult, ToolTarget
+from warden.broker.adapters.base import ToolResult, ToolTarget
 
 
 class MailAdapter:

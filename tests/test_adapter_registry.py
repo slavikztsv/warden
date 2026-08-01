@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from broker.adapters.base import ToolTarget
-from broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
+from warden.broker.adapters.base import ToolTarget
+from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def policy_target_kinds() -> set[str]:
-    source = (REPO_ROOT / "policies" / "authz.rego").read_text()
+    source = (REPO_ROOT / "warden" / "policies" / "authz.rego").read_text()
     return set(re.findall(r'not input\.target\.kind == "([a-z_]+)"', source))
 
 

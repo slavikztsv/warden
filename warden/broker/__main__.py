@@ -28,16 +28,16 @@ from pathlib import Path
 import httpx
 import uvicorn
 
-from broker.app import create_app
-from broker.audit import AuditLog
-from broker.config.catalog import load_catalog
-from broker.config.loader import BrokerConfig, load_broker_config
-from broker.identity import Verifier
-from broker.pdp import PolicyDecisionPoint
-from broker.policy_digest import policy_bundle_digest
-from broker.proxy import serve_proxy
-from broker.taint import TaintTracker
-from broker.wiring import BrokerComponents
+from warden.broker.app import create_app
+from warden.broker.audit import AuditLog
+from warden.broker.config.catalog import load_catalog
+from warden.broker.config.loader import BrokerConfig, load_broker_config
+from warden.broker.identity import Verifier
+from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.policy_digest import policy_bundle_digest
+from warden.broker.proxy import serve_proxy
+from warden.broker.taint import TaintTracker
+from warden.broker.wiring import BrokerComponents
 
 
 def build(config: BrokerConfig, *, client: httpx.Client | None = None):

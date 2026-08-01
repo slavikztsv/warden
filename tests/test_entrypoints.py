@@ -37,11 +37,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
-import broker.__main__ as broker_main
-import broker.control_main as control_main
-from broker.config.loader import BrokerConfig, ControlConfig, load_broker_config, load_control_config
-from broker.identity import Signer, Verifier
-from mocks.seed_db import seed_customers
+import warden.broker.__main__ as broker_main
+import warden.broker.control_main as control_main
+from warden.broker.config.loader import BrokerConfig, ControlConfig, load_broker_config, load_control_config
+from warden.broker.identity import Signer, Verifier
+from demo.mocks.seed_db import seed_customers
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -88,7 +88,7 @@ def write_warden_toml(
     [tokens] here carries issuer only -- a TTL would be parsed and never
     consumed. See write_control_toml for where ttl_seconds actually lives.
     """
-    bundle_roots = bundle_roots or [REPO_ROOT / "policies"]
+    bundle_roots = bundle_roots or [REPO_ROOT / "warden" / "policies"]
     audit_path = audit_path or (tmp_path / "audit.jsonl")
     catalog_tools = catalog_tools or (REPO_ROOT / "demo" / "scenario" / "tools.toml")
     roots_toml = ", ".join(f'"{root}"' for root in bundle_roots)
@@ -193,7 +193,7 @@ def test_broker_verifier_rejects_a_token_from_any_other_key(tmp_path, monkeypatc
     """Negative control for the test above: the verifier is bound to that one
     public key, so a token minted anywhere else -- including by a Signer the
     broker might once have generated for itself -- is refused."""
-    from broker.identity import TokenInvalid
+    from warden.broker.identity import TokenInvalid
 
     _, public_path = write_keypair(tmp_path)
     set_catalog_env(monkeypatch, tmp_path)
@@ -241,7 +241,7 @@ def test_broker_entrypoint_source_never_names_the_signer():
     """Structural, not behavioural: even an unexecuted branch that reaches for
     Signer in this module would reintroduce the escalation path, so assert the
     name does not appear in the module at all. Signer.generate() lived here."""
-    source = (REPO_ROOT / "broker" / "__main__.py").read_text()
+    source = (REPO_ROOT / "warden" / "broker" / "__main__.py").read_text()
     tree = ast.parse(source)
     names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
@@ -320,9 +320,9 @@ def test_wiring_is_typed_so_a_new_component_cannot_break_the_proxy():
     serve_proxy and took all egress down. No grep for a literal finds that."""
     import inspect
 
-    from broker.app import create_app
-    from broker.proxy import authorize_connect
-    from broker.wiring import BrokerComponents
+    from warden.broker.app import create_app
+    from warden.broker.proxy import authorize_connect
+    from warden.broker.wiring import BrokerComponents
 
     app_params = set(inspect.signature(create_app).parameters)
     proxy_params = set(inspect.signature(authorize_connect).parameters)
@@ -349,7 +349,7 @@ public_key = "{public_path}"
 [policy]
 opa_url = "http://opa:8181"
 decision_path = "warden/authz"
-bundle_roots = ["policies"]
+bundle_roots = ["warden/policies"]
 [audit]
 path = "{tmp_path / 'audit.jsonl'}"
 [tokens]
@@ -380,7 +380,7 @@ def test_a_configured_issuer_mismatch_is_rejected_end_to_end(tmp_path, monkeypat
     broker_main.build() -- the real entrypoints -- not through Signer/Verifier
     directly, so this also proves both build()s actually pass config.issuer
     through rather than falling back to the shared module constant."""
-    from broker.identity import TokenInvalid
+    from warden.broker.identity import TokenInvalid
 
     private_path, public_path = write_keypair(tmp_path)
 
@@ -543,7 +543,7 @@ def line_starts_a_service(line: str) -> bool:
 
 def test_the_minting_service_is_not_attached_to_the_agent_network():
     block = _compose_service_block("broker-control")
-    assert "broker.control_main" in block
+    assert "warden.broker.control_main" in block
     assert "backend-net" in block
     assert "agent-net" not in block
 
@@ -570,11 +570,11 @@ def test_the_broker_and_control_services_mount_their_toml_config():
     anything there -- a startup crash the unit tests above cannot see."""
     broker_block = _compose_service_block("broker")
     assert "WARDEN_CONFIG: /config/warden.toml" in broker_block
-    assert "./warden.toml:/config/warden.toml:ro" in broker_block
+    assert "./demo/scenario/warden.toml:/config/warden.toml:ro" in broker_block
 
     control_block = _compose_service_block("broker-control")
     assert "WARDEN_CONTROL_CONFIG: /config/control.toml" in control_block
-    assert "./control.toml:/config/control.toml:ro" in control_block
+    assert "./demo/scenario/control.toml:/config/control.toml:ro" in control_block
 
 
 def _strip_unquoted_comment(line: str) -> str:
@@ -624,7 +624,7 @@ def test_demo_script_rebuilds_before_starting_containers():
     an invocation (this file's own established style, immediately above the
     lines this test polices) must never be mistaken for one.
     """
-    script = (REPO_ROOT / "scripts" / "demo.sh").read_text()
+    script = (REPO_ROOT / "demo" / "scripts" / "demo.sh").read_text()
     logical_lines = _shell_logical_lines(script)
     ups = [line for line in logical_lines if "docker compose" in line and " up " in line]
     assert len(ups) == 2, f"expected exactly one `docker compose ... up` per profile, found {len(ups)}: {ups}"

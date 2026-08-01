@@ -1,12 +1,10 @@
 """The `warden-demo` console script: the support-ticket scenario, five ways.
 
-NOT YET MOVED. cli/, agent/ and mocks/ still live at the repo root, and
-scripts/demo.sh hasn't moved under demo/scripts/ yet (Task 20). This module
-therefore imports the top-level `cli.*` package and shells out to the
-still-at-the-root demo.sh, the same way `python -m cli.explain` and
-`./scripts/demo.sh` already do. Task 20 rewrites the imports to
-`demo.cli.*`; Task 24 replaces the `up` subcommand's subprocess call to
-demo.sh with a native implementation (demo.sh is retired then, not before).
+Moved (Task 20): cli/, agent/ and mocks/ now live under demo/, and
+scripts/demo.sh is demo/scripts/demo.sh. This module imports the `demo.cli.*`
+package and shells out to demo/scripts/demo.sh. Task 24 replaces the `up`
+subcommand's subprocess call to demo.sh with a native implementation
+(demo.sh is retired then, not before).
 
 `explain`, `sweep` and `record` are a thin argv passthrough to an existing
 module's own `main(argv)` -- those modules parse their own flags (including
@@ -33,20 +31,21 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# command -> the module (still at the pre-Task-20 top-level `cli` package)
-# whose main(argv) implements it. Checked in main() before argparse parses
-# anything, for the REMAINDER reason explained above.
+# command -> the module (under demo/cli/) whose main(argv) implements it.
+# Checked in main() before argparse parses anything, for the REMAINDER
+# reason explained above.
 PASSTHROUGH = {
-    "explain": "cli.explain",
-    "sweep": "cli.sweep",
-    "record": "cli.record",
+    "explain": "demo.cli.explain",
+    "sweep": "demo.cli.sweep",
+    "record": "demo.cli.record",
 }
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
-    # scripts/demo.sh: "PROFILE=${1:-guarded} MODE=${2:-cassette}"; a second
-    # positional of "--live" swaps the recorded transcript for a real model.
-    demo_sh = REPO_ROOT / "scripts" / "demo.sh"
+    # demo/scripts/demo.sh: "PROFILE=${1:-guarded} MODE=${2:-cassette}"; a
+    # second positional of "--live" swaps the recorded transcript for a real
+    # model.
+    demo_sh = REPO_ROOT / "demo" / "scripts" / "demo.sh"
     command = [str(demo_sh), args.profile]
     if args.live:
         command.append("--live")
@@ -56,11 +55,11 @@ def _cmd_up(args: argparse.Namespace) -> int:
 def _cmd_verify_runs(args: argparse.Namespace) -> int:
     # The run index, not the audit log: proof that the saved evidence of
     # each run (runs/*.log, runs/*.json) is the set that was written, in the
-    # order it was written. Identical to cli/warden.py's own "verify-runs"
-    # branch -- duplicated rather than imported from there because that
-    # module's replay/verify-chain are the two functions pinned unchanged by
-    # the golden test, and this command is not one of them.
-    from cli.runlog import INDEX, verify_index
+    # order it was written. Identical to warden/cli/replay.py's own
+    # "verify-runs" branch -- duplicated rather than imported from there
+    # because that module's replay/verify-chain are the two functions pinned
+    # unchanged by the golden test, and this command is not one of them.
+    from demo.cli.runlog import INDEX, verify_index
 
     if not INDEX.exists():
         print(f"no runs recorded yet ({INDEX})")

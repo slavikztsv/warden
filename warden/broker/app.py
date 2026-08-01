@@ -62,12 +62,12 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from broker.adapters.base import ToolTarget, UnknownTool
-from broker.audit import AuditLog
-from broker.config.catalog import ToolCatalog
-from broker.identity import TokenInvalid, Verifier
-from broker.pdp import PolicyDecisionPoint
-from broker.taint import TaintTracker
+from warden.broker.adapters.base import ToolTarget, UnknownTool
+from warden.broker.audit import AuditLog
+from warden.broker.config.catalog import ToolCatalog
+from warden.broker.identity import TokenInvalid, Verifier
+from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.taint import TaintTracker
 
 
 def now() -> int:

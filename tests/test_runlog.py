@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cli import runlog
+from demo.cli import runlog
 
 
 @pytest.fixture

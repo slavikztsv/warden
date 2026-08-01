@@ -6,11 +6,11 @@ import base64
 import httpx
 import pytest
 
-from broker.audit import AuditLog
-from broker.identity import Signer, Verifier
-from broker.pdp import PolicyDecisionPoint
-from broker.proxy import _audit_refusal, authorize_connect, parse_authority, proxy_token, serve_proxy
-from broker.taint import TaintTracker
+from warden.broker.audit import AuditLog
+from warden.broker.identity import Signer, Verifier
+from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.proxy import _audit_refusal, authorize_connect, parse_authority, proxy_token, serve_proxy
+from warden.broker.taint import TaintTracker
 
 
 @pytest.fixture

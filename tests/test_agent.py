@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent.llm import Cassette
-from agent.loop import run_task
-from agent.tools import BrokeredDispatcher, DirectDispatcher
-from mocks.seed_db import seed_customers
+from demo.agent.llm import Cassette
+from demo.agent.loop import run_task
+from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
+from demo.mocks.seed_db import seed_customers
 from tests.support.catalog import demo_catalog
 
 CASSETTE = [
@@ -265,8 +265,8 @@ def _text(value):
 def test_live_client_declares_the_tools():
     """Without `tools=`, no tool_use block can ever come back -- the whole
     --live path collapses to a single text turn."""
-    from agent.llm import MAX_TOKENS, MODEL, LiveClient
-    from agent.tools import TOOL_SCHEMAS
+    from demo.agent.llm import MAX_TOKENS, MODEL, LiveClient
+    from demo.agent.tools import TOOL_SCHEMAS
 
     stub = StubAnthropic([_Response([_text("done")])])
     LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
@@ -278,7 +278,7 @@ def test_live_client_declares_the_tools():
 
 
 def test_live_client_returns_a_tool_use_step_the_loop_understands():
-    from agent.llm import LiveClient
+    from demo.agent.llm import LiveClient
 
     stub = StubAnthropic(
         [_Response([_tool_use("toolu_1", "read_document", {"doc_id": "ticket-4711"})])]
@@ -293,7 +293,7 @@ def test_live_client_returns_a_tool_use_step_the_loop_understands():
 
 
 def test_live_client_returns_text_as_a_final_step():
-    from agent.llm import LiveClient
+    from demo.agent.llm import LiveClient
 
     stub = StubAnthropic([_Response([_text("Ticket triaged."), _text("Done.")])])
     step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
@@ -303,7 +303,7 @@ def test_live_client_returns_text_as_a_final_step():
 
 
 def test_live_client_prefers_a_tool_use_block_over_accompanying_text():
-    from agent.llm import LiveClient
+    from demo.agent.llm import LiveClient
 
     stub = StubAnthropic(
         [_Response([_text("I'll read the ticket."), _tool_use("toolu_1", "read_document", {})])]
@@ -317,7 +317,7 @@ def test_live_client_maintains_assistant_user_alternation_with_tool_results():
     """The API rejects a tool_use turn that is not answered by a tool_result
     with a matching id. The loop only knows how to append a plain user message,
     so LiveClient has to do this mapping itself."""
-    from agent.llm import LiveClient
+    from demo.agent.llm import LiveClient
 
     first = _tool_use("toolu_abc", "read_document", {"doc_id": "ticket-4711"})
     stub = StubAnthropic([_Response([first]), _Response([_text("all done")])])
@@ -348,8 +348,8 @@ def test_live_client_drives_the_real_loop():
     """End to end through run_task with a stub client: the loop cannot tell a
     live client from a cassette, which is the property that makes --live worth
     offering at all."""
-    from agent.llm import LiveClient
-    from agent.loop import run_task
+    from demo.agent.llm import LiveClient
+    from demo.agent.loop import run_task
 
     stub = StubAnthropic(
         [
@@ -375,7 +375,7 @@ def test_live_client_drives_the_real_loop():
 def test_the_http_fetch_schema_advertises_the_body_field():
     """Without this, a live model can only issue bare GETs and the unprotected
     profile leaks nothing -- exactly the defect the cassette already had."""
-    from agent.tools import TOOL_SCHEMAS
+    from demo.agent.tools import TOOL_SCHEMAS
 
     schema = next(tool for tool in TOOL_SCHEMAS if tool["name"] == "http_fetch")
     properties = schema["input_schema"]["properties"]
@@ -388,7 +388,7 @@ def test_every_advertised_tool_is_one_the_broker_actually_implements():
     """A schema naming a tool the broker does not know would be denied under
     tools.allowed on every call -- a live run that fails for a reason that has
     nothing to do with the demo."""
-    from agent.tools import TOOL_SCHEMAS
+    from demo.agent.tools import TOOL_SCHEMAS
     from tests.support.catalog import demo_catalog
 
     catalog = demo_catalog(
@@ -401,7 +401,7 @@ def test_advertised_schemas_agree_with_the_brokers_shape_check():
     """The broker rejects malformed args before any decision is made. A schema
     whose required fields disagree with that check would produce a live run
     where every call is audited input.malformed."""
-    from agent.tools import TOOL_SCHEMAS
+    from demo.agent.tools import TOOL_SCHEMAS
     from tests.support.catalog import demo_catalog
 
     catalog = demo_catalog(
@@ -453,7 +453,7 @@ def _turn(parts, finish_reason="STOP"):
 
 def test_gemini_gives_up_on_a_thought_only_turn_without_poisoning_history():
     pytest.importorskip("google.genai")
-    from agent.llm import GEMINI_MODEL, GeminiClient
+    from demo.agent.llm import GEMINI_MODEL, GeminiClient
 
     stub, calls = _gemini_stub([_turn(None)])
     client = GeminiClient("key", client=stub)
@@ -472,7 +472,7 @@ def test_gemini_gives_up_on_a_thought_only_turn_without_poisoning_history():
 
 def test_gemini_recovers_when_a_retry_returns_a_real_call():
     pytest.importorskip("google.genai")
-    from agent.llm import GeminiClient
+    from demo.agent.llm import GeminiClient
 
     call = SimpleNamespace(name="read_document", args={"doc_id": "ticket-4711"})
     stub, calls = _gemini_stub(
@@ -499,7 +499,7 @@ def test_gemini_serves_every_call_from_a_multi_call_turn():
     call restated as prose. Observed live before this was fixed.
     """
     pytest.importorskip("google.genai")
-    from agent.llm import GeminiClient
+    from demo.agent.llm import GeminiClient
 
     first = SimpleNamespace(name="read_document", args={"doc_id": "kb/refund-policy"})
     second = SimpleNamespace(name="query_customers", args={"filter": "id=8812"})
@@ -563,7 +563,7 @@ def test_gemini_serves_every_call_from_a_multi_call_turn():
 # install. The Gemini and Anthropic clients cannot be covered this way.
 # ---------------------------------------------------------------------------
 def _openrouter(handler, **kw):
-    from agent.llm import OpenRouterClient
+    from demo.agent.llm import OpenRouterClient
 
     return OpenRouterClient(
         "key", client=httpx.Client(transport=httpx.MockTransport(handler)), **kw
@@ -671,7 +671,7 @@ def test_openrouter_rejects_a_200_that_carries_an_error_body():
 
 
 def test_provider_selection_is_explicit_and_overridable():
-    from agent.llm import live_client_from_env
+    from demo.agent.llm import live_client_from_env
 
     both = {"OPENROUTER_API_KEY": "o", "GEMINI_API_KEY": "g"}
     assert live_client_from_env(both).name.startswith("openrouter:")
@@ -683,7 +683,7 @@ def test_provider_selection_is_explicit_and_overridable():
 
 
 def test_provider_selection_reports_what_is_missing():
-    from agent.llm import live_client_from_env
+    from demo.agent.llm import live_client_from_env
 
     with pytest.raises(RuntimeError) as excinfo:
         live_client_from_env({})
@@ -699,7 +699,7 @@ def test_provider_selection_reports_what_is_missing():
 
 
 def test_openrouter_model_defaults_and_can_be_named():
-    from agent.llm import OPENROUTER_MODEL, live_client_from_env
+    from demo.agent.llm import OPENROUTER_MODEL, live_client_from_env
 
     assert live_client_from_env({"OPENROUTER_API_KEY": "o"}).name == \
         "openrouter:" + OPENROUTER_MODEL

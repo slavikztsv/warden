@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from broker.adapters.base import ToolTarget, UnknownTool
-from mocks.seed_db import seed_customers
+from warden.broker.adapters.base import ToolTarget, UnknownTool
+from demo.mocks.seed_db import seed_customers
 from tests.support.catalog import demo_catalog
 
 

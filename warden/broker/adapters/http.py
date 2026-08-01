@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-from broker.adapters.base import DEFAULT_PORTS, ToolResult, ToolTarget
+from warden.broker.adapters.base import DEFAULT_PORTS, ToolResult, ToolTarget
 
 
 class HttpAdapter:

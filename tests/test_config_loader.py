@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from broker.config.loader import (
+from warden.broker.config.loader import (
     BrokerConfig,
     ConfigError,
     ControlConfig,

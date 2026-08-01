@@ -20,7 +20,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from broker.identity import Signer
+from warden.broker.identity import Signer
 
 
 class TokenRequest(BaseModel):

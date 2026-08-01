@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from broker.config.check import check_catalog
+from warden.broker.config.check import check_catalog
 
 MANIFEST = """
 [tools.read_document]
@@ -67,7 +67,7 @@ def test_an_absent_tools_key_is_reported(tmp_path):
 def test_the_shipped_demo_configuration_is_consistent():
     """The one that runs in CI."""
     assert check_catalog(
-        Path("demo/scenario/tools.toml"), Path("policies/data.json"),
+        Path("demo/scenario/tools.toml"), Path("warden/policies/data.json"),
         env={"DOCSTORE_URL": "http://d", "DB_PATH": "data/customers.db",
              "MAILER_URL": "http://m"},
     ) == []

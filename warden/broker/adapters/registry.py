@@ -20,10 +20,10 @@ TARGET_KIND_BY_ADAPTER: Mapping[str, str] = {
     "mail": "mail",
 }
 
-from broker.adapters.docstore import DocstoreAdapter
-from broker.adapters.http import HttpAdapter
-from broker.adapters.mail import MailAdapter
-from broker.adapters.sql import SqlAdapter
+from warden.broker.adapters.docstore import DocstoreAdapter
+from warden.broker.adapters.http import HttpAdapter
+from warden.broker.adapters.mail import MailAdapter
+from warden.broker.adapters.sql import SqlAdapter
 
 ADAPTERS: dict[str, type] = {
     "docstore": DocstoreAdapter,

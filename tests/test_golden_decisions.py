@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from broker.pdp import DENY_PRECEDENCE
+from warden.broker.pdp import DENY_PRECEDENCE
 from tools.capture_expected import EXPECTED_CASE_COUNT
 from tools.opa_version import resolve_opa
 
@@ -43,7 +43,7 @@ def _cases() -> list[str]:
 
 def _evaluate(binary: str, document: dict) -> dict:
     result = subprocess.run(
-        [binary, "eval", "-I", "-d", str(REPO_ROOT / "policies"),
+        [binary, "eval", "-I", "-d", str(REPO_ROOT / "warden" / "policies"),
          "data.warden.authz", "--format=json"],
         input=json.dumps(document), capture_output=True, text=True,
         cwd=REPO_ROOT, check=False,

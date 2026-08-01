@@ -42,21 +42,22 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from agent.llm import Cassette, live_client_from_env
-from agent.loop import SYSTEM_TASK, run_task
-from agent.tools import BrokeredDispatcher, DirectDispatcher
-from broker.app import create_app
-from broker.audit import AuditLog
-from broker.config.catalog import ToolCatalog
-from broker.identity import Signer, Verifier
-from broker.pdp import PolicyDecisionPoint
-from broker.policy_digest import policy_bundle_digest
-from broker.taint import TaintTracker
-from cli.runlog import RunLog
-from cli.warden import render_replay
+from demo.agent.llm import Cassette, live_client_from_env
+from demo.agent.loop import SYSTEM_TASK, run_task
+from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
+from warden.broker.app import create_app
+from warden.broker.audit import AuditLog
+from warden.broker.config.catalog import ToolCatalog
+from warden.broker.identity import Signer, Verifier
+from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.policy_digest import policy_bundle_digest
+from warden.broker.taint import TaintTracker
+from demo.cli.runlog import RunLog
+from warden.cli.replay import render_replay
 from demo.scenario.catalog import demo_catalog
-from mocks import docstore, mailer, sinkhole
-from mocks.seed_db import seed_customers
+from demo.scenario.paths import POLICY_BUNDLE
+from demo.mocks import docstore, mailer, sinkhole
+from demo.mocks.seed_db import seed_customers
 from tools.opa_version import resolve_opa
 
 W = 76
@@ -647,7 +648,7 @@ def _start_opa() -> tuple[subprocess.Popen, str]:
         sys.exit(f"{exc}  See docs/WALKTHROUGH.md Part 0.")
     port = _free_port()
     process = subprocess.Popen(
-        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", "policies"],
+        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", str(POLICY_BUNDLE)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -725,7 +726,7 @@ def _pick_task(argv: list[str], live: bool) -> tuple[str, dict]:
             name = arg.split("=", 1)[1]
     if name not in TASKS:
         sys.exit(f"unknown --task {name!r}; choose from: {', '.join(TASKS)}")
-    if name != "triage" and not live and not Path(f"agent/cassettes/{name}.json").exists():
+    if name != "triage" and not live and not Path(f"demo/agent/cassettes/{name}.json").exists():
         # The cassette replays fixed model output and never reads the prompt, so
         # the steps would be identical and the run would appear to show the task
         # driving behaviour it had no part in.
@@ -850,7 +851,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
     opa, opa_url = _start_opa()
     try:
         banner("SETUP — what exists before the agent starts")
-        show("policy bundle", f"policies/  digest {policy_bundle_digest([Path('policies')])[:22]}…", 5)
+        show("policy bundle", f"warden/policies/  digest {policy_bundle_digest([POLICY_BUNDLE])[:22]}…", 5)
         show("policy engine", f"real OPA server at {opa_url}", 5)
         show("customer database", f"{db.name}, 10,312 synthetic records", 5)
         show("audit log", "empty, hash chain starts at 64 zeroes", 5)
@@ -920,7 +921,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
                     client=httpx.Client(transport=_mock_transport()),
                 )
             ),
-            policy_digest=policy_bundle_digest([Path("policies")]),
+            policy_digest=policy_bundle_digest([POLICY_BUNDLE]),
         )
 
         broker_client = TestClient(app)
@@ -1134,7 +1135,7 @@ def render_matrix(rows: list[dict], live: bool = False) -> str:
         "",
         "  Every row is two runs of ONE transcript: identical model output on",
         "  both sides, so nothing here turns on how a model felt that day.",
-        "  Recordings and compliance rates: agent/cassettes/*.meta.json",
+        "  Recordings and compliance rates: demo/agent/cassettes/*.meta.json",
         "",
     ]
     return "\n".join(out)
@@ -1148,10 +1149,10 @@ def _fresh_llm(live: bool, task: tuple[str, dict] | None = None):
     """
     if live:
         return live_client_from_env(os.environ)
-    recorded = Path(f"agent/cassettes/{task[0]}.json") if task else None
+    recorded = Path(f"demo/agent/cassettes/{task[0]}.json") if task else None
     if recorded and recorded.exists():
         return Cassette(recorded)
-    return Cassette(Path("agent/cassettes/support-triage.json"))
+    return Cassette(Path("demo/agent/cassettes/support-triage.json"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1207,7 +1208,7 @@ def _main(argv: list[str], run=None) -> int:
             print("  replayed through the broker — so the broker is the only variable.\n")
         for name, spec in TASKS.items():
             if not live and name != "triage" and not Path(
-                f"agent/cassettes/{name}.json"
+                f"demo/agent/cassettes/{name}.json"
             ).exists():
                 continue
             pair = (name, spec)

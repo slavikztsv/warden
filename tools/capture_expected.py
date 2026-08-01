@@ -33,7 +33,7 @@ CORPUS = REPO_ROOT / "tests" / "golden" / "decisions"
 
 sys.path.insert(0, str(REPO_ROOT))
 
-from broker.pdp import DENY_PRECEDENCE  # noqa: E402
+from warden.broker.pdp import DENY_PRECEDENCE  # noqa: E402
 from tools.opa_version import resolve_opa  # noqa: E402
 
 # 7 demo cases derived from the frozen audit log (tools/build_corpus.py) +
@@ -48,7 +48,7 @@ def _cases() -> list[Path]:
 
 def _evaluate(binary: str, document_text: str) -> dict:
     result = subprocess.run(
-        [binary, "eval", "-I", "-d", str(REPO_ROOT / "policies"),
+        [binary, "eval", "-I", "-d", str(REPO_ROOT / "warden" / "policies"),
          "data.warden.authz", "--format=json"],
         input=document_text, capture_output=True, text=True,
         cwd=REPO_ROOT, check=True,

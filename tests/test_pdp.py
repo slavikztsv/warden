@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from broker.pdp import Decision, PolicyDecisionPoint
-from broker.policy_digest import policy_bundle_digest
+from warden.broker.pdp import Decision, PolicyDecisionPoint
+from warden.broker.policy_digest import policy_bundle_digest
 
 INPUT = {
     "principal": {"purpose": "support-triage", "allowed_tools": ["http_fetch"]},
