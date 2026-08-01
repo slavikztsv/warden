@@ -10,8 +10,6 @@ Asserts four things, and all four matter:
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import socket
 import subprocess
 import time
@@ -33,6 +31,7 @@ from broker.policy_digest import policy_bundle_digest
 from broker.taint import TaintTracker
 from mocks import docstore, mailer, sinkhole
 from mocks.seed_db import seed_customers
+from tools.opa_version import resolve_opa
 
 pytestmark = pytest.mark.integration
 
@@ -55,41 +54,25 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
-def _resolve_opa() -> str | None:
-    """Locates the opa binary, tolerating a PATH that does not include the
-    user's local bin directory.
+def _resolve_opa() -> str:
+    """The pinned binary, or a hard failure.
 
-    shutil.which("opa") alone is not reliable on this machine: opa is
-    installed at ~/.local/bin/opa but that directory is not on PATH by
-    default, and this is the single most important test in the project --
-    it must not be able to silently skip here. ~/.local/bin is prepended to
-    PATH (so both this lookup and the later subprocess.Popen(["opa", ...])
-    can find it) before falling back to a direct existence check. A genuine
-    skip is still possible on a machine with no opa anywhere.
+    This used to prepend ~/.local/bin to PATH and take whatever it found --
+    0.70.0 on this machine, against a 1.19.0 pin in the image and in CI. This
+    is the single most important test in the project: it evaluates the real
+    policy against the real bundle, and it is the only tripwire for the
+    target-kind rekeying. It must not be able to run against a different
+    engine, and it must not be able to silently skip.
     """
-    local_bin = os.path.expanduser("~/.local/bin")
-    path_entries = os.environ.get("PATH", "").split(os.pathsep)
-    if local_bin not in path_entries:
-        os.environ["PATH"] = os.pathsep.join([local_bin, *path_entries])
-
-    found = shutil.which("opa")
-    if found:
-        return found
-
-    candidate = Path(local_bin) / "opa"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
-
-    return None
+    return resolve_opa()
 
 
 @pytest.fixture(scope="module")
 def opa_url():
-    if _resolve_opa() is None:
-        pytest.skip("opa binary not on PATH")
+    binary = _resolve_opa()
     port = _free_port()
     process = subprocess.Popen(
-        ["opa", "run", "--server", f"--addr=127.0.0.1:{port}", "policies"],
+        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", "policies"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

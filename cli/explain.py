@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -57,6 +56,7 @@ from cli.runlog import RunLog
 from cli.warden import render_replay
 from mocks import docstore, mailer, sinkhole
 from mocks.seed_db import seed_customers
+from tools.opa_version import resolve_opa
 
 W = 76
 SHOW_WHY = True
@@ -630,9 +630,10 @@ def _free_port() -> int:
 
 
 def _start_opa() -> tuple[subprocess.Popen, str]:
-    binary = shutil.which("opa") or str(Path.home() / ".local/bin/opa")
-    if not Path(binary).exists():
-        sys.exit("opa not found. See docs/WALKTHROUGH.md Part 0.")
+    try:
+        binary = resolve_opa()
+    except RuntimeError as exc:
+        sys.exit(f"{exc}  See docs/WALKTHROUGH.md Part 0.")
     port = _free_port()
     process = subprocess.Popen(
         [binary, "run", "--server", f"--addr=127.0.0.1:{port}", "policies"],

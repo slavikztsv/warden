@@ -14,13 +14,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install OPA
-        run: |
-          curl -sSL -o /usr/local/bin/opa \
-            https://openpolicyagent.org/downloads/v1.19.0/opa_linux_amd64_static
-          chmod +x /usr/local/bin/opa
+        run: ./scripts/fetch-opa.sh
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Policy unit tests
-        run: opa test policies/ -v
+        run: ~/.cache/warden/opa-1.19.0 test policies/ -v
       - name: Python tests
         run: pytest -v
