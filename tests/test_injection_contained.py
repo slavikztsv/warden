@@ -24,13 +24,13 @@ from agent.loop import run_task
 from agent.tools import BrokeredDispatcher
 from broker.app import create_app
 from broker.audit import AuditLog
-from broker.backends import Backends
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.policy_digest import policy_bundle_digest
 from broker.taint import TaintTracker
 from mocks import docstore, mailer, sinkhole
 from mocks.seed_db import seed_customers
+from tests.support.catalog import demo_catalog
 from tools.opa_version import resolve_opa
 
 pytestmark = pytest.mark.integration
@@ -133,7 +133,7 @@ def stack(tmp_path, opa_url, monkeypatch):
         pdp=PolicyDecisionPoint(opa_url, client=httpx.Client(timeout=5.0)),
         taint=TaintTracker(),
         audit=audit,
-        backends=Backends(
+        catalog=demo_catalog(
             docstore_url="http://docstore.internal",
             db_path=db,
             mailer_url="http://mailer.internal",

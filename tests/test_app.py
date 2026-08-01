@@ -6,14 +6,15 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from broker.adapters.base import ToolResult
 from broker.app import create_app
 from broker.audit import AuditLog
-from broker.backends import Backends, ToolResult
 from broker.control import create_control_app
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.taint import TaintTracker
 from mocks.seed_db import seed_customers
+from tests.support.catalog import demo_catalog
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ def build(tmp_path, signer, opa_payload, backend_handler=None):
         ),
         taint=TaintTracker(),
         audit=audit,
-        backends=Backends(
+        catalog=demo_catalog(
             docstore_url="http://docstore.internal",
             db_path=db,
             mailer_url="http://mailer.internal",
@@ -46,6 +47,40 @@ def build(tmp_path, signer, opa_payload, backend_handler=None):
         policy_digest="sha256:test",
     )
     return TestClient(app), audit
+
+
+def app_with_catalog(tmp_path, catalog):
+    """Like build(), but takes a caller-supplied catalog directly instead of
+    reconstructing one from a fixed docstore/db/mailer set of URLs -- for
+    tests that need to hand the broker a catalog shaped a particular way
+    (e.g. a schema that leaves an arg optional that the adapter still
+    dereferences). Mints a token authorized for every tool the catalog
+    knows. Returns (audit, TestClient(app), token)."""
+    signer = Signer.generate()
+
+    def opa_handler(request):
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    app = create_app(
+        verifier=Verifier(signer.public_key_pem()),
+        pdp=PolicyDecisionPoint(
+            "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
+        ),
+        taint=TaintTracker(),
+        audit=audit,
+        catalog=catalog,
+        policy_digest="sha256:test",
+    )
+    token = signer.mint(
+        agent_id="triage-bot",
+        task_id="4711",
+        purpose="support-triage",
+        allowed_tools=list(catalog.names()),
+        data_classes=["public"],
+        counterparties=["customer:8812"],
+    )
+    return audit, TestClient(app), token
 
 
 def token_for(signer, **overrides):
@@ -180,7 +215,7 @@ def test_reading_customers_taints_the_task_for_later_calls(tmp_path, signer):
         ),
         taint=TaintTracker(),
         audit=AuditLog(tmp_path / "audit.jsonl"),
-        backends=Backends(
+        catalog=demo_catalog(
             docstore_url="http://docstore.internal",
             db_path=db,
             mailer_url="http://mailer.internal",
@@ -343,7 +378,7 @@ def test_missing_required_arg_is_denied_before_reaching_the_backend(tmp_path, si
 
 
 def test_execute_guard_catches_any_exception_not_just_httpx_errors(tmp_path, signer):
-    """Finding 1: the guard around backends.execute() must not be scoped
+    """Finding 1: the guard around catalog.execute() must not be scoped
     to httpx errors -- it must catch anything, because by the time
     execute() runs the allow decision is already durable, and letting
     *any* exception escape here means the audit log asserts an authorized
@@ -354,7 +389,7 @@ def test_execute_guard_catches_any_exception_not_just_httpx_errors(tmp_path, sig
     def opa_handler(request):
         return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
 
-    backends = Backends(
+    catalog = demo_catalog(
         docstore_url="http://docstore.internal",
         db_path=db,
         mailer_url="http://mailer.internal",
@@ -366,7 +401,7 @@ def test_execute_guard_catches_any_exception_not_just_httpx_errors(tmp_path, sig
     def exploding_execute(tool, args):
         raise RuntimeError("a backend bug unrelated to httpx")
 
-    backends.execute = exploding_execute
+    catalog.execute = exploding_execute
 
     audit = AuditLog(tmp_path / "audit.jsonl")
     app = create_app(
@@ -376,7 +411,7 @@ def test_execute_guard_catches_any_exception_not_just_httpx_errors(tmp_path, sig
         ),
         taint=TaintTracker(),
         audit=audit,
-        backends=backends,
+        catalog=catalog,
         policy_digest="sha256:test",
     )
     client = TestClient(app)
@@ -491,7 +526,7 @@ def test_genuine_backend_fault_during_describe_is_not_blamed_on_the_agent(tmp_pa
     def opa_handler(request):
         return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
 
-    backends = Backends(
+    catalog = demo_catalog(
         docstore_url="http://docstore.internal",
         db_path=db,
         mailer_url="http://mailer.internal",
@@ -503,7 +538,7 @@ def test_genuine_backend_fault_during_describe_is_not_blamed_on_the_agent(tmp_pa
     def exploding_describe(tool, args):
         raise AttributeError("some internal bug, not the agent's doing")
 
-    backends.describe = exploding_describe
+    catalog.describe = exploding_describe
 
     audit = AuditLog(tmp_path / "audit.jsonl")
     app = create_app(
@@ -513,7 +548,7 @@ def test_genuine_backend_fault_during_describe_is_not_blamed_on_the_agent(tmp_pa
         ),
         taint=TaintTracker(),
         audit=audit,
-        backends=backends,
+        catalog=catalog,
         policy_digest="sha256:test",
     )
     client = TestClient(app)
@@ -538,7 +573,7 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
     def opa_handler(request):
         return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
 
-    backends = Backends(
+    catalog = demo_catalog(
         docstore_url="http://docstore.internal",
         db_path=db,
         mailer_url="http://mailer.internal",
@@ -546,13 +581,13 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
             transport=httpx.MockTransport(lambda r: httpx.Response(200, text="x"))
         ),
     )
-    original_execute = backends.execute
+    original_execute = catalog.execute
 
     def execute_with_bogus_rows(tool, args):
         result = original_execute(tool, args)
         return ToolResult(content=result.content, rows=-5, data_class=result.data_class)
 
-    backends.execute = execute_with_bogus_rows
+    catalog.execute = execute_with_bogus_rows
 
     taint = TaintTracker()
     audit = AuditLog(tmp_path / "audit.jsonl")
@@ -563,7 +598,7 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
         ),
         taint=taint,
         audit=audit,
-        backends=backends,
+        catalog=catalog,
         policy_digest="sha256:test",
     )
     client = TestClient(app)
@@ -586,7 +621,7 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
 
 
 def _build_with_spies(tmp_path, signer):
-    """Like build(), but exposes the pdp and backends instances wrapped
+    """Like build(), but exposes the pdp and catalog instances wrapped
     with call-recording spies, so a test can prove a stage was never
     reached rather than merely asserting the final status code."""
     db = tmp_path / "customers.db"
@@ -601,7 +636,7 @@ def _build_with_spies(tmp_path, signer):
     pdp = PolicyDecisionPoint(
         "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
     )
-    backends = Backends(
+    catalog = demo_catalog(
         docstore_url="http://docstore.internal",
         db_path=db,
         mailer_url="http://mailer.internal",
@@ -618,13 +653,13 @@ def _build_with_spies(tmp_path, signer):
     pdp.decide = decide_spy
 
     describe_calls = []
-    original_describe = backends.describe
+    original_describe = catalog.describe
 
     def describe_spy(tool, args):
         describe_calls.append((tool, args))
         return original_describe(tool, args)
 
-    backends.describe = describe_spy
+    catalog.describe = describe_spy
 
     audit = AuditLog(tmp_path / "audit.jsonl")
     app = create_app(
@@ -632,7 +667,7 @@ def _build_with_spies(tmp_path, signer):
         pdp=pdp,
         taint=TaintTracker(),
         audit=audit,
-        backends=backends,
+        catalog=catalog,
         policy_digest="sha256:test",
     )
     return TestClient(app), decide_calls, describe_calls
@@ -696,7 +731,7 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
         ),
         taint=TaintTracker(),
         audit=AuditLog(tmp_path / "audit.jsonl"),
-        backends=Backends(
+        catalog=demo_catalog(
             docstore_url="http://docstore.internal",
             db_path=db,
             mailer_url="http://mailer.internal",
@@ -791,7 +826,7 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
         ),
         taint=taint,
         audit=audit,
-        backends=Backends(
+        catalog=demo_catalog(
             docstore_url="http://docstore.internal",
             db_path=db,
             mailer_url="http://mailer.internal",
@@ -921,3 +956,43 @@ def test_an_unrecordable_unauthenticated_refusal_is_reported_not_hidden(tmp_path
     response = client.post("/v1/tools/read_document/invoke", json={"args": {"doc_id": "a"}})
     assert response.status_code == 503
     assert response.json()["error"] == "audit_unavailable"
+
+
+def test_a_missing_required_arg_is_audited_not_a_silent_502(tmp_path):
+    """The hole config-driven validation opens.
+
+    An arg an adapter dereferences but the schema does not require raises
+    KeyError from describe(). KeyError is not ValueError, so it landed in the
+    backend-fault branch: measured 502 with ZERO audit records, which is an
+    agent probing with no trace -- the same defect _refuse_unauthenticated
+    exists to close on the auth path.
+    """
+    from broker.config.catalog import CatalogEntry, ToolCatalog
+    from broker.config.schema import ArgSpec, ToolSchema
+
+    class Dereferences:
+        target_kind = "doc"
+
+        def describe(self, args):
+            return args["absent"]          # KeyError
+
+        def execute(self, args):           # pragma: no cover
+            raise AssertionError("must never be reached")
+
+    catalog = ToolCatalog({
+        "loose": CatalogEntry(
+            kind="docstore", target_kind="doc",
+            # Deliberately does not require the arg describe() dereferences.
+            schema=ToolSchema(args={"absent": ArgSpec(type="string")}),
+            adapter=Dereferences(),
+        )
+    })
+    audit, client, token = app_with_catalog(tmp_path, catalog)
+    response = client.post(
+        "/v1/tools/loose/invoke", json={"args": {}},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["rule"] == "input.malformed"
+    assert audit.records()[-1]["rule"] == "input.malformed"
+    assert audit.records()[-1]["decision"] == "deny"

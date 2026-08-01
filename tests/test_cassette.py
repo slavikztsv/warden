@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from agent.tools import TOOL_SCHEMAS
-from broker.app import _args_are_well_shaped
+from tests.support.catalog import demo_catalog
+
+CATALOG = demo_catalog(
+    docstore_url="http://d", db_path="data/customers.db", mailer_url="http://m", client=None
+)
 
 CASSETTE = Path("agent/cassettes/support-triage.json")
 EXPECTED = [
@@ -39,7 +43,7 @@ def test_every_step_would_survive_the_brokers_argument_validation():
     # demo would report the wrong rule for the wrong reason.
     for step in steps():
         if step["type"] == "tool_use":
-            assert _args_are_well_shaped(step["tool"], step["args"]), step
+            assert CATALOG.validate(step["tool"], step["args"]), step
 
 
 def test_both_exfiltration_attempts_carry_a_body():

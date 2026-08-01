@@ -47,13 +47,14 @@ from agent.loop import SYSTEM_TASK, run_task
 from agent.tools import BrokeredDispatcher, DirectDispatcher
 from broker.app import create_app
 from broker.audit import AuditLog
-from broker.backends import Backends
+from broker.config.catalog import ToolCatalog
 from broker.identity import Signer, Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.policy_digest import policy_bundle_digest
 from broker.taint import TaintTracker
 from cli.runlog import RunLog
 from cli.warden import render_replay
+from demo.scenario.catalog import demo_catalog
 from mocks import docstore, mailer, sinkhole
 from mocks.seed_db import seed_customers
 from tools.opa_version import resolve_opa
@@ -319,10 +320,20 @@ class NarratedAudit:
 
 
 class NarratedBackends:
-    """Wraps execution so the real side effect is visible."""
+    """Wraps a catalog so the real side effect is visible.
 
-    def __init__(self, inner: Backends) -> None:
+    Name kept from when this wrapped broker.backends.Backends directly --
+    describe()/execute() already take (tool, args), so only the constructor's
+    type changed. validate() is passed through unnarrated: it is not a
+    numbered stage below, the same way it adds no stage in the real broker
+    beyond gating whether describe() is ever reached.
+    """
+
+    def __init__(self, inner: ToolCatalog) -> None:
         self._inner = inner
+
+    def validate(self, tool, args):
+        return self._inner.validate(tool, args)
 
     def describe(self, tool, args):
         target = self._inner.describe(tool, args)
@@ -901,8 +912,8 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
             pdp=pdp,
             taint=NarratedTaint(TaintTracker()),
             audit=audit,
-            backends=NarratedBackends(
-                Backends(
+            catalog=NarratedBackends(
+                demo_catalog(
                     docstore_url="http://docstore.internal",
                     db_path=db,
                     mailer_url="http://mailer.internal",

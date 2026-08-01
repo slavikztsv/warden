@@ -24,13 +24,20 @@ let the response body lie about what happened:
   list of recipients gets read character-by-character by one stage and as
   the original string by the other.
 - A remaining describe() failure that shape-checking didn't catch (e.g. a
-  query_customers filter value of the right type but not parseable) is
-  still the agent's doing, so it is likewise audited as a deny under
-  input.malformed. A describe() failure that is *not* attributable to the
-  request (a server bug: AttributeError, sqlite3.Error, ...) is not -- it
-  is reported as a plain backend fault with nothing recorded against the
-  agent, since no decision was avoided because of anything the agent did.
-- backends.execute() can fail after the decision was already made and
+  filter value of the right type but not parseable, or an arg an adapter
+  dereferences that the schema left optional) is still the agent's doing,
+  so it is likewise audited as a deny under input.malformed. This set is
+  ValueError, KeyError, TypeError and IndexError -- widened from ValueError
+  alone because moving argument shape-checking into config makes it
+  OMISSIBLE: an adapter can read an arg its schema does not require, and
+  that reads as KeyError, not ValueError. Measured before this widening: a
+  502 with zero audit records, an agent probing with no trace, the same
+  defect _refuse_unauthenticated exists to close on the auth path. A
+  describe() failure that is *not* attributable to the request (a server
+  bug: AttributeError, sqlite3.Error, ...) is not -- it is reported as a
+  plain backend fault with nothing recorded against the agent, since no
+  decision was avoided because of anything the agent did.
+- catalog.execute() can fail after the decision was already made and
   durably audited as an allow (an unreachable docstore, a non-2xx egress
   response, an unexpected backend bug, ...). The decision itself was sound
   and already logged, so this does not write a second decision record --
@@ -55,8 +62,9 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from broker.adapters.base import ToolTarget, UnknownTool
 from broker.audit import AuditLog
-from broker.backends import Backends, ToolTarget, UnknownTool
+from broker.config.catalog import ToolCatalog
 from broker.identity import TokenInvalid, Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.taint import TaintTracker
@@ -91,40 +99,13 @@ async def _parse_args(request: Request) -> dict | None:
     return args
 
 
-def _args_are_well_shaped(tool: str, args: dict) -> bool:
-    """Per-tool required-argument shape check, run before describe() so
-    describe() and execute() are guaranteed to see the same, correctly
-    shaped args. Tools not in this table are left to describe()'s
-    UnknownTool handling."""
-    if tool == "read_document":
-        return isinstance(args.get("doc_id"), str) and args["doc_id"] != ""
-    if tool == "query_customers":
-        return isinstance(args.get("filter"), str)
-    if tool == "http_fetch":
-        body = args.get("body")
-        return (
-            isinstance(args.get("url"), str)
-            and args["url"] != ""
-            and (body is None or isinstance(body, str))
-        )
-    if tool == "send_email":
-        to = args.get("to")
-        return (
-            isinstance(to, list)
-            and all(isinstance(item, str) for item in to)
-            and isinstance(args.get("subject"), str)
-            and isinstance(args.get("body"), str)
-        )
-    return True
-
-
 def create_app(
     *,
     verifier: Verifier,
     pdp: PolicyDecisionPoint,
     taint: TaintTracker,
     audit: AuditLog,
-    backends: Backends,
+    catalog: ToolCatalog,
     policy_digest: str,
 ) -> FastAPI:
     app = FastAPI(title="warden broker")
@@ -155,14 +136,14 @@ def create_app(
                 "input.malformed", policy_digest,
             )
 
-        if not _args_are_well_shaped(tool, args):
+        if not catalog.validate(tool, args):
             return _deny(
                 audit, token, tool, args, ToolTarget(kind="malformed"), state,
                 "input.malformed", policy_digest,
             )
 
         try:
-            target = backends.describe(tool, args)
+            target = catalog.describe(tool, args)
         except UnknownTool:
             # Deny-by-default at the edge: an unrecognised tool never reaches
             # the PDP, but is still audited under the capability rule.
@@ -170,10 +151,13 @@ def create_app(
                 audit, token, tool, args, ToolTarget(kind="unknown"), state,
                 "tools.allowed", policy_digest,
             )
-        except ValueError:
-            # A client-caused describe() failure the shape check above
-            # doesn't catch (e.g. a query_customers filter value of the
-            # right type but not parseable). Still the agent's fault.
+        except (ValueError, KeyError, TypeError, IndexError):
+            # Client-caused describe() failures the schema did not catch: a
+            # filter value of the right type but not parseable, or an arg the
+            # adapter dereferences that the schema left optional. KeyError is
+            # NOT ValueError, so before this it fell into the backend-fault
+            # branch below -- 502, and nothing recorded against the agent,
+            # which is an agent probing with no trace.
             return _deny(
                 audit, token, tool, args, ToolTarget(kind="malformed"), state,
                 "input.malformed", policy_digest,
@@ -228,7 +212,7 @@ def create_app(
             )
 
         try:
-            result = backends.execute(tool, args)
+            result = catalog.execute(tool, args)
         except Exception as exc:
             # The allow decision above is already durable. Do not write a
             # second decision record for an execution-time failure -- the

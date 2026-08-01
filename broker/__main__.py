@@ -30,12 +30,12 @@ import uvicorn
 
 from broker.app import create_app
 from broker.audit import AuditLog
-from broker.backends import Backends
 from broker.identity import Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.policy_digest import policy_bundle_digest
 from broker.proxy import serve_proxy
 from broker.taint import TaintTracker
+from demo.scenario.catalog import demo_catalog
 
 PUBLIC_KEY_PATH = "/data/agent.pub"
 
@@ -66,7 +66,12 @@ def build(env: dict[str, str] | None = None, *, client: httpx.Client | None = No
         ),
     }
     app = create_app(
-        backends=Backends(
+        # The demo's manifest, at its final path: this task does not yet give
+        # the broker a config-driven catalog_path (Task 14 does, via TOML) --
+        # until then this is the same three URLs Backends() used to take,
+        # just interpolated into demo/scenario/tools.toml instead of hand-
+        # written in Python.
+        catalog=demo_catalog(
             docstore_url=env["DOCSTORE_URL"],
             db_path=Path(env["DB_PATH"]),
             mailer_url=env["MAILER_URL"],

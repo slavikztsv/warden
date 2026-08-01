@@ -383,18 +383,24 @@ def test_every_advertised_tool_is_one_the_broker_actually_implements():
     tools.allowed on every call -- a live run that fails for a reason that has
     nothing to do with the demo."""
     from agent.tools import TOOL_SCHEMAS
-    from broker.backends import TOOLS
+    from tests.support.catalog import demo_catalog
 
-    assert {tool["name"] for tool in TOOL_SCHEMAS} == set(TOOLS)
+    catalog = demo_catalog(
+        docstore_url="http://d", db_path="data/customers.db", mailer_url="http://m", client=None
+    )
+    assert {tool["name"] for tool in TOOL_SCHEMAS} == set(catalog.names())
 
 
 def test_advertised_schemas_agree_with_the_brokers_shape_check():
     """The broker rejects malformed args before any decision is made. A schema
     whose required fields disagree with that check would produce a live run
     where every call is audited input.malformed."""
-    from broker.app import _args_are_well_shaped
     from agent.tools import TOOL_SCHEMAS
+    from tests.support.catalog import demo_catalog
 
+    catalog = demo_catalog(
+        docstore_url="http://d", db_path="data/customers.db", mailer_url="http://m", client=None
+    )
     samples = {
         "read_document": {"doc_id": "ticket-4711"},
         "query_customers": {"filter": "id=8812"},
@@ -404,7 +410,7 @@ def test_advertised_schemas_agree_with_the_brokers_shape_check():
     for schema in TOOL_SCHEMAS:
         args = samples[schema["name"]]
         assert set(schema["input_schema"]["required"]) <= set(args)
-        assert _args_are_well_shaped(schema["name"], args), schema["name"]
+        assert catalog.validate(schema["name"], args), schema["name"]
 
 
 # ---------------------------------------------------------------------------
