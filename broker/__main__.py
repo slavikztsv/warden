@@ -30,63 +30,60 @@ import uvicorn
 
 from broker.app import create_app
 from broker.audit import AuditLog
+from broker.config.catalog import load_catalog
+from broker.config.loader import BrokerConfig, load_broker_config
 from broker.identity import Verifier
 from broker.pdp import PolicyDecisionPoint
 from broker.policy_digest import policy_bundle_digest
 from broker.proxy import serve_proxy
 from broker.taint import TaintTracker
-from demo.scenario.catalog import demo_catalog
-
-PUBLIC_KEY_PATH = "/data/agent.pub"
+from broker.wiring import BrokerComponents
 
 
-def build(env: dict[str, str] | None = None, *, client: httpx.Client | None = None):
-    """Wires the enforcement point from the environment.
+def build(config: BrokerConfig, *, client: httpx.Client | None = None):
+    """Wires the enforcement point from a parsed config.
 
-    Returned as (app, deps) so the proxy can share exactly the same verifier,
-    PDP, taint tracker and audit log as the tool API -- two surfaces, one set
-    of controls -- and so a test can inspect the wiring without binding ports.
+    Returned as (app, components) so the proxy shares exactly the same
+    verifier, PDP, taint tracker and audit log as the tool API -- two
+    surfaces, one set of controls.
     """
-    env = os.environ if env is None else env
     client = client or httpx.Client(timeout=10.0)
-
-    deps = {
+    components = BrokerComponents(
         # Public key only. There is no Signer in this process.
-        "verifier": Verifier.from_public_key_file(
-            env.get("AGENT_PUBLIC_KEY_PATH", PUBLIC_KEY_PATH)
+        verifier=Verifier.from_public_key_file(config.public_key),
+        pdp=PolicyDecisionPoint(
+            config.opa_url, decision_path=config.decision_path, client=client
         ),
-        "pdp": PolicyDecisionPoint(env["OPA_URL"], client=client),
-        "taint": TaintTracker(),
-        "audit": AuditLog(Path(env["AUDIT_PATH"])),
+        taint=TaintTracker(),
+        audit=AuditLog(config.audit_path),
         # Computed once at startup, never lazily per request: a missing or
-        # unreadable policy bundle must crash before the first decision, not
-        # be discovered halfway through serving one.
-        "policy_digest": policy_bundle_digest(
-            [Path(part) for part in env.get("POLICY_PATH", "/policies").split(":")]
-        ),
-    }
-    app = create_app(
-        # The demo's manifest, at its final path: this task does not yet give
-        # the broker a config-driven catalog_path (Task 14 does, via TOML) --
-        # until then this is the same three URLs Backends() used to take,
-        # just interpolated into demo/scenario/tools.toml instead of hand-
-        # written in Python.
-        catalog=demo_catalog(
-            docstore_url=env["DOCSTORE_URL"],
-            db_path=Path(env["DB_PATH"]),
-            mailer_url=env["MAILER_URL"],
-            client=client,
-        ),
-        **deps,
+        # unreadable bundle must crash before the first decision, not be
+        # discovered halfway through serving one.
+        policy_digest=policy_bundle_digest(config.bundle_roots),
     )
-    return app, deps
+    app = create_app(
+        # DOCSTORE_URL, DB_PATH and MAILER_URL are read from the process
+        # environment here rather than from config: they interpolate the
+        # ${VAR} bindings inside the tool manifest itself (config.catalog_path
+        # -- e.g. demo/scenario/tools.toml), the same three values
+        # docker-compose.yml sets on the broker service's `environment:`.
+        catalog=load_catalog(config.catalog_path, os.environ, client),
+        **components.as_app_kwargs(),
+    )
+    return app, components
 
 
 async def main() -> None:
-    app, deps = build()
-
-    proxy_server = await serve_proxy("0.0.0.0", 3128, **deps)
-    agent_api = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="warning"))
+    config = load_broker_config(
+        Path(os.environ.get("WARDEN_CONFIG", "/config/warden.toml")), os.environ
+    )
+    app, components = build(config)
+    proxy_host, proxy_port = config.proxy_listen
+    api_host, api_port = config.listen
+    proxy_server = await serve_proxy(proxy_host, proxy_port, **components.as_proxy_kwargs())
+    agent_api = uvicorn.Server(
+        uvicorn.Config(app, host=api_host, port=api_port, log_level="warning")
+    )
     async with proxy_server:
         await agent_api.serve()
 

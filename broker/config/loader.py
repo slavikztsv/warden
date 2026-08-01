@@ -145,3 +145,33 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
         ttl_seconds=_integer(tokens, "tokens", "ttl_seconds"),
         catalog_path=Path(_string(catalog, "catalog", "tools", env)),
     )
+
+
+@dataclass(frozen=True)
+class ControlConfig:
+    listen: tuple[str, int]
+    private_key: Path
+
+
+def load_control_config(path: Path, env: Mapping[str, str]) -> ControlConfig:
+    """Reads the control plane's wiring the same way load_broker_config does:
+    same TOML-or-die failure mode, same ${VAR} interpolation. The control
+    plane's config is much smaller -- one listen address, one key path -- but
+    a config it cannot fully understand must still refuse to start rather
+    than mint tokens under a guess.
+    """
+    path = Path(path)
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ConfigError(f"config not found: {path}") from exc
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+
+    control = _section(document, "control")
+    identity = _section(document, "identity")
+
+    return ControlConfig(
+        listen=_address(control, "control", "listen", env),
+        private_key=Path(_string(identity, "identity", "private_key", env)),
+    )

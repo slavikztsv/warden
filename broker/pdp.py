@@ -36,8 +36,10 @@ class Decision:
 
 
 class PolicyDecisionPoint:
-    def __init__(self, base_url: str, client: httpx.Client) -> None:
-        self._url = f"{base_url.rstrip('/')}/v1/data/warden/authz"
+    def __init__(
+        self, base_url: str, *, decision_path: str = "warden/authz", client: httpx.Client
+    ) -> None:
+        self._url = f"{base_url.rstrip('/')}/v1/data/{decision_path.strip('/')}"
         self._client = client
 
     def decide(self, input_doc: dict) -> Decision:

@@ -1,0 +1,32 @@
+# The broker's wiring -- ports, paths, the PDP and its decision path, the
+# token issuer and TTL, and the tool catalog. Mounted read-only into the
+# `broker` service at /config/warden.toml (see docker-compose.yml) and
+# pointed to by WARDEN_CONFIG.
+#
+# DOCSTORE_URL, DB_PATH and MAILER_URL are deliberately NOT here: they
+# interpolate ${VAR} bindings inside demo/scenario/tools.toml, not this file,
+# and stay in the broker service's `environment:` in docker-compose.yml.
+#
+# Phase 3 moves this file under demo/scenario/.
+
+[broker]
+listen       = "0.0.0.0:8080"
+proxy_listen = "0.0.0.0:3128"
+
+[identity]
+public_key = "/data/agent.pub"
+
+[policy]
+opa_url       = "http://opa:8181"
+decision_path = "warden/authz"
+bundle_roots  = ["/policies"]
+
+[audit]
+path = "/data/audit.jsonl"
+
+[tokens]
+issuer      = "warden-broker"
+ttl_seconds = 300
+
+[catalog]
+tools = "/config/tools.toml"

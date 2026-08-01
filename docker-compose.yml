@@ -58,15 +58,18 @@ services:
     build: .
     command: ["python", "-m", "broker"]
     environment:
-      OPA_URL: http://opa:8181
+      # Consumed as ${VAR} by demo/scenario/tools.toml at catalog-load time,
+      # not read directly by Python -- ports, the OPA URL, the audit path and
+      # the public key path all now live in warden.toml instead.
       DOCSTORE_URL: http://docstore.internal
       MAILER_URL: http://mailer.internal
       DB_PATH: /data/customers.db
-      AUDIT_PATH: /data/audit.jsonl
-      AGENT_PUBLIC_KEY_PATH: /data/agent.pub
+      WARDEN_CONFIG: /config/warden.toml
     volumes:
       - ./data:/data
       - ./policies:/policies:ro
+      - ./warden.toml:/config/warden.toml:ro
+      - ./demo/scenario/tools.toml:/config/tools.toml:ro
     networks: [agent-net, backend-net, egress-net]
     depends_on: [opa, docstore, mailer]
     profiles: [guarded]
@@ -87,9 +90,10 @@ services:
     build: .
     command: ["python", "-m", "broker.control_main"]
     environment:
-      AGENT_PRIVATE_KEY_PATH: /data/agent.key
+      WARDEN_CONTROL_CONFIG: /config/control.toml
     volumes:
       - ./data:/data
+      - ./control.toml:/config/control.toml:ro
     networks: [backend-net, host-net]
     ports: ["8081:8081"]
     profiles: [guarded]

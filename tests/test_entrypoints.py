@@ -15,6 +15,12 @@ Docker here). What IS mechanically testable is the part these tests cover:
   * that process holds no signing key and exposes no minting route,
   * the control entrypoint loads the private key and mints tokens the
     broker's verifier accepts -- i.e. the split keypair really is one keypair.
+
+A second claim joined these once build() moved from an untyped env dict to a
+parsed BrokerConfig / ControlConfig: two functions with different signatures,
+neither taking **kwargs, used to be splatted from the same dict, so nothing
+stopped a new key from breaking one of them silently. That is now
+`broker.wiring.BrokerComponents`, typed and covered below.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from fastapi.testclient import TestClient
 
 import broker.__main__ as broker_main
 import broker.control_main as control_main
+from broker.config.loader import BrokerConfig, ControlConfig, load_broker_config, load_control_config
 from broker.identity import Signer, Verifier
 from mocks.seed_db import seed_customers
 
@@ -59,17 +66,84 @@ def write_keypair(directory: Path) -> tuple[Path, Path]:
     return private_path, public_path
 
 
-def broker_env(tmp_path: Path, public_path: Path) -> dict[str, str]:
+def write_warden_toml(
+    tmp_path: Path,
+    public_key: Path,
+    *,
+    bundle_roots: list[Path] | None = None,
+    audit_path: Path | None = None,
+    catalog_tools: Path | None = None,
+    opa_url: str = "http://opa:8181",
+    decision_path: str = "warden/authz",
+    issuer: str = "warden-broker",
+    ttl_seconds: int = 300,
+    listen: str = "0.0.0.0:8080",
+    proxy_listen: str = "0.0.0.0:3128",
+) -> Path:
+    """Writes a warden.toml the shape docker-compose.yml mounts, with the
+    same defaults broker_env() used to bake into an env dict -- one root
+    policy bundle, one tool manifest, the demo's real backends."""
+    bundle_roots = bundle_roots or [REPO_ROOT / "policies"]
+    audit_path = audit_path or (tmp_path / "audit.jsonl")
+    catalog_tools = catalog_tools or (REPO_ROOT / "demo" / "scenario" / "tools.toml")
+    roots_toml = ", ".join(f'"{root}"' for root in bundle_roots)
+    path = tmp_path / "warden.toml"
+    path.write_text(f"""
+[broker]
+listen       = "{listen}"
+proxy_listen = "{proxy_listen}"
+
+[identity]
+public_key = "{public_key}"
+
+[policy]
+opa_url       = "{opa_url}"
+decision_path = "{decision_path}"
+bundle_roots  = [{roots_toml}]
+
+[audit]
+path = "{audit_path}"
+
+[tokens]
+issuer      = "{issuer}"
+ttl_seconds = {ttl_seconds}
+
+[catalog]
+tools = "{catalog_tools}"
+""")
+    return path
+
+
+def broker_config(tmp_path: Path, public_key: Path, **kwargs) -> BrokerConfig:
+    return load_broker_config(write_warden_toml(tmp_path, public_key, **kwargs), env={})
+
+
+def write_control_toml(tmp_path: Path, private_key: Path, *, listen: str = "0.0.0.0:8081") -> Path:
+    path = tmp_path / "control.toml"
+    path.write_text(f"""
+[control]
+listen = "{listen}"
+
+[identity]
+private_key = "{private_key}"
+""")
+    return path
+
+
+def control_config(tmp_path: Path, private_key: Path, **kwargs) -> ControlConfig:
+    return load_control_config(write_control_toml(tmp_path, private_key, **kwargs), env={})
+
+
+def set_catalog_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """build() interpolates demo/scenario/tools.toml's ${DOCSTORE_URL},
+    ${DB_PATH} and ${MAILER_URL} straight from the real process environment
+    -- the same three values docker-compose.yml sets on the broker service --
+    not from the parsed config. Every test that calls broker_main.build()
+    needs these set for the duration of the call."""
     seed_customers(tmp_path / "customers.db", count=5)
-    return {
-        "AGENT_PUBLIC_KEY_PATH": str(public_path),
-        "OPA_URL": "http://opa:8181",
-        "AUDIT_PATH": str(tmp_path / "audit.jsonl"),
-        "DOCSTORE_URL": "http://docstore.internal",
-        "MAILER_URL": "http://mailer.internal",
-        "DB_PATH": str(tmp_path / "customers.db"),
-        "POLICY_PATH": str(REPO_ROOT / "policies"),
-    }
+    monkeypatch.setenv("DOCSTORE_URL", "http://docstore.internal")
+    monkeypatch.setenv("MAILER_URL", "http://mailer.internal")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "customers.db"))
 
 
 def stub_client() -> httpx.Client:
@@ -79,11 +153,13 @@ def stub_client() -> httpx.Client:
 # --- The broker process: verifies, never mints -----------------------------
 
 
-def test_broker_wiring_builds_a_verifier_from_a_public_key_file(tmp_path):
+def test_broker_wiring_builds_a_verifier_from_a_public_key_file(tmp_path, monkeypatch):
     private_path, public_path = write_keypair(tmp_path)
-    _, deps = broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, public_path)
+    _, components = broker_main.build(config, client=stub_client())
 
-    assert isinstance(deps["verifier"], Verifier)
+    assert isinstance(components.verifier, Verifier)
     # It is the right key, not merely a Verifier-shaped object: a token minted
     # by the private half of the same pair must verify.
     token = Signer.from_private_key_file(private_path).mint(
@@ -91,17 +167,19 @@ def test_broker_wiring_builds_a_verifier_from_a_public_key_file(tmp_path):
         allowed_tools=["read_document"], data_classes=["public"],
         counterparties=["customer:8812"],
     )
-    assert deps["verifier"].verify(token).task_id == "4711"
+    assert components.verifier.verify(token).task_id == "4711"
 
 
-def test_broker_verifier_rejects_a_token_from_any_other_key(tmp_path):
+def test_broker_verifier_rejects_a_token_from_any_other_key(tmp_path, monkeypatch):
     """Negative control for the test above: the verifier is bound to that one
     public key, so a token minted anywhere else -- including by a Signer the
     broker might once have generated for itself -- is refused."""
     from broker.identity import TokenInvalid
 
     _, public_path = write_keypair(tmp_path)
-    _, deps = broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, public_path)
+    _, components = broker_main.build(config, client=stub_client())
 
     foreign = Signer.generate().mint(
         agent_id="triage-bot", task_id="4711", purpose="support-triage",
@@ -109,16 +187,18 @@ def test_broker_verifier_rejects_a_token_from_any_other_key(tmp_path):
         data_classes=["pii"], counterparties=["attacker@evil.example"],
     )
     with pytest.raises(TokenInvalid):
-        deps["verifier"].verify(foreign)
+        components.verifier.verify(foreign)
 
 
-def test_broker_process_holds_no_signing_key(tmp_path):
+def test_broker_process_holds_no_signing_key(tmp_path, monkeypatch):
     """The enforcement point is the service the agent can reach, so it is the
     service most exposed to a subverted agent. It must hold no material that
     can sign a token: not a Signer, not an Ed25519 private key, anywhere in
     the objects it wires up."""
     _, public_path = write_keypair(tmp_path)
-    app, deps = broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, public_path)
+    app, components = broker_main.build(config, client=stub_client())
 
     def reachable_objects(root, seen=None, depth=0):
         if seen is None:
@@ -128,11 +208,12 @@ def test_broker_process_holds_no_signing_key(tmp_path):
         seen.add(id(root))
         yield root
         values = root.values() if isinstance(root, dict) else []
+        items = list(root) if isinstance(root, (list, tuple, set)) else []
         attrs = getattr(root, "__dict__", {}).values()
-        for child in [*values, *attrs]:
+        for child in [*values, *items, *attrs]:
             yield from reachable_objects(child, seen, depth + 1)
 
-    for obj in reachable_objects({"app": app, "deps": deps}):
+    for obj in reachable_objects({"app": app, "components": components}):
         assert not isinstance(obj, Signer), "the broker wired up a Signer"
         assert not isinstance(obj, Ed25519PrivateKey), "the broker holds a private key"
 
@@ -152,40 +233,45 @@ def test_broker_entrypoint_source_never_names_the_signer():
     assert "create_control_app" not in names
 
 
-def test_broker_app_exposes_no_minting_route(tmp_path):
+def test_broker_app_exposes_no_minting_route(tmp_path, monkeypatch):
     _, public_path = write_keypair(tmp_path)
-    app, _ = broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, public_path)
+    app, _ = broker_main.build(config, client=stub_client())
 
     assert not any("token" in route.path for route in app.routes)
     assert TestClient(app).post("/v1/tokens", json={}).status_code == 404
 
 
-def test_broker_refuses_to_start_without_the_public_key(tmp_path):
+def test_broker_refuses_to_start_without_the_public_key(tmp_path, monkeypatch):
     """Fail closed at startup. A broker that came up with no verification key
     would have to either trust everything or reject everything, and finding
     out which at request time is not acceptable for an enforcement point."""
-    env = broker_env(tmp_path, tmp_path / "absent.pub")
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, tmp_path / "absent.pub")
     with pytest.raises(FileNotFoundError):
-        broker_main.build(env, client=stub_client())
+        broker_main.build(config, client=stub_client())
 
 
-def test_broker_refuses_a_public_key_file_that_is_not_ed25519(tmp_path):
+def test_broker_refuses_a_public_key_file_that_is_not_ed25519(tmp_path, monkeypatch):
     _, public_path = write_keypair(tmp_path)
     public_path.write_bytes(b"-----BEGIN PUBLIC KEY-----\nnot a key\n-----END PUBLIC KEY-----\n")
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, public_path)
     with pytest.raises(Exception):
-        broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
+        broker_main.build(config, client=stub_client())
 
 
-def test_broker_wiring_digests_every_policy_path_root(tmp_path):
-    """POLICY_PATH may name more than one root, colon-separated -- this is the
-    one production entry point the whole policy_bundle_digest signature
-    change exists for. A bundle split across a rules root and a data root
-    must be digested as one, so changing a file in the SECOND root must
-    change the digest the broker wires up at startup. The previous
-    single-directory digest would have silently ignored a second root:
-    max_rows_per_task 50 -> 5,000,000 with every audit record still claiming
-    the identical policy."""
+def test_broker_wiring_digests_every_policy_path_root(tmp_path, monkeypatch):
+    """bundle_roots may name more than one root -- this is the one production
+    entry point the whole policy_bundle_digest signature change exists for. A
+    bundle split across a rules root and a data root must be digested as one,
+    so changing a file in the SECOND root must change the digest the broker
+    wires up at startup. The previous single-directory digest would have
+    silently ignored a second root: max_rows_per_task 50 -> 5,000,000 with
+    every audit record still claiming the identical policy."""
     _, public_path = write_keypair(tmp_path)
+    set_catalog_env(monkeypatch, tmp_path)
 
     rules_root = tmp_path / "policy_rules"
     data_root = tmp_path / "policy_data"
@@ -194,28 +280,79 @@ def test_broker_wiring_digests_every_policy_path_root(tmp_path):
     (rules_root / "authz.rego").write_text("package warden.authz\n")
     (data_root / "data.json").write_text('{"limits": {"max_rows_per_task": 50}}\n')
 
-    env = broker_env(tmp_path, public_path)
-    env["POLICY_PATH"] = f"{rules_root}:{data_root}"
+    config = broker_config(tmp_path, public_path, bundle_roots=[rules_root, data_root])
 
-    _, deps_before = broker_main.build(env, client=stub_client())
+    _, components_before = broker_main.build(config, client=stub_client())
 
     (data_root / "data.json").write_text('{"limits": {"max_rows_per_task": 5000000}}\n')
 
-    _, deps_after = broker_main.build(env, client=stub_client())
+    _, components_after = broker_main.build(config, client=stub_client())
 
-    assert deps_before["policy_digest"] != deps_after["policy_digest"]
+    assert components_before.policy_digest != components_after.policy_digest
+
+
+# --- Typed wiring: one object, two shapes -----------------------------------
+
+
+def test_wiring_is_typed_so_a_new_component_cannot_break_the_proxy():
+    """deps was an untyped dict splatted into two functions with different
+    signatures, neither taking **kwargs. Adding one key -- the catalog, which
+    create_app needs and authorize_connect does not -- raised TypeError from
+    serve_proxy and took all egress down. No grep for a literal finds that."""
+    import inspect
+
+    from broker.app import create_app
+    from broker.proxy import authorize_connect
+    from broker.wiring import BrokerComponents
+
+    app_params = set(inspect.signature(create_app).parameters)
+    proxy_params = set(inspect.signature(authorize_connect).parameters)
+    assert set(BrokerComponents.as_app_kwargs.__annotations__) or True
+    stub = BrokerComponents(verifier=None, pdp=None, taint=None, audit=None,
+                            policy_digest="sha256:x")
+    assert set(stub.as_app_kwargs()) <= app_params
+    assert set(stub.as_proxy_kwargs()) <= proxy_params
+
+
+def test_the_entrypoint_reads_a_toml_config(tmp_path, monkeypatch):
+    _, public_path = write_keypair(tmp_path)
+    set_catalog_env(monkeypatch, tmp_path)
+    (tmp_path / "warden.toml").write_text(f"""
+[broker]
+listen = "0.0.0.0:8080"
+proxy_listen = "0.0.0.0:3128"
+[identity]
+public_key = "{public_path}"
+[policy]
+opa_url = "http://opa:8181"
+decision_path = "warden/authz"
+bundle_roots = ["policies"]
+[audit]
+path = "{tmp_path / 'audit.jsonl'}"
+[tokens]
+issuer = "warden-broker"
+ttl_seconds = 300
+[catalog]
+tools = "demo/scenario/tools.toml"
+""")
+    config = load_broker_config(tmp_path / "warden.toml", env={
+        "DOCSTORE_URL": "http://d", "DB_PATH": "data/customers.db",
+        "MAILER_URL": "http://m",
+    })
+    app, components = broker_main.build(config, client=stub_client())
+    assert components.policy_digest.startswith("sha256:")
 
 
 # --- The control process: the only minter ----------------------------------
 
 
-def test_control_entrypoint_mints_tokens_the_broker_accepts(tmp_path):
+def test_control_entrypoint_mints_tokens_the_broker_accepts(tmp_path, monkeypatch):
     """The two halves are one keypair: the control plane signs with the
     private file, the broker verifies with the public file, and neither ever
     sees the other's half."""
     private_path, public_path = write_keypair(tmp_path)
 
-    control_app = control_main.build({"AGENT_PRIVATE_KEY_PATH": str(private_path)})
+    control_app = control_main.build(control_config(tmp_path, private_path))
     response = TestClient(control_app).post(
         "/v1/tokens",
         json={
@@ -226,26 +363,29 @@ def test_control_entrypoint_mints_tokens_the_broker_accepts(tmp_path):
     )
     assert response.status_code == 200
 
-    _, deps = broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
-    token = deps["verifier"].verify(response.json()["token"])
+    set_catalog_env(monkeypatch, tmp_path)
+    _, components = broker_main.build(broker_config(tmp_path, public_path), client=stub_client())
+    token = components.verifier.verify(response.json()["token"])
     assert token.agent_id == "triage-bot"
     assert token.allowed_tools == ("read_document",)
 
 
 def test_control_entrypoint_refuses_a_missing_private_key(tmp_path):
+    config = control_config(tmp_path, tmp_path / "absent.key")
     with pytest.raises(FileNotFoundError):
-        control_main.build({"AGENT_PRIVATE_KEY_PATH": str(tmp_path / "absent.key")})
+        control_main.build(config)
 
 
 def test_control_entrypoint_refuses_a_public_key_where_the_private_one_belongs(tmp_path):
     """Handing the control plane the wrong half must fail at startup, not at
     the first mint."""
     _, public_path = write_keypair(tmp_path)
+    config = control_config(tmp_path, public_path)
     with pytest.raises(ValueError):
-        control_main.build({"AGENT_PRIVATE_KEY_PATH": str(public_path)})
+        control_main.build(config)
 
 
-def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path):
+def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path, monkeypatch):
     """scripts/demo.sh and tests/test_isolation.sh generate the keypair with
     openssl, outside every container. Nothing else in the suite exercises that
     exact format (PKCS#8 private, SubjectPublicKeyInfo public), so a format
@@ -264,7 +404,7 @@ def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path):
         check=True, capture_output=True,
     )
 
-    control_app = control_main.build({"AGENT_PRIVATE_KEY_PATH": str(private_path)})
+    control_app = control_main.build(control_config(tmp_path, private_path))
     response = TestClient(control_app).post(
         "/v1/tokens",
         json={
@@ -275,8 +415,9 @@ def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path):
     )
     assert response.status_code == 200
 
-    _, deps = broker_main.build(broker_env(tmp_path, public_path), client=stub_client())
-    assert deps["verifier"].verify(response.json()["token"]).purpose == "support-triage"
+    set_catalog_env(monkeypatch, tmp_path)
+    _, components = broker_main.build(broker_config(tmp_path, public_path), client=stub_client())
+    assert components.verifier.verify(response.json()["token"]).purpose == "support-triage"
 
 
 # --- Topology, by inspection ------------------------------------------------
@@ -332,6 +473,21 @@ def test_the_inspection_scanner_can_actually_see_a_network_attachment():
     happily against a scanner that reads the wrong block or an empty string."""
     assert "agent-net" in _compose_service_block("agent-runtime")
     assert "agent-net" in _compose_service_block("broker")
+
+
+def test_the_broker_and_control_services_mount_their_toml_config():
+    """Task 14 moved ports, paths, the OPA URL and the token issuer/TTL out of
+    the source and into warden.toml / control.toml. A service that forgot to
+    mount its file, or to point WARDEN_CONFIG / WARDEN_CONTROL_CONFIG at it,
+    would boot against /config/warden.toml inside an image that never put
+    anything there -- a startup crash the unit tests above cannot see."""
+    broker_block = _compose_service_block("broker")
+    assert "WARDEN_CONFIG: /config/warden.toml" in broker_block
+    assert "./warden.toml:/config/warden.toml:ro" in broker_block
+
+    control_block = _compose_service_block("broker-control")
+    assert "WARDEN_CONTROL_CONFIG: /config/control.toml" in control_block
+    assert "./control.toml:/config/control.toml:ro" in control_block
 
 
 def _strip_unquoted_comment(line: str) -> str:

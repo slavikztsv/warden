@@ -17,26 +17,26 @@ must not be co-hosted with anything the agent can reach.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import uvicorn
 
+from broker.config.loader import ControlConfig, load_control_config
 from broker.control import create_control_app
 from broker.identity import Signer
 
-PRIVATE_KEY_PATH = "/data/agent.key"
 
-
-def build(env: dict[str, str] | None = None):
+def build(config: ControlConfig):
     """Loads the minting key and builds the control app."""
-    env = os.environ if env is None else env
-    signer = Signer.from_private_key_file(
-        env.get("AGENT_PRIVATE_KEY_PATH", PRIVATE_KEY_PATH)
-    )
-    return create_control_app(signer=signer)
+    return create_control_app(signer=Signer.from_private_key_file(config.private_key))
 
 
 def main() -> None:
-    uvicorn.run(build(), host="0.0.0.0", port=8081, log_level="warning")
+    config = load_control_config(
+        Path(os.environ.get("WARDEN_CONTROL_CONFIG", "/config/control.toml")), os.environ
+    )
+    host, port = config.listen
+    uvicorn.run(build(config), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":
