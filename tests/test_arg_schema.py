@@ -55,6 +55,13 @@ def schema(tool: str, unknown_args: str = "reject") -> ToolSchema:
         ("send_email", {"to": "customer:8812", "subject": "s", "body": "b"}, False),
         ("send_email", {"to": [1], "subject": "s", "body": "b"}, False),
         ("send_email", {"to": {"customer:8812": "x@evil"}, "subject": "s", "body": "b"}, False),
+        # required *array* arg gets null -- mirrors the required-string case
+        # above (query_customers filter: None). ArgSpec.accepts checks
+        # `value is None` before branching on type, so string and array
+        # share one null path today; this pins the array half of that
+        # sharing so a future edit that splits the null check per type has
+        # something to break.
+        ("send_email", {"to": None, "subject": "s", "body": "b"}, False),
     ],
 )
 def test_matches_the_measured_behaviour(tool, args, expected):
@@ -79,22 +86,51 @@ def test_undeclared_args_can_be_allowed_explicitly():
     ) is True
 
 
+def test_null_is_absent_governs_array_arguments_the_same_way_as_strings():
+    """DEMO's only array field (send_email.to) is required and its
+    null_is_absent is left at the default False, so the parametrized
+    to: None case above denies -- but a hypothetical future edit that
+    splits ArgSpec.accepts's null check per type and forgets to consult
+    null_is_absent for the array branch would ALSO deny that case (False
+    either way), so it wouldn't be caught there. Pin the case where the two
+    diverge: an optional array field with null_is_absent explicitly True
+    must accept null, exactly like http_fetch.body does for strings."""
+    spec = parse_tool_schema(
+        {"args": {"cc": {"type": "array", "items": "string",
+                          "required": False, "null_is_absent": True}}},
+        "t",
+    )
+    assert spec.validate({"cc": None}) is True
+    assert spec.validate({"cc": ["x"]}) is True
+
+
+def test_optional_array_still_rejects_null_when_null_is_absent_is_unset():
+    """The other half of the pair above, so the default (permissive-by-omission
+    is NOT the same as permissive-for-null) is pinned for arrays too, not just
+    strings."""
+    spec = parse_tool_schema(
+        {"args": {"cc": {"type": "array", "items": "string", "required": False}}},
+        "t",
+    )
+    assert spec.validate({"cc": None}) is False
+
+
 def test_a_tool_with_no_args_table_is_a_config_error():
     """Never a vacuous schema. A missing or misspelled [tools.X.args] makes
     tomllib yield nothing silently, and a validator that then passes
     everything restores the exact divergence the app.py docstring exists to
     prevent."""
-    with pytest.raises(ConfigError, match="read_document"):
+    with pytest.raises(ConfigError, match=r"declares no \[args\] table"):
         parse_tool_schema({"unknown_args": "reject"}, "read_document")
 
 
 def test_an_empty_args_table_is_a_config_error():
-    with pytest.raises(ConfigError, match="read_document"):
+    with pytest.raises(ConfigError, match=r"declares no \[args\] table"):
         parse_tool_schema({"args": {}}, "read_document")
 
 
 def test_an_unknown_type_is_a_config_error():
-    with pytest.raises(ConfigError, match="filter"):
+    with pytest.raises(ConfigError, match=r"type must be one of"):
         parse_tool_schema({"args": {"filter": {"type": "integer"}}}, "query_customers")
 
 
@@ -108,12 +144,12 @@ def test_an_unknown_schema_key_is_a_config_error():
 
 
 def test_an_unknown_unknown_args_policy_is_a_config_error():
-    with pytest.raises(ConfigError, match="unknown_args"):
+    with pytest.raises(ConfigError, match=r"unknown_args must be one of"):
         parse_tool_schema({"args": DEMO["read_document"], "unknown_args": "ignore"}, "x")
 
 
 def test_array_without_items_is_a_config_error():
-    with pytest.raises(ConfigError, match="items"):
+    with pytest.raises(ConfigError, match=r'items must be "string" for an array'):
         parse_tool_schema({"args": {"to": {"type": "array", "required": True}}}, "send_email")
 
 
