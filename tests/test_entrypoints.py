@@ -334,6 +334,39 @@ def test_the_inspection_scanner_can_actually_see_a_network_attachment():
     assert "agent-net" in _compose_service_block("broker")
 
 
+def _strip_unquoted_comment(line: str) -> str:
+    """Drops everything from an unquoted `#` to end of line, so prose in a
+    comment can never be mistaken for shell it merely describes."""
+    in_single = in_double = False
+    for i, ch in enumerate(line):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            return line[:i]
+    return line
+
+
+def _shell_logical_lines(script: str) -> list[str]:
+    """Reads a script closer to the way a shell would: strips unquoted `#`
+    comments, then splices `\\`-continued physical lines into one logical
+    line each, so an invocation wrapped across lines is scanned whole rather
+    than as two fragments that individually match nothing."""
+    logical: list[str] = []
+    pending = ""
+    for raw_line in script.splitlines():
+        stripped = _strip_unquoted_comment(raw_line).rstrip()
+        piece = stripped[:-1].rstrip() if stripped.endswith("\\") else stripped
+        pending = f"{pending} {piece.strip()}".strip() if pending else piece
+        if not stripped.endswith("\\"):
+            logical.append(pending)
+            pending = ""
+    if pending:
+        logical.append(pending)
+    return logical
+
+
 def test_demo_script_rebuilds_before_starting_containers():
     """A stale image runs old code while the run looks current.
 
@@ -342,9 +375,15 @@ def test_demo_script_rebuilds_before_starting_containers():
     the task therefore never became tainted, and the PII POST to the
     allowlisted internal endpoint SUCCEEDED -- the demo's central claim,
     inverted, under a chain that reported itself intact.
+
+    Scans logical lines, not physical ones: an invocation split across a
+    `\\` continuation must still be caught, and a comment merely narrating
+    an invocation (this file's own established style, immediately above the
+    lines this test polices) must never be mistaken for one.
     """
     script = (REPO_ROOT / "scripts" / "demo.sh").read_text()
-    ups = [line for line in script.splitlines() if "docker compose" in line and " up " in line]
-    assert ups, "no `docker compose up` found in demo.sh"
+    logical_lines = _shell_logical_lines(script)
+    ups = [line for line in logical_lines if "docker compose" in line and " up " in line]
+    assert len(ups) == 2, f"expected exactly one `docker compose ... up` per profile, found {len(ups)}: {ups}"
     for line in ups:
         assert "--build" in line, f"up without --build: {line.strip()}"
