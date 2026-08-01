@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def test_backends_module_is_gone():
-    assert not (REPO_ROOT / "broker" / "backends.py").exists()
+    assert not (REPO_ROOT / "warden" / "broker" / "backends.py").exists()
     with pytest.raises(ModuleNotFoundError):
         __import__("broker.backends")
 
@@ -41,7 +41,7 @@ def test_no_tool_name_remains_in_the_broker_package():
     the meaning ("an argument of the right type the adapter cannot parse")."""
     names = ("read_document", "query_customers", "http_fetch", "send_email")
     offenders = []
-    for path in (REPO_ROOT / "broker").rglob("*.py"):
+    for path in (REPO_ROOT / "warden" / "broker").rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
         text = path.read_text()

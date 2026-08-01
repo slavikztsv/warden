@@ -17,7 +17,7 @@ import pytest
 
 from tools.opa_version import OPA_VERSION, resolve_opa
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def test_compose_pins_the_same_version():

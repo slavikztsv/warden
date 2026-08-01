@@ -1,8 +1,8 @@
 """The tool catalog: what this deployment's tools are and how to reach them.
 
 Replaces the compiled-in TOOLS tuple and the Backends class, which between
-them knew four tool names, a table called customers, a column called plan and
-a subject prefix.
+them knew four tool names, one hardcoded table name, one hardcoded column
+name and a subject prefix.
 
 Two membership checks stay SEPARATE, as they are in the code this replaces.
 validate() DEFERS on a tool it does not know; describe() raises UnknownTool.

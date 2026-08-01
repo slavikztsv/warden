@@ -270,8 +270,8 @@ deny_reasons contains "input.malformed" if {
 # enclosing body is undefined, no deny reason is produced, and the request is
 # allowed. Verified with `opa eval` against the real authz.rego: dropping
 # `limits` approved a 5,000,000-row read; dropping `pii_approved_sinks`
-# approved PII to an unapproved host; dropping `egress_allow` approved
-# attacker.example; mapping a purpose to `null` approved all three — every one
+# approved PII to an unapproved host; dropping `egress_allow` approved a host
+# never allowlisted; mapping a purpose to `null` approved all three — every one
 # `allow:true` with an empty deny_reasons set, so the audit log records a clean
 # allow rather than an error.
 #
@@ -352,10 +352,10 @@ deny_reasons contains "rows.bounded" if {
 }
 
 # R7 — scope. R5 bounds how MANY customer records a task may read; this bounds
-# WHICH. A support-triage task for customer:8812 could read customer 9999's
-# record one row at a time: inside the budget, inside policy, recorded as a
-# clean allow. `counterparties` governed mail alone and never applied to reads,
-# which is least privilege on quantity but not on subject.
+# WHICH. A task for one declared customer could read another, undeclared
+# customer's record one row at a time: inside the budget, inside policy,
+# recorded as a clean allow. `counterparties` governed mail alone and never
+# applied to reads, which is least privilege on quantity but not on subject.
 #
 # Only applies when the task declared its subjects. A token naming no
 # counterparties has no subject scope to enforce, and R5 remains its only read

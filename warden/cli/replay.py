@@ -93,9 +93,7 @@ def render_replay(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="warden")
-    parser.add_argument(
-        "command", choices=["replay", "verify-chain", "verify-runs", "config"]
-    )
+    parser.add_argument("command", choices=["replay", "verify-chain", "config"])
     parser.add_argument("task_id", nargs="?", default=None)
     parser.add_argument("--audit", default="data/audit.jsonl")
     parser.add_argument("--catalog", default="demo/scenario/tools.toml")
@@ -124,22 +122,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("config consistent")
         return 0
-
-    if args.command == "verify-runs":
-        # The run index, not the audit log: proof that the saved evidence of
-        # each run is the set that was written, in the order it was written.
-        from demo.cli.runlog import INDEX, verify_index
-
-        if not INDEX.exists():
-            print(f"no runs recorded yet ({INDEX})")
-            return 0
-        ok, bad = verify_index()
-        count = sum(1 for line in INDEX.read_text().splitlines() if line.strip())
-        if ok:
-            print(f"run index intact: {count} runs")
-            return 0
-        print(f"run index BROKEN at seq {bad}")
-        return 1
 
     audit_path = Path(args.audit)
     if not audit_path.exists():
@@ -195,8 +177,8 @@ def main(argv: list[str] | None = None) -> int:
     chain_ok, bad_seq, _ = verify()
     print(render_replay(records, chain_ok=chain_ok, bad_seq=bad_seq), end="")
     # The banner is not the whole answer: a caller that chains
-    # `warden replay 4711 && ...` would sail past a tampered log if the exit
-    # code said success, and the verdict would live only in stdout. This is
+    # `warden replay <task-id> && ...` would sail past a tampered log if the
+    # exit code said success, and the verdict would live only in stdout. This is
     # the same command that used to assert integrity it had never checked --
     # it must not now check it and then shrug. `verify-chain` already exits 1;
     # so does this. scripts/demo.sh runs under `set -euo pipefail` and will

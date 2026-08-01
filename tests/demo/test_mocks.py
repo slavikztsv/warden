@@ -59,7 +59,7 @@ def test_feedback_accepts_the_json_array_the_cassette_actually_posts():
     from pathlib import Path
 
     cassette = (
-        Path(__file__).resolve().parent.parent / "demo/agent/cassettes/support-triage.json"
+        Path(__file__).resolve().parent.parent.parent / "demo/agent/cassettes/support-triage.json"
     )
     steps = json.loads(cassette.read_text())
     bodies = [

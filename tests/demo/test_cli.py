@@ -592,7 +592,14 @@ def test_every_scenario_declares_what_it_trips_and_what_it_costs():
 def test_the_precedence_list_covers_every_rule_the_policy_can_return():
     """A deny reason absent from DENY_PRECEDENCE falls through to
     pdp.unavailable — fail-closed, but it reports the wrong cause and hides
-    which control fired. Adding a rule means adding it here."""
+    which control fired. Adding a rule means adding it here.
+
+    Equality, not containment: a subset check would stay green even if a
+    rule were deleted from DENY_PRECEDENCE while authz.rego still emitted it
+    (the exact failure mode this test exists to catch), and would also miss
+    a name that DENY_PRECEDENCE ranks but the policy can no longer produce --
+    a control that looks live in the precedence order but never actually
+    fires."""
     import re
 
     from warden.broker.pdp import DENY_PRECEDENCE
@@ -600,8 +607,9 @@ def test_the_precedence_list_covers_every_rule_the_policy_can_return():
 
     rego = (POLICY_BUNDLE / "authz.rego").read_text()
     emitted = set(re.findall(r'deny_reasons contains "([^"]+)"', rego))
-    assert emitted <= set(DENY_PRECEDENCE), (
-        f"rules the PDP cannot name: {emitted - set(DENY_PRECEDENCE)}"
+    assert emitted == set(DENY_PRECEDENCE), (
+        f"mismatch between what authz.rego emits and DENY_PRECEDENCE: "
+        f"{emitted.symmetric_difference(set(DENY_PRECEDENCE))}"
     )
 
 def test_comparison_table_marks_only_the_rows_that_differ():

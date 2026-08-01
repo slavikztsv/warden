@@ -43,7 +43,7 @@ from warden.broker.config.loader import BrokerConfig, ControlConfig, load_broker
 from warden.broker.identity import Signer, Verifier
 from demo.mocks.seed_db import seed_customers
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def write_keypair(directory: Path) -> tuple[Path, Path]:

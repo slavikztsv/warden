@@ -171,7 +171,7 @@ The index is hash-chained exactly like the audit log, so a run cannot be quietly
 edited out of the history:
 
 ```bash
-warden verify-runs      # run index intact: 3 runs
+warden-demo verify-runs # run index intact: 3 runs
 ```
 
 Tamper-evident, not tamper-proof, for the same reason as the audit log: it

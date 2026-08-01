@@ -96,8 +96,8 @@ class SqlAdapter:
         to decide whether the read is allowed.
 
         The prefix must join exactly to the token's counterparties. Writing
-        it without its separator yields "customer8812" against a declared
-        "customer:8812", so R7 rows.scope fires on the ALLOWED read: the
+        it without its separator yields "customer42" against a declared
+        "customer:42", so R7 rows.scope fires on the ALLOWED read: the
         task never becomes tainted, and the later egress to the allowlisted
         internal sink stops being denied.
         """

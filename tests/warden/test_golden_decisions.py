@@ -33,7 +33,7 @@ from warden.broker.pdp import DENY_PRECEDENCE
 from tools.capture_expected import EXPECTED_CASE_COUNT
 from tools.opa_version import resolve_opa
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CORPUS = REPO_ROOT / "tests" / "golden" / "decisions"
 
 

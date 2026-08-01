@@ -18,7 +18,7 @@ import pytest
 from warden.broker.adapters.base import ToolTarget
 from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER, build_adapter
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def policy_target_kinds() -> set[str]:
