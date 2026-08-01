@@ -1,8 +1,11 @@
 """The seam, as a test rather than a convention.
 
-pip already enforces the dependency direction. These assert the rest: that no
-scenario knowledge survives in the product tree, that the product boots
-knowing no tools, and that the enforcement point holds nothing that can sign.
+pip already enforces the dependency direction. These assert the rest: that
+the product tree holds no scenario knowledge -- with one named, expiring
+exception, warden/policies/data.json (see DATA_JSON_EXCEPTION and
+test_the_data_json_scenario_exception_has_not_gone_stale below) -- that the
+product boots knowing no tools, and that the enforcement point holds nothing
+that can sign.
 """
 
 from __future__ import annotations
@@ -21,41 +24,108 @@ SCENARIO_STRINGS = (
     "support-triage", "triage-bot", "refund", "customers",
 )
 
+# The full set of extensions the scan below considers, named once so a
+# reader sees it at a glance instead of piecing it together from separate
+# globs. Adding a new source language to warden/ means adding it here.
+SCANNED_EXTENSIONS = (".py", ".rego", ".toml", ".json")
 
-def product_sources() -> list[Path]:
-    return [p for p in PRODUCT.rglob("*.py") if "__pycache__" not in p.parts]
+# Named exceptions to the scan -- not silent gaps. Each one says what the
+# file is, why it is excluded today, and (where applicable) what closes the
+# exception.
+#
+# warden/policies/data.json ships the demo's real configuration --
+# purpose "support-triage", host "docstore.internal", and all four demo
+# tool names -- inside the product tree. That is genuine scenario
+# knowledge, and unlike authz_test.rego (excluded below for a different,
+# permanent reason) there is no argument that it doesn't ship: it is the
+# exact file docker-compose.yml mounts into the OPA container today.
+# It is here, and not under demo/scenario/ alongside tools.toml /
+# warden.toml / control.toml where the design puts it, because OPA
+# currently mounts ./warden/policies as ONE directory -- moving data.json
+# out from under it breaks that mount. Task 22 splits the mount into
+# file-level binds and moves data.json out at the same time (see its own
+# plan section); test_the_data_json_scenario_exception_has_not_gone_stale
+# below fails the moment that happens, so this exception cannot quietly
+# outlive its reason.
+DATA_JSON_EXCEPTION = PRODUCT / "policies" / "data.json"
 
 
-def product_rego() -> list[Path]:
-    """The shipped policy, not its own test suite.
+def _is_opa_test_fixture(path: Path) -> bool:
+    """True for warden/policies/authz_test.rego and anything shaped like it.
 
     OPA's `opa test` discovers a test by name convention (any rule prefixed
-    `test_`), which requires the test file to sit BESIDE the rego it exercises
-    -- there is no `tests/` directory it could move to the way every Python
-    test in this repo already has. warden/policies/authz_test.rego is that
-    file: test-only code that happens to be forced to live in the product
-    tree by OPA's own tooling, not product source that ships. Its final
-    section deliberately evaluates the REAL warden/policies/data.json (not a
-    mock) -- see its own "Shipped-configuration tests" comment -- so the
-    purpose name and host it names there ("support-triage",
-    "docstore.internal") are not narrative choices this test could reword
-    without either breaking that real-bundle coverage or rewriting
-    data.json's actual content, which is a deployment-config question this
-    task does not decide. Excluded the same way tests/*.py already is by
-    directory structure; authz.rego itself (the actual policy) is scanned
-    and is clean but for two comments, fixed alongside this test.
+    `test_`), which requires the test file to sit BESIDE the rego it
+    exercises -- there is no `tests/` directory it could move to the way
+    every Python test in this repo already has. This is test-only code
+    forced to live in the product tree by OPA's own tooling, not product
+    source that ships: Task 22's compose mounts only authz.rego and
+    data.json, never this file. Its "shipped-configuration tests" section
+    deliberately evaluates the REAL data.json (not a mock) -- see its own
+    comment -- so the purpose name and host it names there
+    ("support-triage", "docstore.internal") are not narrative choices this
+    scan could reword without breaking that real-bundle coverage. Excluded
+    the same way tests/*.py already is by directory structure, permanently
+    (there is no task that moves it, because it cannot move). authz.rego
+    itself (the actual policy) is scanned and is clean but for two
+    comments, fixed alongside this test.
     """
-    return [p for p in PRODUCT.rglob("*.rego") if not p.name.endswith("_test.rego")]
+    return path.name.endswith("_test.rego")
+
+
+def product_files() -> list[Path]:
+    """Every warden/ file the scenario-string scan considers: everything
+    with an extension in SCANNED_EXTENSIONS, minus the two named exceptions
+    above (_is_opa_test_fixture, DATA_JSON_EXCEPTION)."""
+    return [
+        p for p in PRODUCT.rglob("*")
+        if p.is_file()
+        and p.suffix in SCANNED_EXTENSIONS
+        and "__pycache__" not in p.parts
+        and not _is_opa_test_fixture(p)
+        and p != DATA_JSON_EXCEPTION
+    ]
+
+
+def product_sources() -> list[Path]:
+    return [p for p in product_files() if p.suffix == ".py"]
 
 
 @pytest.mark.parametrize("needle", SCENARIO_STRINGS)
-def test_the_product_tree_holds_no_scenario_string(needle):
+def test_the_product_tree_holds_no_unexcepted_scenario_string(needle):
+    """No scenario knowledge outside the named exceptions above.
+
+    Not "no scenario knowledge, full stop": warden/policies/data.json
+    genuinely fails this property today (see DATA_JSON_EXCEPTION) and is
+    excluded by name rather than by the test silently not looking -- the
+    exclusion is spelled out above, and the next test asserts the exclusion
+    is still honest.
+    """
     offenders = [
         f"{p.relative_to(REPO_ROOT)}"
-        for p in [*product_sources(), *product_rego(), *PRODUCT.rglob("*.toml")]
+        for p in product_files()
         if needle in p.read_text()
     ]
     assert offenders == []
+
+
+def test_the_data_json_scenario_exception_has_not_gone_stale():
+    """Forces DATA_JSON_EXCEPTION to be deleted the moment it stops being
+    true, rather than letting the scan quietly not-scan a file that no
+    longer needs the exception.
+
+    Task 22 moves warden/policies/data.json to demo/scenario/ alongside
+    tools.toml, warden.toml and control.toml (splitting OPA's single-
+    directory mount into file-level binds is what makes the move safe).
+    The moment that happens, this file will not exist here, this test will
+    fail, and whoever is there must delete this test and
+    DATA_JSON_EXCEPTION together -- at which point
+    test_the_product_tree_holds_no_unexcepted_scenario_string starts
+    scanning data.json for real, with nothing left to hide behind.
+    """
+    assert DATA_JSON_EXCEPTION.exists(), (
+        f"{DATA_JSON_EXCEPTION} is gone -- delete DATA_JSON_EXCEPTION and "
+        "this test, the scenario-string scan can cover it directly now"
+    )
 
 
 def test_no_product_module_imports_the_demo():
@@ -85,6 +155,13 @@ def test_the_product_tree_ships_no_tool_catalog():
     form of "ships an empty reference catalog" (the commented, zero-tool
     warden/reference/tools.toml a later task adds as a template) -- no
     catalog file to declare tools with at all, anywhere in the tree.
+
+    NOTE for whoever adds warden/reference/tools.toml: that file is
+    supposed to exist and declare zero tools, not fail to exist. When it
+    lands, loosen this to "the catalog it finds declares no tools"
+    (tomllib-parse it and assert `.get("tools", {}) == {}`, as
+    test_the_reference_catalog_declares_no_tools does in the wider plan)
+    rather than deleting the test outright.
     """
     catalogs = [p for p in PRODUCT.rglob("*.toml") if p.name == "tools.toml"]
     assert catalogs == []
