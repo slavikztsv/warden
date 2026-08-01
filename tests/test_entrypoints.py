@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import httpx
@@ -76,13 +77,17 @@ def write_warden_toml(
     opa_url: str = "http://opa:8181",
     decision_path: str = "warden/authz",
     issuer: str = "warden-broker",
-    ttl_seconds: int = 300,
     listen: str = "0.0.0.0:8080",
     proxy_listen: str = "0.0.0.0:3128",
 ) -> Path:
     """Writes a warden.toml the shape docker-compose.yml mounts, with the
     same defaults broker_env() used to bake into an env dict -- one root
-    policy bundle, one tool manifest, the demo's real backends."""
+    policy bundle, one tool manifest, the demo's real backends.
+
+    No ttl_seconds: the broker verifies a token's issuer but never mints, so
+    [tokens] here carries issuer only -- a TTL would be parsed and never
+    consumed. See write_control_toml for where ttl_seconds actually lives.
+    """
     bundle_roots = bundle_roots or [REPO_ROOT / "policies"]
     audit_path = audit_path or (tmp_path / "audit.jsonl")
     catalog_tools = catalog_tools or (REPO_ROOT / "demo" / "scenario" / "tools.toml")
@@ -105,8 +110,7 @@ bundle_roots  = [{roots_toml}]
 path = "{audit_path}"
 
 [tokens]
-issuer      = "{issuer}"
-ttl_seconds = {ttl_seconds}
+issuer = "{issuer}"
 
 [catalog]
 tools = "{catalog_tools}"
@@ -118,7 +122,18 @@ def broker_config(tmp_path: Path, public_key: Path, **kwargs) -> BrokerConfig:
     return load_broker_config(write_warden_toml(tmp_path, public_key, **kwargs), env={})
 
 
-def write_control_toml(tmp_path: Path, private_key: Path, *, listen: str = "0.0.0.0:8081") -> Path:
+def write_control_toml(
+    tmp_path: Path,
+    private_key: Path,
+    *,
+    listen: str = "0.0.0.0:8081",
+    issuer: str = "warden-broker",
+    ttl_seconds: int = 300,
+) -> Path:
+    """issuer here must match write_warden_toml's issuer for a token minted
+    under one to verify under the other -- see
+    test_a_configured_issuer_mismatch_is_rejected_end_to_end. ttl_seconds is
+    control-plane-only: the broker's config has no such field."""
     path = tmp_path / "control.toml"
     path.write_text(f"""
 [control]
@@ -126,6 +141,10 @@ listen = "{listen}"
 
 [identity]
 private_key = "{private_key}"
+
+[tokens]
+issuer      = "{issuer}"
+ttl_seconds = {ttl_seconds}
 """)
     return path
 
@@ -307,11 +326,15 @@ def test_wiring_is_typed_so_a_new_component_cannot_break_the_proxy():
 
     app_params = set(inspect.signature(create_app).parameters)
     proxy_params = set(inspect.signature(authorize_connect).parameters)
-    assert set(BrokerComponents.as_app_kwargs.__annotations__) or True
     stub = BrokerComponents(verifier=None, pdp=None, taint=None, audit=None,
                             policy_digest="sha256:x")
-    assert set(stub.as_app_kwargs()) <= app_params
-    assert set(stub.as_proxy_kwargs()) <= proxy_params
+    # Exactly the shared components, no more and no less -- a subset check
+    # alone would pass just as happily if either method returned {}.
+    expected = {"verifier", "pdp", "taint", "audit", "policy_digest"}
+    assert set(stub.as_app_kwargs()) == expected
+    assert set(stub.as_proxy_kwargs()) == expected
+    assert expected <= app_params
+    assert expected <= proxy_params
 
 
 def test_the_entrypoint_reads_a_toml_config(tmp_path, monkeypatch):
@@ -331,7 +354,6 @@ bundle_roots = ["policies"]
 path = "{tmp_path / 'audit.jsonl'}"
 [tokens]
 issuer = "warden-broker"
-ttl_seconds = 300
 [catalog]
 tools = "demo/scenario/tools.toml"
 """)
@@ -344,6 +366,71 @@ tools = "demo/scenario/tools.toml"
 
 
 # --- The control process: the only minter ----------------------------------
+#
+# The two tests below prove the [tokens] wiring is live end to end, through
+# the real entrypoints -- not just at broker/identity.py's unit level -- so a
+# regression that reintroduced the hardcoded ISSUER/DEFAULT_TTL_SECONDS
+# constants at either build() would show up here even if identity.py's own
+# tests kept passing.
+
+
+def test_a_configured_issuer_mismatch_is_rejected_end_to_end(tmp_path, monkeypatch):
+    """warden.toml's [tokens].issuer and control.toml's [tokens].issuer must
+    agree, or every token fails. Built through control_main.build() and
+    broker_main.build() -- the real entrypoints -- not through Signer/Verifier
+    directly, so this also proves both build()s actually pass config.issuer
+    through rather than falling back to the shared module constant."""
+    from broker.identity import TokenInvalid
+
+    private_path, public_path = write_keypair(tmp_path)
+
+    control_app = control_main.build(
+        control_config(tmp_path, private_path, issuer="control-plane-a")
+    )
+    response = TestClient(control_app).post(
+        "/v1/tokens",
+        json={
+            "agent_id": "triage-bot", "task_id": "4711", "purpose": "support-triage",
+            "allowed_tools": ["read_document"], "data_classes": ["public"],
+            "counterparties": ["customer:8812"],
+        },
+    )
+    assert response.status_code == 200
+
+    set_catalog_env(monkeypatch, tmp_path)
+    _, components = broker_main.build(
+        broker_config(tmp_path, public_path, issuer="control-plane-b"), client=stub_client()
+    )
+    with pytest.raises(TokenInvalid):
+        components.verifier.verify(response.json()["token"])
+
+
+def test_control_toml_ttl_seconds_reaches_the_minted_token(tmp_path):
+    """A ttl_seconds in control.toml that differs from DEFAULT_TTL_SECONDS
+    must change the minted token's actual expiry -- checked against the
+    decoded claim (via jwt, bypassing our own Verifier's issuer/exp checks),
+    not against the constant, and via the real HTTP mint route rather than
+    calling Signer.mint() directly."""
+    import jwt
+
+    private_path, _ = write_keypair(tmp_path)
+    before = int(time.time())
+
+    control_app = control_main.build(control_config(tmp_path, private_path, ttl_seconds=3600))
+    response = TestClient(control_app).post(
+        "/v1/tokens",
+        json={
+            "agent_id": "triage-bot", "task_id": "4711", "purpose": "support-triage",
+            "allowed_tools": ["read_document"], "data_classes": ["public"],
+            "counterparties": ["customer:8812"],
+        },
+    )
+    assert response.status_code == 200
+    claims = jwt.decode(response.json()["token"], options={"verify_signature": False})
+
+    # Close to before+3600, not anywhere near before+300 (the old default).
+    assert abs(claims["exp"] - (before + 3600)) < 10
+    assert claims["exp"] - before > 1000
 
 
 def test_control_entrypoint_mints_tokens_the_broker_accepts(tmp_path, monkeypatch):

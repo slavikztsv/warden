@@ -1,11 +1,16 @@
 # The broker's wiring -- ports, paths, the PDP and its decision path, the
-# token issuer and TTL, and the tool catalog. Mounted read-only into the
-# `broker` service at /config/warden.toml (see docker-compose.yml) and
-# pointed to by WARDEN_CONFIG.
+# token issuer, and the tool catalog. Mounted read-only into the `broker`
+# service at /config/warden.toml (see docker-compose.yml) and pointed to by
+# WARDEN_CONFIG.
 #
 # DOCSTORE_URL, DB_PATH and MAILER_URL are deliberately NOT here: they
 # interpolate ${VAR} bindings inside demo/scenario/tools.toml, not this file,
 # and stay in the broker service's `environment:` in docker-compose.yml.
+#
+# [tokens] has issuer only, not ttl_seconds: the broker VERIFIES a token's
+# issuer (it must match control.toml's, or every token is rejected) but
+# never MINTS one, so a TTL here would be parsed and never consumed.
+# ttl_seconds lives in control.toml.
 #
 # Phase 3 moves this file under demo/scenario/.
 
@@ -25,8 +30,7 @@ bundle_roots  = ["/policies"]
 path = "/data/audit.jsonl"
 
 [tokens]
-issuer      = "warden-broker"
-ttl_seconds = 300
+issuer = "warden-broker"
 
 [catalog]
 tools = "/config/tools.toml"

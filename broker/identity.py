@@ -48,15 +48,32 @@ class TaskToken:
 
 
 class Signer:
-    def __init__(self, private_key: Ed25519PrivateKey) -> None:
+    def __init__(
+        self,
+        private_key: Ed25519PrivateKey,
+        *,
+        issuer: str = ISSUER,
+        default_ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    ) -> None:
         self._private_key = private_key
+        # These two are configured, not hardcoded: warden.toml's [tokens]
+        # and control.toml's [tokens] both carry an issuer (they must agree,
+        # or every token fails verification -- loud, not silent), and
+        # ttl_seconds is control.toml's alone, since the broker never mints.
+        # The module constants above remain only as the default for direct
+        # construction (tests, cli/explain.py's standalone demo signer); a
+        # configured value always wins when one is supplied.
+        self._issuer = issuer
+        self._default_ttl_seconds = default_ttl_seconds
 
     @classmethod
-    def generate(cls) -> "Signer":
-        return cls(Ed25519PrivateKey.generate())
+    def generate(cls, *, issuer: str = ISSUER, default_ttl_seconds: int = DEFAULT_TTL_SECONDS) -> "Signer":
+        return cls(Ed25519PrivateKey.generate(), issuer=issuer, default_ttl_seconds=default_ttl_seconds)
 
     @classmethod
-    def from_private_key_file(cls, path: Path | str) -> "Signer":
+    def from_private_key_file(
+        cls, path: Path | str, *, issuer: str = ISSUER, default_ttl_seconds: int = DEFAULT_TTL_SECONDS
+    ) -> "Signer":
         """Loads the minting key from disk.
 
         The type check is not decoration: an RSA or EC key here would load
@@ -67,7 +84,7 @@ class Signer:
         key = serialization.load_pem_private_key(Path(path).read_bytes(), password=None)
         if not isinstance(key, Ed25519PrivateKey):
             raise ValueError(f"{path} is not an Ed25519 private key")
-        return cls(key)
+        return cls(key, issuer=issuer, default_ttl_seconds=default_ttl_seconds)
 
     def public_key_pem(self) -> bytes:
         return self._private_key.public_key().public_bytes(
@@ -84,12 +101,13 @@ class Signer:
         allowed_tools: list[str],
         data_classes: list[str],
         counterparties: list[str],
-        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        ttl_seconds: int | None = None,
         now: int | None = None,
     ) -> str:
         issued_at = int(now if now is not None else time.time())
+        ttl = self._default_ttl_seconds if ttl_seconds is None else ttl_seconds
         claims = {
-            "iss": ISSUER,
+            "iss": self._issuer,
             "sub": f"agent:{agent_id}",
             "agent_id": agent_id,
             "task_id": task_id,
@@ -99,21 +117,26 @@ class Signer:
             "counterparties": list(counterparties),
             "delegated_from": None,
             "iat": issued_at,
-            "exp": issued_at + ttl_seconds,
+            "exp": issued_at + ttl,
             "jti": uuid.uuid4().hex,
         }
         return jwt.encode(claims, self._private_key, algorithm="EdDSA")
 
 
 class Verifier:
-    def __init__(self, public_key_pem: bytes) -> None:
+    def __init__(self, public_key_pem: bytes, *, issuer: str = ISSUER) -> None:
         key = serialization.load_pem_public_key(public_key_pem)
         if not isinstance(key, Ed25519PublicKey):
             raise ValueError("verifier requires an Ed25519 public key")
         self._public_key = key
+        # Configured, not hardcoded -- see the matching note on Signer. A
+        # token whose "iss" does not match this exact string is rejected,
+        # which is what makes a warden.toml/control.toml issuer mismatch a
+        # loud, total verification failure rather than a silent no-op.
+        self._issuer = issuer
 
     @classmethod
-    def from_public_key_file(cls, path: Path | str) -> "Verifier":
+    def from_public_key_file(cls, path: Path | str, *, issuer: str = ISSUER) -> "Verifier":
         """Loads the verification key from disk.
 
         This is the only key material the broker process ever touches. There
@@ -121,7 +144,7 @@ class Verifier:
         the broker could reach for by accident: the enforcement point verifies
         and never mints.
         """
-        return cls(Path(path).read_bytes())
+        return cls(Path(path).read_bytes(), issuer=issuer)
 
     def verify(self, token: str, now: int | None = None) -> TaskToken:
         try:
@@ -129,7 +152,7 @@ class Verifier:
                 token,
                 self._public_key,
                 algorithms=["EdDSA"],
-                issuer=ISSUER,
+                issuer=self._issuer,
                 options={"require": ["exp", "iss", "jti"], "verify_exp": False},
             )
         except jwt.PyJWTError as exc:

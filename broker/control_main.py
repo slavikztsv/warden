@@ -28,7 +28,10 @@ from broker.identity import Signer
 
 def build(config: ControlConfig):
     """Loads the minting key and builds the control app."""
-    return create_control_app(signer=Signer.from_private_key_file(config.private_key))
+    signer = Signer.from_private_key_file(
+        config.private_key, issuer=config.issuer, default_ttl_seconds=config.ttl_seconds
+    )
+    return create_control_app(signer=signer)
 
 
 def main() -> None:

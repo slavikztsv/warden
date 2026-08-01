@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from broker.config.loader import BrokerConfig, ConfigError, interpolate, load_broker_config
+from broker.config.loader import (
+    BrokerConfig,
+    ConfigError,
+    ControlConfig,
+    interpolate,
+    load_broker_config,
+    load_control_config,
+)
 
 COMPLETE = """
 [broker]
@@ -30,8 +37,7 @@ bundle_roots  = ["/policies"]
 path = "/data/audit.jsonl"
 
 [tokens]
-issuer      = "warden-broker"
-ttl_seconds = 300
+issuer = "warden-broker"
 
 [catalog]
 tools = "/config/tools.toml"
@@ -55,8 +61,11 @@ def test_loads_every_field(tmp_path):
     assert config.bundle_roots == (Path("/policies"),)
     assert config.audit_path == Path("/data/audit.jsonl")
     assert config.issuer == "warden-broker"
-    assert config.ttl_seconds == 300
     assert config.catalog_path == Path("/config/tools.toml")
+    # ttl_seconds is deliberately NOT a BrokerConfig field: the broker
+    # verifies a token's issuer but never mints, so a TTL here would be
+    # parsed and never consumed. It lives on ControlConfig only (see below).
+    assert not hasattr(config, "ttl_seconds")
 
 
 def test_is_frozen(tmp_path):
@@ -98,8 +107,8 @@ def test_a_missing_key_names_itself(tmp_path):
 
 
 def test_a_wrong_type_is_rejected(tmp_path):
-    text = COMPLETE.replace("ttl_seconds = 300", 'ttl_seconds = "300"')
-    with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
+    text = COMPLETE.replace('issuer = "warden-broker"', "issuer = 300")
+    with pytest.raises(ConfigError, match="tokens.issuer"):
         load_broker_config(write(tmp_path, text), env={})
 
 
@@ -179,9 +188,130 @@ def test_port_out_of_range_is_rejected(tmp_path):
         load_broker_config(write(tmp_path, text), env={})
 
 
-# Finding 3 (Minor) — the bool guard needs a test
-def test_a_boolean_ttl_is_rejected(tmp_path):
-    """bool is an int subclass; ttl_seconds = true should error, not become 1."""
-    text = COMPLETE.replace("ttl_seconds = 300", "ttl_seconds = true")
+# --- ControlConfig: load_broker_config's symmetric sibling ------------------
+#
+# Task 14 review finding: load_broker_config had 20 tests; load_control_config
+# had none of its own -- it was only exercised along the happy path via
+# tests/test_entrypoints.py, where the one "file absent" case actually failed
+# inside Signer.from_private_key_file, not inside the loader. These mirror
+# the broker-config tests above directly against load_control_config.
+#
+# IPv6-literal and port-range handling are deliberately NOT re-tested here:
+# they exercise the same shared _address() helper the broker tests above
+# already cover exhaustively, and control.toml's [control].listen goes
+# through that identical function -- re-asserting every edge a second time
+# would test the shared plumbing, not anything specific to ControlConfig.
+
+CONTROL_COMPLETE = """
+[control]
+listen = "0.0.0.0:8081"
+
+[identity]
+private_key = "/data/agent.key"
+
+[tokens]
+issuer      = "warden-broker"
+ttl_seconds = 300
+"""
+
+
+def write_control(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "control.toml"
+    path.write_text(text)
+    return path
+
+
+def test_control_loads_every_field(tmp_path):
+    config = load_control_config(write_control(tmp_path, CONTROL_COMPLETE), env={})
+    assert isinstance(config, ControlConfig)
+    assert config.listen == ("0.0.0.0", 8081)
+    assert config.private_key == Path("/data/agent.key")
+    assert config.issuer == "warden-broker"
+    assert config.ttl_seconds == 300
+
+
+def test_control_config_is_frozen(tmp_path):
+    config = load_control_config(write_control(tmp_path, CONTROL_COMPLETE), env={})
+    with pytest.raises(Exception):
+        config.ttl_seconds = 3600
+
+
+def test_control_interpolates_from_the_environment(tmp_path):
+    text = CONTROL_COMPLETE.replace('"/data/agent.key"', '"${PRIVATE_KEY_PATH}"')
+    config = load_control_config(
+        write_control(tmp_path, text), env={"PRIVATE_KEY_PATH": "/other/agent.key"}
+    )
+    assert config.private_key == Path("/other/agent.key")
+
+
+def test_control_an_unset_variable_is_a_startup_failure(tmp_path):
+    text = CONTROL_COMPLETE.replace('"/data/agent.key"', '"${PRIVATE_KEY_PATH}"')
+    with pytest.raises(ConfigError, match="PRIVATE_KEY_PATH"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_control_section_names_itself(tmp_path):
+    text = CONTROL_COMPLETE.replace('[control]\nlisten = "0.0.0.0:8081"\n', "")
+    with pytest.raises(ConfigError, match="control"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_identity_section_names_itself(tmp_path):
+    text = CONTROL_COMPLETE.replace('[identity]\nprivate_key = "/data/agent.key"\n', "")
+    with pytest.raises(ConfigError, match="identity"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_tokens_section_names_itself(tmp_path):
+    """The gap this whole review finding is about: [tokens] on the control
+    side is not decoration, it is where ttl_seconds actually lives now, so a
+    control.toml missing it must refuse to start rather than mint under
+    DEFAULT_TTL_SECONDS silently."""
+    text = CONTROL_COMPLETE.replace('[tokens]\nissuer      = "warden-broker"\nttl_seconds = 300\n', "")
+    with pytest.raises(ConfigError, match="tokens"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_key_names_itself(tmp_path):
+    text = CONTROL_COMPLETE.replace('private_key = "/data/agent.key"\n', "")
+    with pytest.raises(ConfigError, match="identity.private_key"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_malformed_listen_address_is_rejected(tmp_path):
+    text = CONTROL_COMPLETE.replace('listen = "0.0.0.0:8081"', 'listen = "0.0.0.0"')
+    with pytest.raises(ConfigError, match="control.listen"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_file_names_the_path(tmp_path):
+    with pytest.raises(ConfigError, match="absent.toml"):
+        load_control_config(tmp_path / "absent.toml", env={})
+
+
+def test_control_invalid_toml_names_the_file(tmp_path):
+    path = write_control(tmp_path, "[control\n")
+    with pytest.raises(ConfigError, match="control.toml"):
+        load_control_config(path, env={})
+
+
+def test_control_an_empty_value_is_rejected(tmp_path):
+    text = CONTROL_COMPLETE.replace('"/data/agent.key"', '""')
+    with pytest.raises(ConfigError, match="identity.private_key.*must not be empty"):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_wrong_type_ttl_is_rejected(tmp_path):
+    """The scenario Task 14's review moved off BrokerConfig and onto
+    ControlConfig: ttl_seconds is control-plane-only, so its type guard
+    belongs -- and is tested -- here now."""
+    text = CONTROL_COMPLETE.replace("ttl_seconds = 300", 'ttl_seconds = "300"')
     with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
-        load_broker_config(write(tmp_path, text), env={})
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_boolean_ttl_is_rejected(tmp_path):
+    """bool is an int subclass; ttl_seconds = true should error, not become 1."""
+    text = CONTROL_COMPLETE.replace("ttl_seconds = 300", "ttl_seconds = true")
+    with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
+        load_control_config(write_control(tmp_path, text), env={})

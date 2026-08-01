@@ -34,8 +34,12 @@ class BrokerConfig:
     decision_path: str
     bundle_roots: tuple[Path, ...]
     audit_path: Path
+    # issuer, not ttl_seconds: the broker VERIFIES a token's issuer (so it
+    # must agree with control.toml's, or every token is rejected) but never
+    # MINTS one, so a TTL here would be parsed and never consumed -- exactly
+    # the silent-no-op failure this loader exists to prevent. ttl_seconds
+    # lives in ControlConfig only.
     issuer: str
-    ttl_seconds: int
     catalog_path: Path
 
 
@@ -117,14 +121,20 @@ def _paths(section: dict, table: str, key: str, env: Mapping[str, str]) -> tuple
     return tuple(roots)
 
 
-def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
+def _load_toml(path: Path) -> dict:
+    """Shared by load_broker_config and load_control_config: same
+    TOML-or-die failure mode, same error messages, for both configs."""
     path = Path(path)
     try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
+        return tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ConfigError(f"config not found: {path}") from exc
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"cannot read {path}: {exc}") from exc
+
+
+def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
+    document = _load_toml(path)
 
     broker = _section(document, "broker")
     identity = _section(document, "identity")
@@ -142,7 +152,6 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
         bundle_roots=_paths(policy, "policy", "bundle_roots", env),
         audit_path=Path(_string(audit, "audit", "path", env)),
         issuer=_string(tokens, "tokens", "issuer", env),
-        ttl_seconds=_integer(tokens, "tokens", "ttl_seconds"),
         catalog_path=Path(_string(catalog, "catalog", "tools", env)),
     )
 
@@ -151,27 +160,29 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
 class ControlConfig:
     listen: tuple[str, int]
     private_key: Path
+    # issuer must agree with BrokerConfig.issuer, or every minted token
+    # fails verification. ttl_seconds governs minting only, so it lives
+    # here and nowhere else -- the broker never mints.
+    issuer: str
+    ttl_seconds: int
 
 
 def load_control_config(path: Path, env: Mapping[str, str]) -> ControlConfig:
     """Reads the control plane's wiring the same way load_broker_config does:
     same TOML-or-die failure mode, same ${VAR} interpolation. The control
-    plane's config is much smaller -- one listen address, one key path -- but
-    a config it cannot fully understand must still refuse to start rather
-    than mint tokens under a guess.
+    plane's config is smaller -- one listen address, one key path, one
+    [tokens] table -- but a config it cannot fully understand must still
+    refuse to start rather than mint tokens under a guess.
     """
-    path = Path(path)
-    try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ConfigError(f"config not found: {path}") from exc
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    document = _load_toml(path)
 
     control = _section(document, "control")
     identity = _section(document, "identity")
+    tokens = _section(document, "tokens")
 
     return ControlConfig(
         listen=_address(control, "control", "listen", env),
         private_key=Path(_string(identity, "identity", "private_key", env)),
+        issuer=_string(tokens, "tokens", "issuer", env),
+        ttl_seconds=_integer(tokens, "tokens", "ttl_seconds"),
     )

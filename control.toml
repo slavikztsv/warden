@@ -1,7 +1,13 @@
-# The control plane's wiring: where it listens, and the private key it is the
-# only process allowed to load. Mounted read-only into the `broker-control`
-# service at /config/control.toml (see docker-compose.yml) and pointed to by
+# The control plane's wiring: where it listens, the private key it is the
+# only process allowed to load, and the token issuer/TTL it mints under.
+# Mounted read-only into the `broker-control` service at
+# /config/control.toml (see docker-compose.yml) and pointed to by
 # WARDEN_CONTROL_CONFIG.
+#
+# [tokens].issuer must match warden.toml's [tokens].issuer exactly -- the
+# broker verifies against its own configured issuer, and a mismatch fails
+# every token, loudly. ttl_seconds is control-plane-only: the broker never
+# mints, so it has no use for a TTL.
 #
 # Phase 3 moves this file under demo/scenario/.
 
@@ -10,3 +16,7 @@ listen = "0.0.0.0:8081"
 
 [identity]
 private_key = "/data/agent.key"
+
+[tokens]
+issuer      = "warden-broker"
+ttl_seconds = 300

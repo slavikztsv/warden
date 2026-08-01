@@ -49,8 +49,11 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
     """
     client = client or httpx.Client(timeout=10.0)
     components = BrokerComponents(
-        # Public key only. There is no Signer in this process.
-        verifier=Verifier.from_public_key_file(config.public_key),
+        # Public key only. There is no Signer in this process. issuer is
+        # configured (not the ISSUER constant) so a warden.toml/control.toml
+        # mismatch fails every verification loudly, rather than the two
+        # processes silently agreeing on a hardcoded default forever.
+        verifier=Verifier.from_public_key_file(config.public_key, issuer=config.issuer),
         pdp=PolicyDecisionPoint(
             config.opa_url, decision_path=config.decision_path, client=client
         ),
