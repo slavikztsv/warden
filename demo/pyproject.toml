@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warden-demo"
+version = "0.1.0"
+description = "The support-ticket prompt-injection scenario warden is demonstrated with"
+requires-python = ">=3.11"
+# One-way. Nothing declares warden-demo, so pip enforces the seam the tests
+# confirm: the product image installs ./warden and cannot pull demo code in.
+dependencies = ["warden"]
+
+[project.optional-dependencies]
+# Only needed for `warden-demo explain --live` and `warden-demo sweep`.
+# OpenRouter needs neither -- it speaks the OpenAI HTTP shape over httpx.
+live = ["google-genai==2.15.0", "anthropic==0.69.0"]
+
+[project.scripts]
+warden-demo = "demo.cli.main:main"
+
+# `where` is relative to THIS file's directory (demo/), so it must look one
+# level up (the repo root) to find the "demo" package -- demo/__init__.py
+# sits beside this pyproject.toml, not inside a further-nested demo/demo/.
+# See warden/pyproject.toml for the same note; verified empirically that
+# `where = ["."]` finds nothing for this layout.
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["demo*"]

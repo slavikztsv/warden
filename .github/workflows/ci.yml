@@ -15,8 +15,8 @@ jobs:
           python-version: "3.11"
       - name: Install OPA
         run: ./scripts/fetch-opa.sh
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install
+        run: pip install -e ./warden -e ./demo && pip install pytest==9.1.1 pytest-asyncio==1.4.0
       - name: Policy unit tests
         run: '"$OPA_BIN" test policies/ -v'
       - name: Config consistency

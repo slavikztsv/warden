@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "warden"
+version = "0.1.0"
+description = "A policy-enforcing broker for AI agent tool calls and network egress"
+requires-python = ">=3.11"
+# Deliberately minimal, and asserted so by tests/test_entry_points.py. The
+# enforcement point has no business holding a model credential, and no
+# business carrying the SDK that would use one.
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.52.0",
+  "httpx==0.28.1",
+  "pyjwt[crypto]==2.13.0",
+]
+
+[project.scripts]
+warden = "warden.cli.main:main"
+
+# `where` is relative to THIS file's directory (warden/), so it must look one
+# level up (the repo root) to find the "warden" package -- warden/__init__.py
+# sits beside this pyproject.toml, not inside a further-nested warden/warden/.
+# Verified: `where = ["."]` (as it reads in a project laid out with its
+# packages a level below the pyproject.toml) finds nothing here, because the
+# root being scanned never names itself.
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["warden*"]

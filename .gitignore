@@ -12,3 +12,5 @@ data/agent.pub
 *.key
 data/
 runs/
+*.egg-info/
+build/
