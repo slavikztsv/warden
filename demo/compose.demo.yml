@@ -1,31 +1,19 @@
-name: warden
-
-networks:
-  agent-net:
-    internal: true      # no gateway — this is the containment property
-  backend-net:
-    internal: true
-  egress-net:
-    driver: bridge
-  # Docker silently ignores `ports:` on a container attached ONLY to internal
-  # networks — no proxy is created and nothing listens on the host. Services
-  # that must be reachable from the host therefore need a non-internal network
-  # too. This does NOT weaken containment: agent-runtime is on agent-net alone
-  # and is attached to none of these.
-  host-net:
-    driver: bridge
+# The demo overlay. Adds docstore, mailer, sinkhole, agent-runtime and
+# agent-runtime-unprotected on top of compose.yml's opa/broker/broker-control
+# and its four network definitions. Always run together with the base file:
+#
+#   docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded ...
+#
+# Every service here builds from demo/Dockerfile, which contains BOTH trees
+# by necessity -- see that file's own comment -- unlike warden/Dockerfile,
+# which builds opa's sibling services in compose.yml and contains no demo
+# code at all.
 
 services:
-  opa:
-    image: openpolicyagent/opa:1.19.0
-    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
-    volumes:
-      - ./warden/policies:/policies:ro
-    networks: [backend-net]
-    profiles: [guarded]
-
   docstore:
-    build: .
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
     command: ["uvicorn", "demo.mocks.docstore:app", "--host", "0.0.0.0", "--port", "80"]
     networks:
       backend-net:
@@ -33,7 +21,9 @@ services:
     profiles: [guarded, unprotected]
 
   mailer:
-    build: .
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
     command: ["uvicorn", "demo.mocks.mailer:app", "--host", "0.0.0.0", "--port", "80"]
     networks:
       backend-net:
@@ -41,7 +31,9 @@ services:
     profiles: [guarded, unprotected]
 
   sinkhole:
-    build: .
+    build:
+      context: .
+      dockerfile: demo/Dockerfile
     command: ["uvicorn", "demo.mocks.sinkhole:app", "--host", "0.0.0.0", "--port", "80"]
     networks:
       backend-net:
@@ -50,57 +42,10 @@ services:
     ports: ["8099:80"]     # host access so the demo can show what arrived
     profiles: [guarded, unprotected]
 
-  # The enforcement point. Attached to agent-net by necessity — it is the only
-  # host the agent can reach — and therefore the most exposed service here. It
-  # loads /data/agent.pub and NOTHING ELSE: no signing key lives in this
-  # container, so compromising it does not yield the ability to mint a token.
-  broker:
-    build: .
-    command: ["python", "-m", "warden.broker"]
-    environment:
-      # Consumed as ${VAR} by demo/scenario/tools.toml at catalog-load time,
-      # not read directly by Python -- ports, the OPA URL, the audit path and
-      # the public key path all now live in warden.toml instead.
-      DOCSTORE_URL: http://docstore.internal
-      MAILER_URL: http://mailer.internal
-      DB_PATH: /data/customers.db
-      WARDEN_CONFIG: /config/warden.toml
-    volumes:
-      - ./data:/data
-      - ./warden/policies:/policies:ro
-      - ./demo/scenario/warden.toml:/config/warden.toml:ro
-      - ./demo/scenario/tools.toml:/config/tools.toml:ro
-    networks: [agent-net, backend-net, egress-net]
-    depends_on: [opa, docstore, mailer]
-    profiles: [guarded]
-
-  # The control plane: the only process holding the private key, and the only
-  # one that can mint a token. Attached to backend-net ONLY — never agent-net.
-  # That is the whole control: the endpoint has no caller authentication, so
-  # the property "the agent cannot mint itself a token" rests on there being no
-  # route from agent-net to this listener.
-  #
-  # `ports:` publishes to the HOST so the demo's orchestrator can request a
-  # token. It does NOT restrict container-to-container reach, which is why
-  # co-hosting this on the broker (attached to agent-net) was an escalation
-  # path with a comment claiming otherwise. Same pattern as sinkhole above:
-  # published from an internal network, reachable from the host, unreachable
-  # from agent-net.
-  broker-control:
-    build: .
-    command: ["python", "-m", "warden.broker.control_main"]
-    environment:
-      WARDEN_CONTROL_CONFIG: /config/control.toml
-    volumes:
-      - ./data:/data
-      - ./demo/scenario/control.toml:/config/control.toml:ro
-    networks: [backend-net, host-net]
-    ports: ["8081:8081"]
-    profiles: [guarded]
-
   agent-runtime:
     build:
       context: .
+      dockerfile: demo/Dockerfile
       args: { LIVE: "1" }
     command: ["sh", "-c", "exec python -m demo.agent.loop $$AGENT_ARGS"]
     environment:
@@ -143,6 +88,7 @@ services:
   agent-runtime-unprotected:
     build:
       context: .
+      dockerfile: demo/Dockerfile
       args: { LIVE: "1" }
     command: ["python", "-m", "demo.agent.loop"]
     environment:

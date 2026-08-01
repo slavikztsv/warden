@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # The demo, start to finish. Run ./demo/scripts/demo.sh unprotected  (then) guarded
-# Invoke from the repo root: docker compose resolves docker-compose.yml
-# against the current working directory, not against this script's location,
-# and that file stays at the repo root.
+# Invoke from the repo root: docker compose resolves compose.yml and
+# demo/compose.demo.yml against the current working directory, not against
+# this script's location, and both files stay where they are (compose.yml
+# at the repo root, demo/compose.demo.yml under demo/). Two images, two
+# compose files (Task 22): compose.yml holds opa, broker and broker-control
+# (built from warden/Dockerfile, no demo code); demo/compose.demo.yml holds
+# docstore, mailer, sinkhole and the two agent-runtime services (built from
+# demo/Dockerfile, which contains both trees by necessity). Every invocation
+# below names both files.
 set -euo pipefail
 PROFILE="${1:-guarded}"
 MODE="${2:-cassette}"
@@ -33,8 +39,8 @@ if [ "$PROFILE" = "unprotected" ]; then
   # input.malformed, the task never became tainted, and the PII POST to the
   # allowlisted internal endpoint went through -- with the chain reporting
   # itself intact.
-  docker compose --profile unprotected up -d --build docstore mailer sinkhole
-  docker compose --profile unprotected run --build --rm agent-runtime-unprotected
+  docker compose -f compose.yml -f demo/compose.demo.yml --profile unprotected up -d --build docstore mailer sinkhole
+  docker compose -f compose.yml -f demo/compose.demo.yml --profile unprotected run --build --rm agent-runtime-unprotected
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
 else
@@ -52,7 +58,7 @@ else
   fi
   openssl pkey -in data/agent.key -pubout -out data/agent.pub
 
-  docker compose --profile guarded up -d --build opa docstore mailer sinkhole broker broker-control
+  docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded up -d --build opa docstore mailer sinkhole broker broker-control
   sleep 3
   # localhost:8081 is broker-control, published to the host. The agent runtime
   # cannot reach it: broker-control is on backend-net only.
@@ -62,7 +68,7 @@ else
          "data_classes":["public","internal"],"counterparties":["customer:8812"]}' \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
   TASK_TOKEN="$TOKEN" AGENT_ARGS="$AGENT_ARGS" \
-    docker compose --profile guarded run --build --rm agent-runtime
+    docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded run --build --rm agent-runtime
   echo "--- what reached attacker.example ---"
   curl -s localhost:8099/__received | head -c 600
   echo

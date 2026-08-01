@@ -80,7 +80,7 @@ def write_warden_toml(
     listen: str = "0.0.0.0:8080",
     proxy_listen: str = "0.0.0.0:3128",
 ) -> Path:
-    """Writes a warden.toml the shape docker-compose.yml mounts, with the
+    """Writes a warden.toml the shape compose.yml mounts, with the
     same defaults broker_env() used to bake into an env dict -- one root
     policy bundle, one tool manifest, the demo's real backends.
 
@@ -156,7 +156,7 @@ def control_config(tmp_path: Path, private_key: Path, **kwargs) -> ControlConfig
 def set_catalog_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """build() interpolates demo/scenario/tools.toml's ${DOCSTORE_URL},
     ${DB_PATH} and ${MAILER_URL} straight from the real process environment
-    -- the same three values docker-compose.yml sets on the broker service --
+    -- the same three values compose.yml sets on the broker service --
     not from the parsed config. Every test that calls broker_main.build()
     needs these set for the duration of the call."""
     seed_customers(tmp_path / "customers.db", count=5)
@@ -523,18 +523,29 @@ def _compose_service_block(name: str) -> str:
     Comments are dropped deliberately: these assertions are about what Docker
     is told, and prose describing a neighbouring service would otherwise
     satisfy -- or falsify -- a substring check for the wrong reason.
+
+    Task 22 split the single docker-compose.yml into compose.yml (opa,
+    broker, broker-control) and demo/compose.demo.yml (everything else), so
+    a service is looked up in whichever of the two actually declares it --
+    the split is exactly what test_the_demo_compose_declares_no_product_service
+    and test_the_product_compose_keeps_the_guarded_profile in test_seam.py
+    pin, so a service name never legitimately appears in both.
     """
-    lines = [
-        line
-        for line in (REPO_ROOT / "docker-compose.yml").read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    start = next(i for i, line in enumerate(lines) if line == f"  {name}:")
-    end = next(
-        (i for i in range(start + 1, len(lines)) if line_starts_a_service(lines[i])),
-        len(lines),
-    )
-    return "\n".join(lines[start:end])
+    for compose_path in (REPO_ROOT / "compose.yml", REPO_ROOT / "demo" / "compose.demo.yml"):
+        lines = [
+            line
+            for line in compose_path.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        start = next((i for i, line in enumerate(lines) if line == f"  {name}:"), None)
+        if start is None:
+            continue
+        end = next(
+            (i for i in range(start + 1, len(lines)) if line_starts_a_service(lines[i])),
+            len(lines),
+        )
+        return "\n".join(lines[start:end])
+    raise AssertionError(f"service {name!r} not found in compose.yml or demo/compose.demo.yml")
 
 
 def line_starts_a_service(line: str) -> bool:

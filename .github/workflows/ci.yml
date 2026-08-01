@@ -18,12 +18,18 @@ jobs:
       - name: Install
         run: pip install -e ./warden -e ./demo && pip install pytest==9.1.1 pytest-asyncio==1.4.0
       - name: Policy unit tests
-        run: '"$OPA_BIN" test warden/policies/ -v'
+        # Two paths, not one: Task 22 moved data.json to demo/scenario/, and
+        # authz_test.rego's "shipped-configuration tests" section evaluates
+        # the REAL data.json (not a mock) -- opa test warden/policies/ alone
+        # now finds authz.rego but not the data those cases need, and 10 of
+        # them fail closed with nothing to check against. opa test accepts
+        # multiple positional paths the same way opa eval/opa run do.
+        run: '"$OPA_BIN" test warden/policies/ demo/scenario/data.json -v'
       - name: Config consistency
         env:
           DOCSTORE_URL: http://docstore.internal
           DB_PATH: data/customers.db
           MAILER_URL: http://mailer.internal
-        run: python -m warden.cli.replay config --catalog demo/scenario/tools.toml --data warden/policies/data.json
+        run: python -m warden.cli.replay config --catalog demo/scenario/tools.toml --data demo/scenario/data.json
       - name: Python tests
         run: pytest -v

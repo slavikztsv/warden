@@ -1,8 +1,10 @@
 """The policy gate.
 
 Every input in tests/golden/decisions/ is evaluated by the REAL opa binary
-against the REAL policies/ directory, with NO `with` overrides. That last
-part is the whole point: authz_test.rego mocks data.purposes and data.limits
+against the REAL policy bundle -- warden/policies/authz.rego plus
+demo/scenario/data.json, the same two files compose.yml flat-mounts into the
+opa container -- with NO `with` overrides. That last part is the whole
+point: authz_test.rego mocks data.purposes and data.limits
 in almost every case, so the shipped data document's shape is barely
 exercised -- the file's own R1c comment says as much -- and Phase 2 adding a
 correct data.tools mock everywhere would reintroduce that blindness on a new
@@ -43,7 +45,14 @@ def _cases() -> list[str]:
 
 def _evaluate(binary: str, document: dict) -> dict:
     result = subprocess.run(
+        # Two -d roots since Task 22 split the bundle: the rules directory
+        # (warden/policies/, which also holds authz_test.rego -- opa eval
+        # loads it too, but it declares no data.* values so it is inert
+        # here) and the deployment's data.json, named directly rather than
+        # via its containing demo/scenario/ directory so tools.toml,
+        # warden.toml etc. are not pulled into the bundle opa evaluates.
         [binary, "eval", "-I", "-d", str(REPO_ROOT / "warden" / "policies"),
+         "-d", str(REPO_ROOT / "demo" / "scenario" / "data.json"),
          "data.warden.authz", "--format=json"],
         input=json.dumps(document), capture_output=True, text=True,
         cwd=REPO_ROOT, check=False,

@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def test_compose_pins_the_same_version():
-    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+    compose = (REPO_ROOT / "compose.yml").read_text()
     assert f"openpolicyagent/opa:{OPA_VERSION}" in compose
 
 

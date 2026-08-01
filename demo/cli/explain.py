@@ -55,7 +55,7 @@ from warden.broker.taint import TaintTracker
 from demo.cli.runlog import RunLog
 from warden.cli.replay import render_replay
 from demo.scenario.catalog import demo_catalog
-from demo.scenario.paths import POLICY_BUNDLE
+from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
 from demo.mocks import docstore, mailer, sinkhole
 from demo.mocks.seed_db import seed_customers
 from tools.opa_version import resolve_opa
@@ -648,7 +648,15 @@ def _start_opa() -> tuple[subprocess.Popen, str]:
         sys.exit(f"{exc}  See docs/WALKTHROUGH.md Part 0.")
     port = _free_port()
     process = subprocess.Popen(
-        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", str(POLICY_BUNDLE)],
+        # Two roots, not one directory: POLICY_BUNDLE (authz.rego, the
+        # product's rules) and POLICY_DATA (data.json, the demo's facts)
+        # live in separate trees since Task 22. Passed as distinct
+        # positional args rather than nested under a shared directory, each
+        # merges into `data` unqualified -- namespacing a directory would
+        # bury data.json's purposes/limits under a path prefix and OPA
+        # would deny every call with no error.
+        [binary, "run", "--server", f"--addr=127.0.0.1:{port}",
+         str(POLICY_BUNDLE), str(POLICY_DATA)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -851,7 +859,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
     opa, opa_url = _start_opa()
     try:
         banner("SETUP — what exists before the agent starts")
-        show("policy bundle", f"warden/policies/  digest {policy_bundle_digest([POLICY_BUNDLE])[:22]}…", 5)
+        show("policy bundle", f"warden/policies/ + demo/scenario/data.json  digest {policy_bundle_digest([POLICY_BUNDLE, POLICY_DATA])[:22]}…", 5)
         show("policy engine", f"real OPA server at {opa_url}", 5)
         show("customer database", f"{db.name}, 10,312 synthetic records", 5)
         show("audit log", "empty, hash chain starts at 64 zeroes", 5)
@@ -921,7 +929,7 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
                     client=httpx.Client(transport=_mock_transport()),
                 )
             ),
-            policy_digest=policy_bundle_digest([POLICY_BUNDLE]),
+            policy_digest=policy_bundle_digest([POLICY_BUNDLE, POLICY_DATA]),
         )
 
         broker_client = TestClient(app)

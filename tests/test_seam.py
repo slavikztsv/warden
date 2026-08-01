@@ -1,11 +1,19 @@
 """The seam, as a test rather than a convention.
 
 pip already enforces the dependency direction. These assert the rest: that
-the product tree holds no scenario knowledge -- with one named, expiring
-exception, warden/policies/data.json (see DATA_JSON_EXCEPTION and
-test_the_data_json_scenario_exception_has_not_gone_stale below) -- that the
-product boots knowing no tools, and that the enforcement point holds nothing
-that can sign.
+the product tree holds no scenario knowledge, that the product boots knowing
+no tools, and that the enforcement point holds nothing that can sign.
+
+warden/policies/data.json used to be a named, expiring exception to the
+scenario-string scan: real demo configuration (purpose "support-triage",
+host "docstore.internal", the four demo tool names) sitting inside the
+product tree, because OPA mounted ./warden/policies as ONE directory and
+moving data.json out from under it would have broken that mount. Task 22
+splits the mount into file-level binds and moves data.json to
+demo/scenario/ alongside tools.toml, warden.toml and control.toml -- where
+the design always put it -- so the exception is gone rather than renamed:
+the scan below now covers every file in the product tree, no carve-out
+required.
 """
 
 from __future__ import annotations
@@ -28,26 +36,6 @@ SCENARIO_STRINGS = (
 # reader sees it at a glance instead of piecing it together from separate
 # globs. Adding a new source language to warden/ means adding it here.
 SCANNED_EXTENSIONS = (".py", ".rego", ".toml", ".json")
-
-# Named exceptions to the scan -- not silent gaps. Each one says what the
-# file is, why it is excluded today, and (where applicable) what closes the
-# exception.
-#
-# warden/policies/data.json ships the demo's real configuration --
-# purpose "support-triage", host "docstore.internal", and all four demo
-# tool names -- inside the product tree. That is genuine scenario
-# knowledge, and unlike authz_test.rego (excluded below for a different,
-# permanent reason) there is no argument that it doesn't ship: it is the
-# exact file docker-compose.yml mounts into the OPA container today.
-# It is here, and not under demo/scenario/ alongside tools.toml /
-# warden.toml / control.toml where the design puts it, because OPA
-# currently mounts ./warden/policies as ONE directory -- moving data.json
-# out from under it breaks that mount. Task 22 splits the mount into
-# file-level binds and moves data.json out at the same time (see its own
-# plan section); test_the_data_json_scenario_exception_has_not_gone_stale
-# below fails the moment that happens, so this exception cannot quietly
-# outlive its reason.
-DATA_JSON_EXCEPTION = PRODUCT / "policies" / "data.json"
 
 
 def _is_opa_test_fixture(path: Path) -> bool:
@@ -74,15 +62,14 @@ def _is_opa_test_fixture(path: Path) -> bool:
 
 def product_files() -> list[Path]:
     """Every warden/ file the scenario-string scan considers: everything
-    with an extension in SCANNED_EXTENSIONS, minus the two named exceptions
-    above (_is_opa_test_fixture, DATA_JSON_EXCEPTION)."""
+    with an extension in SCANNED_EXTENSIONS, minus the OPA test-fixture
+    exclusion above (_is_opa_test_fixture)."""
     return [
         p for p in PRODUCT.rglob("*")
         if p.is_file()
         and p.suffix in SCANNED_EXTENSIONS
         and "__pycache__" not in p.parts
         and not _is_opa_test_fixture(p)
-        and p != DATA_JSON_EXCEPTION
     ]
 
 
@@ -91,14 +78,14 @@ def product_sources() -> list[Path]:
 
 
 @pytest.mark.parametrize("needle", SCENARIO_STRINGS)
-def test_the_product_tree_holds_no_unexcepted_scenario_string(needle):
-    """No scenario knowledge outside the named exceptions above.
+def test_the_product_tree_holds_no_scenario_string(needle):
+    """No scenario knowledge in the product tree, full stop.
 
-    Not "no scenario knowledge, full stop": warden/policies/data.json
-    genuinely fails this property today (see DATA_JSON_EXCEPTION) and is
-    excluded by name rather than by the test silently not looking -- the
-    exclusion is spelled out above, and the next test asserts the exclusion
-    is still honest.
+    Used to read "unexcepted": warden/policies/data.json genuinely failed
+    this property, and was excluded by name rather than by the test
+    silently not looking. Task 22 moved data.json to demo/scenario/, so the
+    scan now covers every file product_files() considers with no carve-out
+    to keep honest.
     """
     offenders = [
         f"{p.relative_to(REPO_ROOT)}"
@@ -106,26 +93,6 @@ def test_the_product_tree_holds_no_unexcepted_scenario_string(needle):
         if needle in p.read_text()
     ]
     assert offenders == []
-
-
-def test_the_data_json_scenario_exception_has_not_gone_stale():
-    """Forces DATA_JSON_EXCEPTION to be deleted the moment it stops being
-    true, rather than letting the scan quietly not-scan a file that no
-    longer needs the exception.
-
-    Task 22 moves warden/policies/data.json to demo/scenario/ alongside
-    tools.toml, warden.toml and control.toml (splitting OPA's single-
-    directory mount into file-level binds is what makes the move safe).
-    The moment that happens, this file will not exist here, this test will
-    fail, and whoever is there must delete this test and
-    DATA_JSON_EXCEPTION together -- at which point
-    test_the_product_tree_holds_no_unexcepted_scenario_string starts
-    scanning data.json for real, with nothing left to hide behind.
-    """
-    assert DATA_JSON_EXCEPTION.exists(), (
-        f"{DATA_JSON_EXCEPTION} is gone -- delete DATA_JSON_EXCEPTION and "
-        "this test, the scenario-string scan can cover it directly now"
-    )
 
 
 def test_no_product_module_imports_the_demo():
@@ -222,3 +189,38 @@ def test_a_catalog_tool_without_an_args_table_refuses_to_load(tmp_path):
     manifest.write_text('[tools.t]\nkind = "http"\n[tools.t.binding]\n')
     with pytest.raises(ConfigError, match="args"):
         load_catalog(manifest, env={}, client=None)
+
+
+# --- Task 22: two images, two compose files ---------------------------------
+
+
+def test_the_demo_compose_declares_no_product_service():
+    import re
+
+    overlay = (REPO_ROOT / "demo" / "compose.demo.yml").read_text()
+    for service in ("broker:", "broker-control:", "opa:"):
+        assert not re.search(rf"^  {service}", overlay, re.M), service
+
+
+def test_the_product_compose_keeps_the_guarded_profile():
+    """Without it, `--profile unprotected` starts the enforcement point, and
+    'the broker is not running' is how README and THREAT_MODEL describe the
+    control case."""
+    import re
+
+    base = (REPO_ROOT / "compose.yml").read_text()
+    for service in ("opa", "broker", "broker-control"):
+        # A plain str.split("\n  ") boundary matches the very next line
+        # regardless of its indentation depth -- every nested property line
+        # in block-style YAML starts with two-or-more spaces too, so that
+        # split point lands immediately after the service key and the
+        # "block" it captures is always empty. Anchoring the closing
+        # boundary to a line starting at exactly two spaces (the next
+        # top-level service key, `^  \S`) is what actually isolates one
+        # service's own body.
+        match = re.search(
+            rf"^  {re.escape(service)}:\n(.*?)(?=^  \S|\Z)", base, re.M | re.S
+        )
+        assert match, service
+        block = match.group(1)
+        assert "profiles: [guarded]" in block or "guarded" in block, service

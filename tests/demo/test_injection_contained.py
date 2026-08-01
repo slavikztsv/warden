@@ -30,7 +30,7 @@ from warden.broker.policy_digest import policy_bundle_digest
 from warden.broker.taint import TaintTracker
 from demo.mocks import docstore, mailer, sinkhole
 from demo.mocks.seed_db import seed_customers
-from demo.scenario.paths import POLICY_BUNDLE
+from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
 from tests.support.catalog import demo_catalog
 from tools.opa_version import resolve_opa
 
@@ -73,7 +73,13 @@ def opa_url():
     binary = _resolve_opa()
     port = _free_port()
     process = subprocess.Popen(
-        [binary, "run", "--server", f"--addr=127.0.0.1:{port}", str(POLICY_BUNDLE)],
+        # Two roots since Task 22 split the bundle: POLICY_BUNDLE (authz.rego)
+        # and POLICY_DATA (data.json) live in separate trees. Passed as
+        # distinct positional args, not nested under a shared directory, so
+        # data.json's document still merges into `data` unqualified -- see
+        # demo/scenario/paths.py.
+        [binary, "run", "--server", f"--addr=127.0.0.1:{port}",
+         str(POLICY_BUNDLE), str(POLICY_DATA)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -140,7 +146,7 @@ def stack(tmp_path, opa_url, monkeypatch):
             mailer_url="http://mailer.internal",
             client=httpx.Client(transport=httpx.MockTransport(route)),
         ),
-        policy_digest=policy_bundle_digest([POLICY_BUNDLE]),
+        policy_digest=policy_bundle_digest([POLICY_BUNDLE, POLICY_DATA]),
     )
     token = signer.mint(
         agent_id="triage-bot",

@@ -67,7 +67,7 @@ def test_an_absent_tools_key_is_reported(tmp_path):
 def test_the_shipped_demo_configuration_is_consistent():
     """The one that runs in CI."""
     assert check_catalog(
-        Path("demo/scenario/tools.toml"), Path("warden/policies/data.json"),
+        Path("demo/scenario/tools.toml"), Path("demo/scenario/data.json"),
         env={"DOCSTORE_URL": "http://d", "DB_PATH": "data/customers.db",
              "MAILER_URL": "http://m"},
     ) == []

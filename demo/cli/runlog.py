@@ -30,7 +30,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from demo.scenario.paths import POLICY_BUNDLE
+from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
 
 RUNS = Path("runs")
 INDEX = RUNS / "index.jsonl"
@@ -80,7 +80,7 @@ def _digest() -> str:
     try:
         from warden.broker.policy_digest import policy_bundle_digest
 
-        return policy_bundle_digest([POLICY_BUNDLE])
+        return policy_bundle_digest([POLICY_BUNDLE, POLICY_DATA])
     except Exception as exc:  # noqa: BLE001 — provenance is best-effort, never fatal
         # A broken bundle path must be visible in the evidence, not
         # indistinguishable from "no bundle was ever configured" -- verify-runs

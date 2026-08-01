@@ -10,6 +10,17 @@ root on separate mounts: the previous single-directory, non-recursive form
 would have digested the rules and silently omitted the data, so an operator
 could change max_rows_per_task from 50 to 5,000,000 and every record would
 still claim the identical policy.
+
+A root may also be a single FILE, not just a directory. In the container the
+compose flat-mounts authz.rego and data.json into the same /policies
+directory (Task 22), so that one directory is still the whole bundle and the
+directory form is all production ever needs. Locally, though, data.json's
+real path (demo/scenario/data.json) sits beside tools.toml, warden.toml,
+control.toml and catalog.py -- files that are not part of what OPA loads --
+so demo/cli/explain.py and the test suite that starts its own local `opa
+run` need to name that one file without pulling its siblings into the
+digest. A file root contributes itself, keyed by its own name rather than a
+path relative to a directory it is not inside.
 """
 
 from __future__ import annotations
@@ -20,6 +31,8 @@ from pathlib import Path
 
 
 def _bundle_files(root: Path) -> list[Path]:
+    if root.is_file():
+        return [root]
     return sorted(
         path
         for path in root.rglob("*")
@@ -31,7 +44,7 @@ def policy_bundle_digest(roots: Sequence[Path]) -> str:
     digest = hashlib.sha256()
     for raw_root in roots:
         root = Path(raw_root)
-        if not root.is_dir():
+        if not root.exists():
             raise ValueError(f"policy bundle root does not exist: {root}")
         files = _bundle_files(root)
         if not files:
@@ -43,8 +56,13 @@ def policy_bundle_digest(roots: Sequence[Path]) -> str:
         for path in files:
             # The path RELATIVE TO ITS ROOT, not the bare name: two roots
             # each holding a data.json must not collide, and the digest must
-            # not change when the mount point moves.
-            digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+            # not change when the mount point moves. A file root has no
+            # "relative to" -- it IS the root -- so its own name is the key;
+            # bare name is exactly as safe here as it is unsafe for a
+            # directory root, because a file root by definition has no
+            # nested files that could collide with it.
+            key = path.name if root.is_file() else path.relative_to(root).as_posix()
+            digest.update(key.encode("utf-8"))
             digest.update(b"\0")
             digest.update(path.read_bytes())
             digest.update(b"\0")

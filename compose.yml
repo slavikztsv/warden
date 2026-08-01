@@ -1,0 +1,106 @@
+name: warden
+
+# The product base: opa, broker, broker-control, and every network
+# definition (the demo overlay's services attach to these too, so the
+# networks live here rather than being duplicated). demo/compose.demo.yml
+# adds the demo's own services -- docstore, mailer, sinkhole, agent-runtime,
+# agent-runtime-unprotected -- on top. Run both files together:
+#
+#   docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded ...
+#
+# opa, broker and broker-control all keep profiles: [guarded]. Without it,
+# `--profile unprotected` would start the enforcement point too, and "the
+# broker is not running" is how the README describes the control case.
+
+networks:
+  agent-net:
+    internal: true      # no gateway — this is the containment property
+  backend-net:
+    internal: true
+  egress-net:
+    driver: bridge
+  # Docker silently ignores `ports:` on a container attached ONLY to internal
+  # networks — no proxy is created and nothing listens on the host. Services
+  # that must be reachable from the host therefore need a non-internal network
+  # too. This does NOT weaken containment: agent-runtime is on agent-net alone
+  # and is attached to none of these.
+  host-net:
+    driver: bridge
+
+services:
+  opa:
+    image: openpolicyagent/opa:1.19.0
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes:
+      # Flat file binds, not a directory mount. OPA namespaces a JSON data
+      # file by its path under the bundle root: a subdirectory mount at
+      # /policies/data/ would load this document as data.data.purposes and
+      # silently disable every rule. authz.rego ships with the product and
+      # stays under warden/policies/; data.json is the deployment's facts
+      # (purposes, hosts, limits, the tool map) and lives under
+      # demo/scenario/ alongside tools.toml, warden.toml and control.toml.
+      # Binding both flat into the same directory keeps bundle_roots =
+      # ["/policies"] in demo/scenario/warden.toml a single root even
+      # though the two files come from two different trees on the host.
+      - ./warden/policies/authz.rego:/policies/authz.rego:ro
+      - ./demo/scenario/data.json:/policies/data.json:ro
+    networks: [backend-net]
+    profiles: [guarded]
+
+  # The enforcement point. Attached to agent-net by necessity — it is the only
+  # host the agent can reach — and therefore the most exposed service here. It
+  # loads /data/agent.pub and NOTHING ELSE: no signing key lives in this
+  # container, so compromising it does not yield the ability to mint a token.
+  broker:
+    build:
+      context: .
+      dockerfile: warden/Dockerfile
+    command: ["python", "-m", "warden.broker"]
+    environment:
+      # Consumed as ${VAR} by demo/scenario/tools.toml at catalog-load time,
+      # not read directly by Python -- ports, the OPA URL, the audit path and
+      # the public key path all now live in warden.toml instead.
+      DOCSTORE_URL: http://docstore.internal
+      MAILER_URL: http://mailer.internal
+      DB_PATH: /data/customers.db
+      WARDEN_CONFIG: /config/warden.toml
+    volumes:
+      - ./data:/data
+      # Same flat binds as opa above, and for the same reason: the broker
+      # computes policy_bundle_digest(bundle_roots) at startup too, and that
+      # digest is stamped into every audit record. It must see the exact two
+      # files OPA evaluates, not a rules-only subset that would silently stop
+      # covering data.json (see warden/broker/policy_digest.py).
+      - ./warden/policies/authz.rego:/policies/authz.rego:ro
+      - ./demo/scenario/data.json:/policies/data.json:ro
+      - ./demo/scenario/warden.toml:/config/warden.toml:ro
+      - ./demo/scenario/tools.toml:/config/tools.toml:ro
+    networks: [agent-net, backend-net, egress-net]
+    depends_on: [opa, docstore, mailer]
+    profiles: [guarded]
+
+  # The control plane: the only process holding the private key, and the only
+  # one that can mint a token. Attached to backend-net ONLY — never agent-net.
+  # That is the whole control: the endpoint has no caller authentication, so
+  # the property "the agent cannot mint itself a token" rests on there being no
+  # route from agent-net to this listener.
+  #
+  # `ports:` publishes to the HOST so the demo's orchestrator can request a
+  # token. It does NOT restrict container-to-container reach, which is why
+  # co-hosting this on the broker (attached to agent-net) was an escalation
+  # path with a comment claiming otherwise. Same pattern as sinkhole in the
+  # demo overlay: published from an internal network, reachable from the
+  # host, unreachable from agent-net.
+  broker-control:
+    build:
+      context: .
+      dockerfile: warden/Dockerfile
+    command: ["python", "-m", "warden.broker.control_main"]
+    environment:
+      WARDEN_CONTROL_CONFIG: /config/control.toml
+    volumes:
+      - ./data:/data
+      - ./demo/scenario/control.toml:/config/control.toml:ro
+    networks: [backend-net, host-net]
+    ports: ["8081:8081"]
+    profiles: [guarded]

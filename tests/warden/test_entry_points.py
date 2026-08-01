@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -36,6 +37,21 @@ def test_the_product_carries_no_model_sdk():
 
 
 def test_both_commands_run():
+    """Resolved next to the running interpreter, not off PATH.
+
+    subprocess.run(["warden", ...]) used to rely on PATH containing the venv's
+    bin/ directory -- true only when the venv is activated. Run this suite as
+    `.venv/bin/python -m pytest` from a plain shell (PATH unset to the venv)
+    and the bare command name raised FileNotFoundError, so the test's own
+    passing depended on how it was invoked rather than on the CLIs actually
+    working. sys.executable is the interpreter pytest is running under, and
+    console scripts install into the same bin/ directory as that interpreter
+    -- true for a venv and for a system install alike -- so resolving there
+    finds the right command regardless of PATH.
+    """
+    bin_dir = Path(sys.executable).parent
     for command in ("warden", "warden-demo"):
-        result = subprocess.run([command, "--help"], capture_output=True, text=True)
+        result = subprocess.run(
+            [str(bin_dir / command), "--help"], capture_output=True, text=True
+        )
         assert result.returncode == 0, result.stderr

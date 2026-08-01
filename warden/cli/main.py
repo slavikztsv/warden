@@ -117,10 +117,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_config = sub.add_parser("config", help="catalog / policy consistency checks")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)
     p_check = config_sub.add_parser(
-        "check", help="cross-check the tool catalog against warden/policies/data.json"
+        "check", help="cross-check the tool catalog against demo/scenario/data.json"
     )
     p_check.add_argument("--catalog", default="demo/scenario/tools.toml")
-    p_check.add_argument("--data", default="warden/policies/data.json")
+    p_check.add_argument("--data", default="demo/scenario/data.json")
     p_check.add_argument("--opa", default=None)
     p_check.set_defaults(func=_cmd_config_check)
 

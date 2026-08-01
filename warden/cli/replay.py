@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("task_id", nargs="?", default=None)
     parser.add_argument("--audit", default="data/audit.jsonl")
     parser.add_argument("--catalog", default="demo/scenario/tools.toml")
-    parser.add_argument("--data", default="warden/policies/data.json")
+    parser.add_argument("--data", default="demo/scenario/data.json")
     parser.add_argument("--opa", default=None)
     args = parser.parse_args(argv)
 
