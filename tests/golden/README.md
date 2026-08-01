@@ -46,3 +46,33 @@ them either, for the separate reason documented above: it reads a recorded
 log and never calls the PDP. The decision corpus is evaluated against the
 real `policies/` directory with no `with` overrides, so it is the only one
 of the three that is sensitive to either kind of change.
+
+## Changed in Phase 2 (rekeying R5/R6/R7 onto target kind)
+
+`policies/authz.rego` used to key R5 (`rows.bounded`), R6 (`mail.counterparty`)
+and R7 (`rows.scope`) off `input.action.tool`. They now key off
+`input.target.kind`, and the file contains no tool name at all. This is safe
+only because R1b (added in the previous task) unconditionally and
+fail-closed denies any `tool_call` whose `target.kind` disagrees with the
+deployment's catalog -- if that guarantee ever weakens, these three rules
+stop firing on a mislabelled call and nothing else catches it. It also
+closes a latent hole: previously a *second* database tool would have escaped
+the row budget entirely, because R5 named exactly one tool.
+
+Three adversarial cases lost a second, redundant deny reason:
+
+| case | was | now |
+|---|---|---|
+| `adversarial-1-mislabelled-db-target` | `input.malformed`, `rows.bounded` | `input.malformed` |
+| `adversarial-3-mail-with-doc-target` | `input.malformed`, `mail.counterparty` | `input.malformed` |
+| `adversarial-4-db-with-mail-target` | `input.malformed`, `rows.scope` | `input.malformed` |
+
+Each is a call whose target kind disagrees with the catalog. Before the rekey
+two rules fired independently; after it, R1b alone stands between the call and
+an allow. The reported rule is unchanged in all three -- `input.malformed`
+outranks everything -- so no audit record and no replay line moved, which is
+why this needed measuring rather than watching for.
+
+Eleven of the fourteen corpus cases are unchanged, including every demo
+decision and `adversarial-7-tool-not-in-token` (it exercises `tools.allowed`,
+which never depended on the tool-name form of R5/R6/R7).

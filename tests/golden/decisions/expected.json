@@ -2,8 +2,7 @@
   "adversarial-1-mislabelled-db-target": {
     "allow": false,
     "deny_reasons": [
-      "input.malformed",
-      "rows.bounded"
+      "input.malformed"
     ],
     "rule": "input.malformed"
   },
@@ -17,16 +16,14 @@
   "adversarial-3-mail-with-doc-target": {
     "allow": false,
     "deny_reasons": [
-      "input.malformed",
-      "mail.counterparty"
+      "input.malformed"
     ],
     "rule": "input.malformed"
   },
   "adversarial-4-db-with-mail-target": {
     "allow": false,
     "deny_reasons": [
-      "input.malformed",
-      "rows.scope"
+      "input.malformed"
     ],
     "rule": "input.malformed"
   },

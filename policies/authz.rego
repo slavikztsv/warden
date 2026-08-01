@@ -146,10 +146,11 @@ deny_reasons contains "input.malformed" if {
 
 # R1b — tool/target agreement and value sanity. Three fail-opens lived here.
 #
-# First: R5's row check keys off `action.tool`, but the estimated_rows shape
-# check above keys off `target.kind == "db"`. A `query_customers` call carrying
-# a `doc` target therefore skipped validation AND left R5's arithmetic
-# undefined, so an unbounded read was approved. Pin each tool to its target.
+# First: R5's row check used to key off `action.tool`, but the estimated_rows
+# shape check above keys off `target.kind == "db"`. A db-reading tool call
+# carrying a mismatched, non-db target therefore skipped validation AND left
+# R5's arithmetic undefined, so an unbounded read was approved. Pin each
+# tool to its target.
 #
 # Second: `is_number` accepts negatives, and the bound is a sum. A negative
 # `rows_returned_so_far` made the total smaller than the limit — a 5,000,000
@@ -158,7 +159,7 @@ deny_reasons contains "input.malformed" if {
 #
 # Third — the pairing check below now reads "each tool's target" from the
 # deployment's declared catalog (data.tools) instead of a literal map. The
-# literal {read_document: doc, ...} map that lived here was the last place
+# literal tool-name-to-target-kind map that lived here was the last place
 # the product knew a tool name, and replacing it is where this
 # generalization can fail open. The obvious spelling DOES:
 #
@@ -335,8 +336,17 @@ deny_reasons contains "egress.pii_sink" if {
 
 # R5 — blast radius. Accumulates across the whole task, so many small reads
 # hit the same ceiling as one large one.
+#
+# Keyed on target kind, not tool name. Safe ONLY because R1b now denies,
+# unconditionally and fail-closed, any tool_call whose target.kind disagrees
+# with the deployment's catalog -- see safe_expected_target_kind above. If
+# that guarantee weakens, this rule stops firing on a mislabelled call and
+# nothing else catches it.
+#
+# It also closes a hole the tool-name form had: a SECOND database tool
+# escaped the row budget entirely, because this named exactly one.
 deny_reasons contains "rows.bounded" if {
-	input.action.tool == "query_customers"
+	input.target.kind == "db"
 	total := input.task_state.rows_returned_so_far + input.target.estimated_rows
 	total > safe_max_rows_per_task
 }
@@ -356,16 +366,22 @@ deny_reasons contains "rows.bounded" if {
 # read is out of scope by construction rather than by a second rule. Deliberately
 # ranked BELOW rows.bounded in the reported-rule precedence, so a bulk read is
 # still reported as the volume breach it primarily is.
+#
+# Keyed on target kind for the same reason as R5, and with the same
+# dependency on R1b.
 deny_reasons contains "rows.scope" if {
-	input.action.tool == "query_customers"
+	input.target.kind == "db"
 	count(safe_counterparties) > 0
 	some subject in safe_target_subjects
 	not subject in safe_counterparties
 }
 
 # R6 — mail may only go to counterparties the task declared up front.
+#
+# Keyed on target kind for the same reason as R5, and with the same
+# dependency on R1b.
 deny_reasons contains "mail.counterparty" if {
-	input.action.tool == "send_email"
+	input.target.kind == "mail"
 	some recipient in input.target.recipients
 	not recipient in input.principal.counterparties
 }
