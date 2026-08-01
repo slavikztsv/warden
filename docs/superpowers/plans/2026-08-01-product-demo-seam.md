@@ -18,7 +18,8 @@
 - **Zero new product dependencies.** `requirements.txt` stays exactly: `fastapi==0.141.1`, `uvicorn[standard]==0.52.0`, `httpx==0.28.1`, `pyjwt[crypto]==2.13.0`, `pytest==9.1.1`, `pytest-asyncio==1.4.0`. Model SDKs stay in `requirements-live.txt` and never enter the product image.
 - **OPA pinned to 1.19.0** everywhere: `docker-compose.yml`, `.github/workflows/ci.yml`, `cli/explain.py`, and the pytest fixture. The fixture asserts the version and **fails**, never skips, on mismatch.
 - **Rego v1 syntax only.** `import rego.v1`; `if` / `contains` / `in` / `every`. No `import future.keywords.*`.
-- **Rule names are frozen.** Exactly these eight strings and no others may appear as `deny_reasons` members: `input.malformed`, `tools.allowed`, `egress.allowlist`, `egress.pii_sink`, `rows.bounded`, `rows.scope`, `mail.counterparty`, `unauthenticated`. `broker/pdp.py`'s `DENY_PRECEDENCE` cannot rank a string it does not know and falls through to `pdp.unavailable`, naming a control that never fired.
+- **Rule names are frozen.** Exactly these **seven** strings and no others may appear as `deny_reasons` members in `authz.rego`, and they are exactly `broker/pdp.py`'s `DENY_PRECEDENCE`: `input.malformed`, `tools.allowed`, `egress.allowlist`, `egress.pii_sink`, `rows.bounded`, `rows.scope`, `mail.counterparty`. `DENY_PRECEDENCE` cannot rank a string it does not know and falls through to `pdp.unavailable`, naming a control that never fired.
+  `unauthenticated` is **not** one of them: it is an audit `rule` value written directly by `broker/app.py:292` and `broker/proxy.py`, for calls refused before any policy question is asked. It is equally frozen, but it never appears in the policy.
 - **The product tree contains none of these strings:** `4711`, `8812`, `attacker.example`, `docstore.internal`, `support-triage`, `triage-bot`, `refund`, `customers`.
 - **Deny-by-default at the edge is preserved.** An unrecognised tool never reaches the PDP and is audited under `tools.allowed` with `target.kind == "unknown"`. `tests/test_app.py:129-133` and `:879` must pass unedited.
 - **TDD.** Every task writes the failing test first, watches it fail for the stated reason, then implements.
@@ -794,16 +795,13 @@ grep -n "^data/\|^audit.jsonl" .gitignore
 
 Expected: both present. That is why the golden lives under `tests/`, not `data/`.
 
-- [ ] **Step 2: Add a negative-ignore so the golden is trackable**
+- [ ] **Step 2: Confirm `tests/golden/` is trackable as-is**
 
-Append to `.gitignore`:
+```bash
+git check-ignore -v tests/golden/audit-4711.jsonl || echo "NOT ignored — no .gitignore change needed"
+```
 
-```
-# The frozen baseline. data/ is ignored, so the golden log lives under tests/
-# and must be tracked -- it is the artefact every later phase is checked
-# against, and a golden that is not in git is not a baseline.
-!tests/golden/
-```
+Expected: `NOT ignored`. The `data/` and `audit.jsonl` patterns do not reach it (`audit-4711.jsonl` is not `audit.jsonl`), so **no `.gitignore` edit is required** — a negative-ignore for an unignored path is a no-op that only misleads the next reader. Plain `git add` is enough throughout this task.
 
 - [ ] **Step 3: Write the failing test**
 
@@ -4662,6 +4660,7 @@ Directories move, two distributions appear, and the seam becomes a dependency di
 
 **Interfaces:**
 - Produces: console scripts `warden` → `warden.cli.main:main` and `warden-demo` → `demo.cli.main:main`. `warden` subcommands: `serve`, `control`, `replay`, `verify-chain`, `config check`. `warden-demo`: `up`, `explain`, `sweep`, `record`, `verify-runs`.
+- Also produces: `warden.cli.main.SERVE_ENTRYPOINT: str` — the dotted name of the module implementing `serve`. Task 21's seam test walks the import graph from there to assert the serving process reaches no `Signer`; `control` legitimately does, and the two share a binary, so the walk needs a starting point rather than the whole CLI.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4983,26 +4982,37 @@ def test_the_product_dockerfile_copies_no_demo_path():
 
 
 def test_serve_reaches_no_signer():
-    """The property broker/__main__.py's docstring states, as a module graph
-    assertion. It is about the address space, not the filesystem -- serve and
-    control share a binary."""
+    """The property broker/__main__.py's docstring states, as a transitive
+    assertion over the module graph `warden serve` actually pulls in.
+
+    It is about the address space, not the filesystem: serve and control
+    share a binary, and `warden control` legitimately imports Signer. So the
+    walk starts at the serve entrypoint alone and follows only imports within
+    the warden package.
+    """
+    import importlib
     import warden.cli.main as cli
-    seen, stack = set(), [cli.__name__]
-    import importlib, sys
+
+    seen: set[str] = set()
+    stack = [cli.SERVE_ENTRYPOINT]
     while stack:
         name = stack.pop()
         if name in seen or not name.startswith("warden"):
             continue
         seen.add(name)
-        module = sys.modules.get(name) or importlib.import_module(name)
-        for value in vars(module).values():
-            child = getattr(value, "__module__", None)
-            if child:
-                stack.append(child)
-    assert "warden.broker.identity" not in seen or True   # imported, but:
-    from warden.broker.identity import Signer
-    import warden.broker.__main__ as entry
-    assert "Signer" not in ast.dump(ast.parse(Path(entry.__file__).read_text()))
+        tree = ast.parse(Path(importlib.import_module(name).__file__).read_text())
+        referenced = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        referenced |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                referenced |= {a.name for a in node.names}
+                stack.extend(a.name for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                referenced |= {a.name for a in node.names}
+                stack.append(node.module)
+                stack.extend(f"{node.module}.{a.name}" for a in node.names)
+        assert "Signer" not in referenced, f"{name} reaches Signer"
+    assert seen, "walked no modules -- SERVE_ENTRYPOINT is wrong"
 
 
 def test_a_catalog_tool_without_an_args_table_refuses_to_load(tmp_path):
@@ -5028,8 +5038,8 @@ Expected: the scenario-string cases fail for `customers` (`warden/broker/app.py`
 ```bash
 mkdir -p tests/warden tests/demo
 touch tests/__init__.py tests/warden/__init__.py tests/demo/__init__.py
-git mv tests/test_{app,proxy,pdp,audit,identity,taint,config_loader,arg_schema,catalog,adapter_registry,adapters_simple,adapter_sql,config_check,golden_decisions,golden_replay,opa_pin,entrypoints,entry_points}.py tests/warden/
-git mv tests/test_{agent,cli,cassette,mocks,runlog,injection_contained,adapters_demo,seam_precursor}.py tests/demo/
+git mv tests/test_{app,proxy,pdp,audit,identity,taint,config_loader,arg_schema,catalog,adapter_registry,adapters_simple,adapter_sql,config_check,golden_decisions,golden_replay,opa_pin,entrypoints,entry_points,seam_precursor}.py tests/warden/
+git mv tests/test_{agent,cli,cassette,mocks,runlog,injection_contained,adapters_demo}.py tests/demo/
 git mv tests/test_isolation.sh tests/demo/
 ```
 
