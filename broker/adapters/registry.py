@@ -20,8 +20,16 @@ TARGET_KIND_BY_ADAPTER: Mapping[str, str] = {
     "mail": "mail",
 }
 
+from broker.adapters.docstore import DocstoreAdapter
+from broker.adapters.http import HttpAdapter
+from broker.adapters.mail import MailAdapter
+
 # Filled by Tasks 10 and 11.
-ADAPTERS: dict[str, type] = {}
+ADAPTERS: dict[str, type] = {
+    "docstore": DocstoreAdapter,
+    "http": HttpAdapter,
+    "mail": MailAdapter,
+}
 
 
 def build_adapter(kind: str, binding: dict, client):
