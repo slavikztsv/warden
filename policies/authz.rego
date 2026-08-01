@@ -5,9 +5,12 @@
 # request failed, rather than a parallel set of rules that can drift.
 package warden.authz
 
-import future.keywords.contains
-import future.keywords.if
-import future.keywords.in
+# `if`, `contains`, `in` and `every` are the default language from OPA v1.0
+# onward; `import future.keywords.*` was the 0.x opt-in and is obsolete.
+# `import rego.v1` is the migration form: it enables all of them, REJECTS the
+# pre-1.0 syntax they replaced, and is accepted as a no-op by OPA 1.x — so this
+# file is valid on the pinned engine and on every version after it.
+import rego.v1
 
 default allow := false
 

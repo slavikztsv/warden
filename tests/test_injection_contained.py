@@ -129,8 +129,17 @@ def stack(tmp_path, opa_url, monkeypatch):
             "mailer.internal": mailer_client,
             "attacker.example": sinkhole_client,
         }[host]
+        # Content-type must survive the hop. Starlette parses a JSON body into
+        # a dict only when the header says JSON, so dropping it turned every
+        # send_email into a 422 and the "task still completed" assertion into a
+        # false failure. A real client always sends it.
+        headers = (
+            {"content-type": request.headers["content-type"]}
+            if "content-type" in request.headers
+            else {}
+        )
         response = target.request(
-            request.method, request.url.path, content=request.content
+            request.method, request.url.path, content=request.content, headers=headers
         )
         return httpx.Response(response.status_code, content=response.content)
 

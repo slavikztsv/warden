@@ -16,7 +16,7 @@ jobs:
       - name: Install OPA
         run: |
           curl -sSL -o /usr/local/bin/opa \
-            https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+            https://openpolicyagent.org/downloads/v1.19.0/opa_linux_amd64_static
           chmod +x /usr/local/bin/opa
       - name: Install dependencies
         run: pip install -r requirements.txt

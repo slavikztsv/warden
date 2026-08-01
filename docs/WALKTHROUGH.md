@@ -44,7 +44,7 @@ Install Open Policy Agent. It is a single static binary:
 ```bash
 mkdir -p ~/.local/bin
 curl -sSL -o ~/.local/bin/opa \
-  https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+  https://openpolicyagent.org/downloads/v1.19.0/opa_linux_amd64_static
 chmod +x ~/.local/bin/opa
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -52,8 +52,8 @@ export PATH="$HOME/.local/bin:$PATH"
 Confirm the whole thing is healthy before you change anything:
 
 ```bash
-.venv/bin/pytest -q          # 171 passed
-opa test policies/           # PASS: 37/37
+.venv/bin/pytest -q          # 213 passed
+opa test policies/           # PASS: 44/44
 ```
 
 Parts 7 and 8 additionally need Docker. Parts 1–6 do not.
@@ -156,7 +156,7 @@ version is that in Rego an undefined field makes a rule silently not fire, so
 opa test policies/ -v | tail -20
 ```
 
-37 tests, no Python involved. This is the artifact you could print and hand to
+44 tests, no Python involved. This is the artifact you could print and hand to
 someone: the rules, and the proof they behave.
 
 ---

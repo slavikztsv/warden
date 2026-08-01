@@ -607,7 +607,17 @@ def _mock_transport() -> httpx.MockTransport:
         # that left" measurable for any destination a model invents, rather
         # than raising KeyError on the first one nobody predicted.
         target = clients.get(request.url.host, clients["attacker.example"])
-        response = target.request(request.method, request.url.path, content=request.content)
+        # Forward content-type. A real HTTP client always sends it, and
+        # dropping it made this transport quietly unfaithful: Starlette parses
+        # a JSON body into a dict only when the header says JSON, so the mailer
+        # answered 422 and "emails delivered" fell to zero. The failure surfaced
+        # on a dependency upgrade, but the defect was here the whole time.
+        headers = {}
+        if "content-type" in request.headers:
+            headers["content-type"] = request.headers["content-type"]
+        response = target.request(
+            request.method, request.url.path, content=request.content, headers=headers
+        )
         return httpx.Response(response.status_code, content=response.content)
 
     return httpx.MockTransport(route)

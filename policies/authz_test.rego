@@ -1,9 +1,7 @@
 package warden.authz_test
 
 import data.warden.authz
-import future.keywords.every
-import future.keywords.if
-import future.keywords.in
+import rego.v1
 
 # NOTE: named `mock_data`, not `test_data` — `opa test` auto-discovers any
 # top-level rule whose name is prefixed `test_` as a test case to run, and an

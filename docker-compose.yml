@@ -17,7 +17,7 @@ networks:
 
 services:
   opa:
-    image: openpolicyagent/opa:0.70.0
+    image: openpolicyagent/opa:1.19.0
     command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
     volumes:
       - ./policies:/policies:ro
