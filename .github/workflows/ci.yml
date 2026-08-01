@@ -19,5 +19,11 @@ jobs:
         run: pip install -r requirements.txt
       - name: Policy unit tests
         run: '"$OPA_BIN" test policies/ -v'
+      - name: Config consistency
+        env:
+          DOCSTORE_URL: http://docstore.internal
+          DB_PATH: data/customers.db
+          MAILER_URL: http://mailer.internal
+        run: python -m cli.warden config --catalog demo/scenario/tools.toml --data policies/data.json
       - name: Python tests
         run: pytest -v

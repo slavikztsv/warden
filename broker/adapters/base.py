@@ -55,6 +55,18 @@ class ToolResult:
 class Adapter(Protocol):
     target_kind: str
 
+    # Names of instance attributes whose value is an argument name that
+    # describe() dereferences UNCONDITIONALLY (args[name], not
+    # args.get(name, ...)). `warden config check` (broker/config/check.py)
+    # reads this off each concrete adapter class and requires the matching
+    # schema entry to be `required = true` -- otherwise a call omitting that
+    # argument makes describe() raise KeyError, which the broker's widened
+    # client-caused branch (broker/app.py) audits as input.malformed against
+    # the agent, for what is really a config-authoring defect. Declared as
+    # data on each concrete class, next to the __init__ that sets the
+    # attribute, rather than pattern-matched from source.
+    REQUIRED_ARGS: tuple[str, ...] = ()
+
     def describe(self, args: dict) -> ToolTarget: ...
 
     def execute(self, args: dict) -> ToolResult: ...

@@ -8,6 +8,12 @@ from broker.adapters.base import ToolResult, ToolTarget
 class MailAdapter:
     target_kind = "mail"
 
+    # See HttpAdapter.REQUIRED_ARGS for what this is. describe() below reads
+    # args.get(self._recipients_arg, []), and execute()'s payload comprehension
+    # is guarded by `if name in args` -- nothing here is dereferenced
+    # unconditionally.
+    REQUIRED_ARGS: tuple[str, ...] = ()
+
     def __init__(self, *, binding: dict, client) -> None:
         self._base_url = str(binding["base_url"]).rstrip("/")
         self._path = binding.get("path", "/send")

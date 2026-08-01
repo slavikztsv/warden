@@ -6,6 +6,7 @@ This is the artifact you print and hand across the table.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -92,10 +93,37 @@ def render_replay(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="warden")
-    parser.add_argument("command", choices=["replay", "verify-chain", "verify-runs"])
+    parser.add_argument(
+        "command", choices=["replay", "verify-chain", "verify-runs", "config"]
+    )
     parser.add_argument("task_id", nargs="?", default=None)
     parser.add_argument("--audit", default="data/audit.jsonl")
+    parser.add_argument("--catalog", default="demo/scenario/tools.toml")
+    parser.add_argument("--data", default="policies/data.json")
+    parser.add_argument("--opa", default=None)
     args = parser.parse_args(argv)
+
+    if args.command == "config":
+        # Offline, this compares tools.toml against data.json: two files
+        # authored independently on purpose, so R1b stays a real check on a
+        # broker that mislabels a target rather than a value compared with
+        # itself. The cost is drift, and drift fails closed but SILENTLY --
+        # a blanket input.malformed on every call to the affected tool,
+        # visible only in production. --opa additionally reads data.tools
+        # from a running server: the only way to catch a bundle mounted
+        # where OPA namespaces the document to something other than
+        # data.tools, which no file comparison can see.
+        from broker.config.check import check_catalog
+
+        problems = check_catalog(
+            Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
+        )
+        for problem in problems:
+            print(f"✗ {problem}", file=sys.stderr)
+        if problems:
+            return 1
+        print("config consistent")
+        return 0
 
     if args.command == "verify-runs":
         # The run index, not the audit log: proof that the saved evidence of

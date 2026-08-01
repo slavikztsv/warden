@@ -10,6 +10,17 @@ from broker.adapters.base import DEFAULT_PORTS, ToolResult, ToolTarget
 class HttpAdapter:
     target_kind = "http"
 
+    # Read by `warden config check` (broker/config/check.py): the names of
+    # instance attributes (set in __init__, below) whose value is an argument
+    # name that describe() dereferences UNCONDITIONALLY. describe() below does
+    # args[self._url_arg] -- no default -- so a call omitting that argument
+    # raises KeyError there, which the broker's widened client-caused branch
+    # then audits as input.malformed against the agent: a config-authoring
+    # defect wearing an agent-caused reason. The checker reads the attribute
+    # off a constructed instance (getattr) rather than assuming the arg is
+    # named "url", so a binding that overrides url_arg is honoured too.
+    REQUIRED_ARGS: tuple[str, ...] = ("_url_arg",)
+
     def __init__(self, *, binding: dict, client) -> None:
         self._url_arg = binding.get("url_arg", "url")
         self._body_arg = binding.get("body_arg", "body")

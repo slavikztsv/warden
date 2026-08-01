@@ -52,6 +52,18 @@ class ToolCatalog:
     def target_kind(self, tool: str) -> str:
         return self._entry(tool).target_kind
 
+    def entry(self, tool: str) -> CatalogEntry:
+        """The full entry -- kind, target_kind, schema and adapter.
+
+        Exists for `warden config check` (broker/config/check.py), which
+        needs a tool's adapter instance (to read REQUIRED_ARGS off it) and
+        its ToolSchema (to check what the manifest marked required) -- more
+        than target_kind() alone exposes. Everything else in this class
+        exposes one fact at a time on purpose; this is the one place that
+        legitimately needs the whole record.
+        """
+        return self._entry(tool)
+
     def _entry(self, tool: str) -> CatalogEntry:
         try:
             return self._entries[tool]

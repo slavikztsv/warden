@@ -38,6 +38,13 @@ def _quote(identifier: str) -> str:
 class SqlAdapter:
     target_kind = "db"
 
+    # See HttpAdapter.REQUIRED_ARGS for what this is. describe() below reads
+    # args.get(self._filter_arg, "") -- nothing here is dereferenced
+    # unconditionally. (tools.toml still marks `filter` required, but that is
+    # a POLICY choice -- an omitted filter would otherwise default to an
+    # unbounded read judged by policy -- not a KeyError guard.)
+    REQUIRED_ARGS: tuple[str, ...] = ()
+
     def __init__(self, *, binding: dict, client=None) -> None:
         self._db_path = Path(binding["db"])
         self._table = _identifier(binding.get("table"), "sql binding table")

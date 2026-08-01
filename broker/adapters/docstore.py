@@ -8,6 +8,16 @@ from broker.adapters.base import ToolResult, ToolTarget
 class DocstoreAdapter:
     target_kind = "doc"
 
+    # Names of instance attributes (set in __init__, below) whose value is an
+    # argument name that describe() dereferences UNCONDITIONALLY -- args[name],
+    # not args.get(name, ...). Read by `warden config check`: if the schema
+    # does not mark that argument required, describe() raises KeyError, and
+    # the broker's widened client-caused branch (broker/app.py) audits it as
+    # input.malformed against the agent, for what is really a
+    # config-authoring defect. describe() below reads args.get(self._arg, ""),
+    # so nothing here is dereferenced unconditionally.
+    REQUIRED_ARGS: tuple[str, ...] = ()
+
     def __init__(self, *, binding: dict, client) -> None:
         self._base_url = str(binding["base_url"]).rstrip("/")
         self._template = binding.get("path_template", "/docs/{doc_id}")
