@@ -8,10 +8,17 @@ DEST="$HOME/.cache/warden/opa-$VERSION"
 mkdir -p "$(dirname "$DEST")"
 if [ -x "$DEST" ]; then
   echo "already present: $DEST"
-  "$DEST" version | head -1
-  exit 0
+else
+  curl -sSL -o "$DEST" \
+    "https://openpolicyagent.org/downloads/v$VERSION/opa_linux_amd64_static"
+  chmod +x "$DEST"
 fi
-curl -sSL -o "$DEST" \
-  "https://openpolicyagent.org/downloads/v$VERSION/opa_linux_amd64_static"
-chmod +x "$DEST"
 "$DEST" version | head -1
+
+# CI consumes $OPA_BIN rather than restating the version or the path itself --
+# that restatement is exactly the duplication this task exists to remove.
+# GITHUB_ENV is unset for a plain local run (which is how this binary gets
+# onto a dev machine in the first place), so this is a no-op there.
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "OPA_BIN=$DEST" >> "$GITHUB_ENV"
+fi

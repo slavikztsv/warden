@@ -18,6 +18,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Policy unit tests
-        run: ~/.cache/warden/opa-1.19.0 test policies/ -v
+        run: '"$OPA_BIN" test policies/ -v'
       - name: Python tests
         run: pytest -v

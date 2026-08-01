@@ -10,6 +10,7 @@ ships.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,13 +25,50 @@ def test_compose_pins_the_same_version():
     assert f"openpolicyagent/opa:{OPA_VERSION}" in compose
 
 
-def test_ci_pins_the_same_version():
-    # CI no longer hardcodes a download URL -- it delegates to
-    # scripts/fetch-opa.sh, which reads OPA_VERSION itself, so the only
-    # literal left in ci.yml is the fetch destination fetch-opa.sh writes to.
+def test_ci_never_restates_the_version_or_path():
+    """ci.yml must not know OPA_VERSION at all.
+
+    It runs ./scripts/fetch-opa.sh and then whatever binary that script
+    resolved and published as $OPA_BIN -- it states neither a version number
+    nor a binary path itself. That is the whole point of routing through
+    fetch-opa.sh: a version bump touches one file, not two. The complementary
+    guarantee -- that fetch-opa.sh's resolution actually tracks OPA_VERSION
+    rather than hardcoding it -- is test_fetch_opa_derives_the_pinned_version
+    below.
+    """
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
     assert "fetch-opa.sh" in ci
-    assert f"opa-{OPA_VERSION}" in ci
+    assert "OPA_BIN" in ci
+    assert OPA_VERSION not in ci
+
+
+def test_fetch_opa_derives_the_pinned_version():
+    """fetch-opa.sh must compute its version from tools.opa_version.OPA_VERSION
+    via a command substitution, not restate "1.19.0" as a literal.
+
+    ci.yml no longer states a version anywhere (see the test above), so this
+    script is the only place left that could silently drift from the pinned
+    constant. This re-executes the exact substitution the script uses --
+    not a reimplementation of it -- so it fails if the script stops deriving
+    the version at all (no command substitution assigning VERSION) or stops
+    deriving it from this module (the substitution text no longer names
+    tools.opa_version / OPA_VERSION).
+    """
+    script = (REPO_ROOT / "scripts" / "fetch-opa.sh").read_text()
+    match = re.search(r'VERSION="\$\((.+?)\)"', script)
+    assert match, "fetch-opa.sh must set VERSION via a command substitution"
+    substitution = match.group(1)
+    assert "tools.opa_version" in substitution
+    assert "OPA_VERSION" in substitution
+
+    derived = subprocess.run(
+        ["bash", "-c", substitution],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert derived == OPA_VERSION
 
 
 def test_no_module_resolves_opa_off_bare_path():
