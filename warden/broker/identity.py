@@ -5,11 +5,11 @@ so adding verifiers never grants minting power.
 
 That property is only worth anything if the two keys actually live in
 different places. The keypair is generated outside every container (see
-scripts/demo.sh) and handed out split: the control plane loads the private
-key and is the sole minter; the broker -- the enforcement point the agent can
-actually reach -- loads only the public key. A fully compromised broker
-therefore still cannot mint a token, because it never holds the material to
-sign one.
+demo/cli/main.py's `_generate_keypair`, invoked by `warden-demo up`) and
+handed out split: the control plane loads the private key and is the sole
+minter; the broker -- the enforcement point the agent can actually reach --
+loads only the public key. A fully compromised broker therefore still cannot
+mint a token, because it never holds the material to sign one.
 """
 
 from __future__ import annotations

@@ -83,6 +83,19 @@ def test_the_mock_transport_routes_to_the_declared_sinkhole_host(monkeypatch):
     assert sinkhole.RECEIVED == ["probe"]
 
 
+def test_no_shell_script_inlines_the_token_fields():
+    """demo/scripts/demo.sh used to inline agent_id, task_id, purpose,
+    allowed_tools and counterparties in a curl body -- the last hardcoded
+    scenario blob. Task 24 replaced it with `warden-demo up`, which reads
+    [task] from task.toml instead; this guards against the same literals
+    creeping back into any shell script under demo/."""
+    demo = SCENARIO.parent
+    for script in demo.rglob("*.sh"):
+        text = script.read_text()
+        for needle in ("triage-bot", "support-triage", "customer:8812"):
+            assert needle not in text, f"{script.name}: {needle}"
+
+
 def test_every_task_and_scenario_key_is_read_somewhere():
     """Config that nothing consumes is the exact drift risk this file exists
     to remove -- someone changes it and nothing happens. Every key under

@@ -47,7 +47,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def write_keypair(directory: Path) -> tuple[Path, Path]:
-    """Generates a keypair to two files, the way scripts/demo.sh does."""
+    """Generates a keypair to two files, the way `warden-demo up`'s
+    `_generate_keypair` (demo/cli/main.py) does."""
     key = Ed25519PrivateKey.generate()
     private_path = directory / "agent.key"
     public_path = directory / "agent.pub"
@@ -473,7 +474,7 @@ def test_control_entrypoint_refuses_a_public_key_where_the_private_one_belongs(t
 
 
 def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path, monkeypatch):
-    """scripts/demo.sh and tests/test_isolation.sh generate the keypair with
+    """`warden-demo up` and tests/test_isolation.sh generate the keypair with
     openssl, outside every container. Nothing else in the suite exercises that
     exact format (PKCS#8 private, SubjectPublicKeyInfo public), so a format
     mismatch would only show up in the room."""
@@ -588,40 +589,7 @@ def test_the_broker_and_control_services_mount_their_toml_config():
     assert "./demo/scenario/control.toml:/config/control.toml:ro" in control_block
 
 
-def _strip_unquoted_comment(line: str) -> str:
-    """Drops everything from an unquoted `#` to end of line, so prose in a
-    comment can never be mistaken for shell it merely describes."""
-    in_single = in_double = False
-    for i, ch in enumerate(line):
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
-            return line[:i]
-    return line
-
-
-def _shell_logical_lines(script: str) -> list[str]:
-    """Reads a script closer to the way a shell would: strips unquoted `#`
-    comments, then splices `\\`-continued physical lines into one logical
-    line each, so an invocation wrapped across lines is scanned whole rather
-    than as two fragments that individually match nothing."""
-    logical: list[str] = []
-    pending = ""
-    for raw_line in script.splitlines():
-        stripped = _strip_unquoted_comment(raw_line).rstrip()
-        piece = stripped[:-1].rstrip() if stripped.endswith("\\") else stripped
-        pending = f"{pending} {piece.strip()}".strip() if pending else piece
-        if not stripped.endswith("\\"):
-            logical.append(pending)
-            pending = ""
-    if pending:
-        logical.append(pending)
-    return logical
-
-
-def test_demo_script_rebuilds_before_starting_containers():
+def test_warden_demo_up_rebuilds_before_starting_containers():
     """A stale image runs old code while the run looks current.
 
     Observed: an image predating the R7 `subjects` change emitted a target
@@ -641,16 +609,33 @@ def test_demo_script_rebuilds_before_starting_containers():
     checked here now, each against its own expected count, so neither kind
     can silently gain an unguarded line.
 
-    Scans logical lines, not physical ones: an invocation split across a
-    `\\` continuation must still be caught, and a comment merely narrating
-    an invocation (this file's own established style, immediately above the
-    lines this test polices) must never be mistaken for one.
+    Task 24 retired demo/scripts/demo.sh (this test used to scan its text)
+    and moved the same orchestration into demo.cli.main._cmd_up. Re-pointed
+    here at the real dispatch path rather than at a script's source: every
+    `docker`/`openssl`/HTTP seam is mocked out and `_cmd_up` is actually
+    RUN for both profiles, so the commands asserted on below are the ones
+    the code really emits -- a call site that drops `--build` fails this by
+    being exercised, not by a grep that a stray comment could fool.
     """
-    script = (REPO_ROOT / "demo" / "scripts" / "demo.sh").read_text()
-    logical_lines = _shell_logical_lines(script)
-    ups = [line for line in logical_lines if "docker compose" in line and " up " in line]
-    runs = [line for line in logical_lines if "docker compose" in line and " run " in line]
+    import argparse
+    from unittest.mock import patch
+
+    from demo.cli import main as demo_main
+
+    calls: list[tuple] = []
+    with patch.object(demo_main, "_compose", lambda *a, **k: calls.append(a)), \
+         patch.object(demo_main, "_wait_for_broker_control", lambda: None), \
+         patch.object(demo_main, "_generate_keypair", lambda directory: None), \
+         patch.object(demo_main, "seed_customers", lambda path, count: None), \
+         patch.object(demo_main, "_mint_token", lambda: "minted-token"), \
+         patch.object(demo_main, "_print_sinkhole_report", lambda: None), \
+         patch.object(demo_main, "_replay", lambda task_id: 0):
+        for profile in ("guarded", "unprotected"):
+            demo_main._cmd_up(argparse.Namespace(profile=profile, live=False))
+
+    ups = [call for call in calls if "up" in call]
+    runs = [call for call in calls if "run" in call]
     assert len(ups) == 2, f"expected exactly one `docker compose ... up` per profile, found {len(ups)}: {ups}"
     assert len(runs) == 2, f"expected exactly one `docker compose ... run` per profile, found {len(runs)}: {runs}"
-    for line in ups + runs:
-        assert "--build" in line, f"docker compose invocation without --build: {line.strip()}"
+    for call in ups + runs:
+        assert "--build" in call, f"docker compose invocation without --build: {call}"
