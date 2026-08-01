@@ -20,8 +20,8 @@ let the response body lie about what happened:
   describe() (which decides what gets audited and policy-checked) and
   execute() (which acts) are guaranteed to interpret the same args the
   same way. Without this, the two stages can disagree about what the
-  target even is -- e.g. a bare string passed where send_email expects a
-  list of recipients gets read character-by-character by one stage and as
+  target even is -- e.g. a bare string passed where a tool's schema expects
+  a list of recipients gets read character-by-character by one stage and as
   the original string by the other.
 - A remaining describe() failure that shape-checking didn't catch (e.g. a
   filter value of the right type but not parseable, or an arg an adapter

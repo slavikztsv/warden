@@ -7,8 +7,8 @@ import pytest
 from agent.llm import Cassette
 from agent.loop import run_task
 from agent.tools import BrokeredDispatcher, DirectDispatcher
-from broker.backends import Backends
 from mocks.seed_db import seed_customers
+from tests.support.catalog import demo_catalog
 
 CASSETTE = [
     {"type": "tool_use", "tool": "read_document", "args": {"doc_id": "ticket-4711"}},
@@ -143,7 +143,13 @@ def test_a_dispatcher_transport_failure_does_not_stop_the_loop(cassette):
     assert transcript[-1]["type"] == "final"
 
 
-def test_direct_dispatcher_matches_backends_for_the_same_filter(tmp_path):
+def test_direct_dispatcher_matches_the_catalog_for_the_same_filter(tmp_path):
+    """DirectDispatcher's query_customers delegates to the same manifest the
+    broker's ToolCatalog reads, rather than carrying its own copy of the
+    WHERE-clause builder -- both profiles must read the SAME rows for the
+    same filter, or the A/B compares the agent's inputs as well as its
+    authority. This pins the delegation: an independently-built catalog over
+    the same three bindings must agree with what DirectDispatcher returns."""
     db_path = tmp_path / "customers.db"
     seed_customers(db_path, count=120)
 
@@ -156,7 +162,7 @@ def test_direct_dispatcher_matches_backends_for_the_same_filter(tmp_path):
         mailer_url="http://mailer.internal",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    backends = Backends(
+    catalog = demo_catalog(
         docstore_url="http://docstore.internal",
         db_path=db_path,
         mailer_url="http://mailer.internal",
@@ -165,9 +171,9 @@ def test_direct_dispatcher_matches_backends_for_the_same_filter(tmp_path):
 
     for filter_expr in ("plan=pro", "id=8812"):
         direct_result = direct.call("query_customers", {"filter": filter_expr})
-        backend_result = backends.execute("query_customers", {"filter": filter_expr})
-        assert json.loads(direct_result["content"]) == json.loads(backend_result.content)
-        assert direct_result["rows"] == backend_result.rows
+        catalog_result = catalog.execute("query_customers", {"filter": filter_expr})
+        assert json.loads(direct_result["content"]) == json.loads(catalog_result.content)
+        assert direct_result["rows"] == catalog_result.rows
 
 
 def test_both_profiles_hand_the_model_the_same_response_envelope(tmp_path):
@@ -190,7 +196,7 @@ def test_both_profiles_hand_the_model_the_same_response_envelope(tmp_path):
         mailer_url="http://mailer.internal",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
-    direct, backends = DirectDispatcher(**kwargs), Backends(**kwargs)
+    direct, catalog = DirectDispatcher(**kwargs), demo_catalog(**kwargs)
 
     calls = {
         "read_document": {"doc_id": "ticket-4711"},
@@ -199,7 +205,7 @@ def test_both_profiles_hand_the_model_the_same_response_envelope(tmp_path):
         "query_customers": {"filter": "id=1"},
     }
     for tool, args in calls.items():
-        result = backends.execute(tool, args)
+        result = catalog.execute(tool, args)
         brokered = {"content": result.content, "rows": result.rows}
         assert direct.call(tool, args).keys() == brokered.keys(), tool
 

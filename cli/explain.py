@@ -322,7 +322,7 @@ class NarratedAudit:
 class NarratedBackends:
     """Wraps a catalog so the real side effect is visible.
 
-    Name kept from when this wrapped broker.backends.Backends directly --
+    Name kept from when this wrapped the old Backends class directly --
     describe()/execute() already take (tool, args), so only the constructor's
     type changed. validate() is passed through unnarrated: it is not a
     numbered stage below, the same way it adds no stage in the real broker

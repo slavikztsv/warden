@@ -4,8 +4,8 @@ broker/app.py's docstring states the invariant this upholds: args are
 shape-checked BEFORE describe() is called, so describe() (which decides what
 gets audited and policy-checked) and execute() (which acts) are guaranteed to
 interpret the same args the same way. Its worked example is a bare string
-where send_email expects a list -- read character-by-character by one stage
-and whole by the other.
+where a tool's schema expects a list of recipients -- read character-by-
+character by one stage and whole by the other.
 
 Moving that check into config makes it OMISSIBLE, which is the new risk. Two
 rules answer it: a tool with no args table is a ConfigError rather than a
@@ -15,10 +15,10 @@ than an ignored typo. Both fail at load, before the process serves anything.
 The vocabulary is five keys because five keys reproduce the measured
 behaviour exactly. It is deliberately not a general JSON-Schema subset:
 `required` here mirrors what the old check demanded, NOT what an adapter can
-default. query_customers with {} is denied today even though both stages fall
-back to "all", and relaxing that turns a refusal into a full-table COUNT
-judged by policy -- an allow on any deployment whose table is under the row
-limit and whose token names no counterparties.
+default. A database-read tool called with {} is denied today even though
+both stages fall back to "all", and relaxing that turns a refusal into a
+full-table COUNT judged by policy -- an allow on any deployment whose table
+is under the row limit and whose token names no counterparties.
 """
 
 from __future__ import annotations
@@ -41,8 +41,9 @@ class ArgSpec:
     required: bool = False
     non_empty: bool = False
     # JSON null validates and reaches execute() as None. Set only where a
-    # stage branches on `is None` -- http_fetch.body selects GET vs POST that
-    # way, so rejecting null there turns a working GET into input.malformed.
+    # stage branches on `is None` -- an HTTP adapter's body arg selects GET
+    # vs POST that way, so rejecting null there turns a working GET into
+    # input.malformed.
     null_is_absent: bool = False
 
     def accepts(self, value: object) -> bool:
