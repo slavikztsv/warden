@@ -465,6 +465,67 @@ def test_replay_of_a_malformed_record_is_reported_as_broken(tmp_path, capsys):
     assert "chain intact" not in out
 
 
+# --- A *present* --audit path that still is not a readable audit log -------
+#
+# The malformed-record test above covers a line that PARSES as JSON but is
+# missing a field verify_chain() hashes over -- caught by verify()'s own
+# KeyError/TypeError guard. Two harder cases were not caught by anything,
+# and both tracebacked: --audit naming something that exists but is not a
+# regular file (most likely a path one level too shallow -- an OSError from
+# Path.read_text() inside AuditLog.records()), and a line that is not valid
+# JSON at all (json.loads() raises inside that same records() call, before
+# verify_chain() ever gets a dict to inspect -- a different call site than
+# the one the KeyError/TypeError guard covers). Both `replay` and
+# `verify-chain` share the fix (one upfront protected read in main(), before
+# either command's own logic runs), so both are exercised for each case.
+
+
+def test_verify_chain_reports_an_audit_path_that_is_a_directory_cleanly(tmp_path, capsys):
+    directory = tmp_path / "not-a-file"
+    directory.mkdir()
+    result = main(["verify-chain", "--audit", str(directory)])
+    captured = capsys.readouterr()
+    assert result != 0
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert "cannot read audit log" in captured.err
+    assert str(directory) in captured.err
+
+
+def test_replay_reports_an_audit_path_that_is_a_directory_cleanly(tmp_path, capsys):
+    directory = tmp_path / "not-a-file"
+    directory.mkdir()
+    result = main(["replay", "4711", "--audit", str(directory)])
+    captured = capsys.readouterr()
+    assert result != 0
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert "cannot read audit log" in captured.err
+    assert str(directory) in captured.err
+
+
+def test_verify_chain_reports_a_line_that_is_not_valid_json_cleanly(tmp_path, capsys):
+    path = tmp_path / "audit.jsonl"
+    path.write_text('{"not": "valid json"\n')  # missing closing brace
+    result = main(["verify-chain", "--audit", str(path)])
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert "malformed record" in captured.err
+
+
+def test_replay_reports_a_line_that_is_not_valid_json_cleanly(tmp_path, capsys):
+    path = tmp_path / "audit.jsonl"
+    path.write_text('{"not": "valid json"\n')  # missing closing brace
+    result = main(["replay", "4711", "--audit", str(path)])
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert "malformed record" in captured.err
+
+
 def test_the_renderer_never_claims_integrity_it_was_not_given():
     """The default is "not verified", not "intact". A caller that forgets to
     verify says so instead of making the claim for free -- which is exactly

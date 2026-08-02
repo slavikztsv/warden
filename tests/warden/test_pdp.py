@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from warden.broker.config.loader import ConfigError
 from warden.broker.pdp import Decision, PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
 
@@ -126,8 +127,12 @@ def test_bundle_digest_covers_every_root(tmp_path):
 
 
 def test_bundle_digest_rejects_a_missing_root(tmp_path):
+    """ConfigError, not a bare ValueError: [policy].bundle_roots is a config
+    value, and warden.cli.main's _cmd_serve catches ConfigError specifically
+    so this reaches an operator as a clean message, not a traceback (see
+    policy_digest.py's own docstring)."""
     (tmp_path / "authz.rego").write_text("package warden.authz\n")
-    with pytest.raises(ValueError, match="does not exist"):
+    with pytest.raises(ConfigError, match="does not exist"):
         policy_bundle_digest([tmp_path, tmp_path / "absent"])
 
 
@@ -138,7 +143,7 @@ def test_bundle_digest_rejects_an_empty_root(tmp_path):
     (tmp_path / "authz.rego").write_text("package warden.authz\n")
     empty = tmp_path / "empty"
     empty.mkdir()
-    with pytest.raises(ValueError, match="no policy files"):
+    with pytest.raises(ConfigError, match="no policy files"):
         policy_bundle_digest([tmp_path, empty])
 
 

@@ -20,6 +20,23 @@ that names a *second* file -- a key, a data document -- which is not there).
 They are raised from different call sites (the TOML loader vs.
 identity.py's Path.read_bytes()), so a fix that catches only one leaves the
 other's traceback intact; both must be covered.
+
+Two gaps in the first pass at this, found on review and closed here:
+
+  * `warden config check` (warden.cli.main._cmd_config_check) was fixed, but
+    `python -m warden.cli.replay config` -- a SECOND, independent front door
+    onto the identical check_catalog()/check_catalog_findings(), and the one
+    .github/workflows/ci.yml actually invokes -- was not. See the
+    "warden.cli.replay config" section below.
+  * policy_bundle_digest raised a bare ValueError for a [policy].bundle_roots
+    entry that does not exist -- a mount that did not happen, discovered
+    inside `build()`, after load_broker_config() already succeeded. Outside
+    the two exception types _cmd_serve's handler names, so it still
+    tracebacked. Fixed at the source instead of by widening the handler:
+    policy_digest.py now raises ConfigError for both of its failure cases
+    (see that module's own docstring for why), so _cmd_serve's existing
+    `except (ConfigError, OSError)` catches it with no change to the handler
+    itself -- see "warden serve: a bundle root that does not exist" below.
 """
 
 from __future__ import annotations
@@ -30,6 +47,29 @@ from warden.cli.main import main as cli_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 POLICIES = REPO_ROOT / "warden" / "policies"
+
+
+def _write_keypair(tmp_path: Path) -> tuple[Path, Path]:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.generate()
+    private_path = tmp_path / "agent.key"
+    public_path = tmp_path / "agent.pub"
+    private_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    public_path.write_bytes(
+        key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    return private_path, public_path
 
 
 def _assert_clean_failure(capsys, exit_code: int) -> str:
@@ -93,6 +133,52 @@ tools = "{tmp_path / 'unused-tools.toml'}"
     stderr = _assert_clean_failure(capsys, exit_code)
     assert exit_code == 1
     assert str(missing_key) in stderr
+
+
+def test_serve_reports_a_missing_bundle_root_cleanly(tmp_path, capsys):
+    """ConfigError, raised by policy_bundle_digest() (broker/policy_digest.py)
+    inside build() -- both warden.toml and the public key are well-formed,
+    but [policy].bundle_roots names a directory that was never mounted. This
+    is the gap the review found on top of the finding as originally scoped:
+    the finding's two exception types (ConfigError from the TOML/catalog
+    loaders, OSError from a missing key file) did not cover this -- it was a
+    bare ValueError until policy_digest.py was changed to raise ConfigError
+    for it (see that module's own docstring), so this reaches
+    _cmd_serve's existing handler with no change to the handler itself.
+    A REAL public key is required here (unlike the OSError test above):
+    build() constructs the Verifier BEFORE it ever calls
+    policy_bundle_digest, so a missing key file would raise first and this
+    test would never actually reach the code path it means to exercise."""
+    _, public_key = _write_keypair(tmp_path)
+    missing_root = tmp_path / "missing-bundle"  # never created
+    config = tmp_path / "warden.toml"
+    config.write_text(f"""
+[broker]
+listen       = "127.0.0.1:18084"
+proxy_listen = "127.0.0.1:18085"
+
+[identity]
+public_key = "{public_key}"
+
+[policy]
+opa_url       = "http://opa:8181"
+decision_path = "warden/authz"
+bundle_roots  = ["{missing_root}"]
+
+[audit]
+path = "{tmp_path / 'audit.jsonl'}"
+
+[tokens]
+issuer = "warden-broker"
+
+[catalog]
+tools = "{tmp_path / 'unused-tools.toml'}"
+""")
+    exit_code = cli_main(["serve", "--config", str(config)])
+    stderr = _assert_clean_failure(capsys, exit_code)
+    assert exit_code == 1
+    assert "policy bundle root does not exist" in stderr
+    assert str(missing_root) in stderr
 
 
 # --- warden control ------------------------------------------------------------
@@ -180,6 +266,61 @@ doc_id = { type = "string", required = true }
     missing_data = tmp_path / "data.json"  # never written
     exit_code = cli_main(
         ["config", "check", "--catalog", str(catalog), "--data", str(missing_data)]
+    )
+    stderr = _assert_clean_failure(capsys, exit_code)
+    assert exit_code == 1
+    assert str(missing_data) in stderr
+
+
+# --- warden.cli.replay's own `config` command --------------------------------
+#
+# warden.cli.main's `config check` (above) and warden.cli.replay's `config`
+# both call check_catalog()/check_catalog_findings() -- two independent
+# print-and-return bodies around the same underlying functions, not one
+# calling the other. .github/workflows/ci.yml:41 runs THIS one
+# (`python -m warden.cli.replay config --catalog demo/scenario/tools.toml
+# --data demo/scenario/data.json`), not warden.cli.main's -- so this is the
+# config path CI actually exercises, and the one that was still raw after
+# the first pass at this finding only wrapped warden.cli.main.
+
+
+def test_replay_config_reports_a_bad_binding_key_cleanly(tmp_path, capsys):
+    """Same reproduction as test_config_check_reports_a_bad_binding_key_cleanly
+    above, driven through warden.cli.replay.main() instead of
+    warden.cli.main.main() -- the CI invocation shape, verbatim but for the
+    catalog/data paths."""
+    from warden.cli.replay import main as cli_replay_main
+
+    catalog = tmp_path / "tools.toml"
+    catalog.write_text(BAD_BINDING_MANIFEST)
+    data = tmp_path / "data.json"
+    data.write_text("{}")
+    exit_code = cli_replay_main(
+        ["config", "--catalog", str(catalog), "--data", str(data)]
+    )
+    stderr = _assert_clean_failure(capsys, exit_code)
+    assert exit_code == 1
+    assert "subject_prefixx" in stderr
+    assert "not a recognised key" in stderr
+
+
+def test_replay_config_reports_a_missing_data_file_cleanly(tmp_path, capsys):
+    """OSError variant, same shape as test_config_check_reports_a_missing_data_file_cleanly
+    above, through the replay.py front door."""
+    from warden.cli.replay import main as cli_replay_main
+
+    catalog = tmp_path / "tools.toml"
+    catalog.write_text("""
+[tools.read_document]
+kind = "docstore"
+[tools.read_document.binding]
+base_url = "http://d"
+[tools.read_document.args]
+doc_id = { type = "string", required = true }
+""")
+    missing_data = tmp_path / "data.json"  # never written
+    exit_code = cli_replay_main(
+        ["config", "--catalog", str(catalog), "--data", str(missing_data)]
     )
     stderr = _assert_clean_failure(capsys, exit_code)
     assert exit_code == 1

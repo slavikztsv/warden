@@ -6,6 +6,7 @@ This is the artifact you print and hand across the table.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -123,14 +124,31 @@ def main(argv: list[str] | None = None) -> int:
         # where OPA namespaces the document to something other than
         # data.tools, which no file comparison can see.
         from warden.broker.config.check import check_catalog, check_catalog_findings
+        from warden.broker.config.loader import ConfigError
 
-        problems = check_catalog(
-            Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
-        )
+        # The second, independent front door onto check_catalog(): this is
+        # the one .github/workflows/ci.yml actually invokes
+        # (`python -m warden.cli.replay config ...`), not warden.cli.main's
+        # `config check`. Both call the same check_catalog()/
+        # check_catalog_findings(), which raise ConfigError for a manifest
+        # that fails to parse or names a binding key its adapter does not
+        # recognise, and OSError (from Path.read_text()) for a --data file
+        # that is not there -- same treatment as warden.cli.main's
+        # _cmd_config_check: a malformed INPUT to this command, not a bug in
+        # it, so it gets the same one-line stderr message and non-zero exit
+        # rather than a traceback.
+        try:
+            problems = check_catalog(
+                Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
+            )
+            findings = check_catalog_findings(Path(args.catalog), env=os.environ)
+        except (ConfigError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         for problem in problems:
             print(f"✗ {problem}", file=sys.stderr)
         # Advisory, never a reason to exit 1 -- see check.py's own docstring.
-        for finding in check_catalog_findings(Path(args.catalog), env=os.environ):
+        for finding in findings:
             print(f"ℹ {finding}", file=sys.stderr)
         if problems:
             return 1
@@ -148,6 +166,37 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     log = AuditLog(audit_path)
+
+    # Force one read now, before either command's own logic runs, so the two
+    # ways a *present* --audit path can still not be a readable audit log are
+    # reported once, the same way, regardless of which command runs:
+    #
+    #   * OSError -- --audit names something that exists but is not a
+    #     readable file (a directory, most likely a typo'd path one level
+    #     too shallow; or a permissions problem). Path.read_text() inside
+    #     AuditLog.records() raises this, and nothing below was catching it:
+    #     both `replay <task_id>` (which calls log.records() directly, see
+    #     below) and `verify-chain` (via verify() -> log.verify_chain() ->
+    #     log.records()) traceback on it today.
+    #   * json.JSONDecodeError -- the file opens fine but a line in it is not
+    #     valid JSON at all: a *harder* corruption than the KeyError/TypeError
+    #     verify() below already treats as "malformed record" (a line that
+    #     parses but is missing a field verify_chain() hashes over) --
+    #     json.loads() raises this from inside AuditLog.records() itself,
+    #     before verify_chain() ever gets a dict to inspect, so verify()'s
+    #     existing except clause never saw it. Same user-facing verdict as
+    #     that existing case ("chain BROKEN: malformed record") since it is
+    #     the same claim: this log cannot be trusted, not "your --audit flag
+    #     is wrong" (that's the OSError case above, and the not-found case
+    #     already handled).
+    try:
+        log.records()
+    except OSError as exc:
+        print(f"error: cannot read audit log {audit_path}: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"chain BROKEN: malformed record ({exc})", file=sys.stderr)
+        return 1
 
     def verify() -> tuple[bool, int | None, str | None]:
         """(ok, bad_seq, malformed_detail). Never raises.

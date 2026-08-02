@@ -28,6 +28,8 @@ import hashlib
 from collections.abc import Sequence
 from pathlib import Path
 
+from warden.broker.config.loader import ConfigError
+
 
 def _bundle_files(root: Path) -> list[Path]:
     if root.is_file():
@@ -40,18 +42,31 @@ def _bundle_files(root: Path) -> list[Path]:
 
 
 def policy_bundle_digest(roots: Sequence[Path]) -> str:
+    """Raises ConfigError, not a bare ValueError, for either failure below.
+
+    Every root here is [policy].bundle_roots straight out of warden.toml in
+    the one production call site (broker/__main__.py's build()) -- a root
+    that does not exist or has nothing in it is a config value that is
+    wrong, the identical shape of failure as a malformed binding key
+    (broker/config/catalog.py) or an unparseable TOML file (this module's
+    own loader.py) -- both of which already raise ConfigError. Raising it
+    here too, rather than a plain ValueError, is what lets warden.cli.main's
+    `_cmd_serve` -- which already catches ConfigError for exactly this
+    reason -- turn a mount that did not happen into a one-line stderr
+    message instead of a traceback, with no change to that handler at all.
+    """
     digest = hashlib.sha256()
     for raw_root in roots:
         root = Path(raw_root)
         if not root.exists():
-            raise ValueError(f"policy bundle root does not exist: {root}")
+            raise ConfigError(f"policy bundle root does not exist: {root}")
         files = _bundle_files(root)
         if not files:
             # An empty root is a mount that did not happen. Hashing nothing
             # would make that indistinguishable from a root the design does
             # not include, which is exactly the failure this must be loud
             # about.
-            raise ValueError(f"policy bundle root has no policy files: {root}")
+            raise ConfigError(f"policy bundle root has no policy files: {root}")
         for path in files:
             # The path RELATIVE TO ITS ROOT, not the bare name: two roots
             # each holding a data.json must not collide, and the digest must
