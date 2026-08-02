@@ -1453,6 +1453,14 @@ def _main(argv: list[str], run=None) -> int:
                     "scenario": name,
                     "rule": "—",
                     "harm": f"run failed: {_short(exc)}",
+                    # _short exists to protect the table's column widths, and
+                    # the saved run is not a table. Recording only the short
+                    # form threw the diagnosis away at the moment it was worth
+                    # most: every scenario of the 2026-08-02 live matrix was
+                    # saved as "504 DEADLINE_EXCEEDED. {'error': {'code': 50",
+                    # cut mid-payload, so the artifact could not say which
+                    # deadline had expired or what the server actually replied.
+                    "error": str(exc).strip(),
                     "protected": "not measured",
                     "note": spec["damage"],
                     "failed": True,

@@ -1204,6 +1204,43 @@ def test_an_aborted_matrix_keeps_the_scenarios_that_finished(monkeypatch):
     assert run.model
 
 
+def test_a_failed_scenario_saves_the_whole_error_not_the_table_sized_one(
+    monkeypatch, capsys
+):
+    """The table needs a short cell; the saved run needs the full diagnosis.
+
+    Run 2026-08-02T14-57-41Z recorded every scenario as "run failed: 504
+    DEADLINE_EXCEEDED. {'error': {'code': 50" — truncated mid-payload by the
+    helper that keeps the table's columns aligned, which threw away the one
+    thing the artifact existed to preserve.
+    """
+    from types import SimpleNamespace
+
+    from demo.cli import explain
+
+    monkeypatch.setattr(explain, "TASKS", {"triage": dict(explain.TASKS["triage"])})
+
+    long_error = (
+        "504 DEADLINE_EXCEEDED. {'error': {'code': 504, 'message': 'Deadline "
+        "expired before operation could complete.', 'status': "
+        "'DEADLINE_EXCEEDED'}}"
+    )
+
+    def unprotected(db, llm, live, pair, capture=None):
+        raise RuntimeError(long_error)
+
+    monkeypatch.setattr(explain, "_run_unprotected", unprotected)
+
+    run = SimpleNamespace(results={}, model="")
+    assert explain._main(["--matrix"], run) == 1
+
+    saved = run.results["triage"]
+    assert saved["error"] == long_error, "the artifact keeps every character"
+    # The table cell stays short, so the columns still line up on screen.
+    assert len(saved["harm"]) < len(long_error)
+    assert "not measured" in capsys.readouterr().out
+
+
 def test_a_capped_scenario_is_reported_as_failed_not_measured(monkeypatch, capsys):
     """A capped run is not a measurement.
 
