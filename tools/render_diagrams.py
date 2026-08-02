@@ -689,6 +689,100 @@ def illustrations():
     return written
 
 
+# --------------------------------------------------------------------------
+# Repository map — three columns, because the layout has three jobs.
+#
+# The point is not the file list; it is the seam. `warden/` is the product
+# and cannot reach `demo/`, and tests/test_seam.py enforces that in both
+# directions. A plain tree cannot show a constraint, so this one draws it.
+# --------------------------------------------------------------------------
+
+TREE_ROW_H = 34
+
+
+def _tree_zone(x, y, w, title, rows, tone):
+    fill, stroke, colour = ZONE[tone]
+    h = 34 + len(rows) * TREE_ROW_H + 10
+    body = [f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" fill="{fill}" '
+            f'stroke="{stroke}"/>',
+            f'<text x="{x+16}" y="{y+22}" fill="{colour}" font-family="{MONO}" '
+            f'font-size="12.5" font-weight="700" letter-spacing="0.8">{esc(title)}</text>']
+    room = w - 32
+    for i, (path, what) in enumerate(rows):
+        ry = y + 34 + i * TREE_ROW_H
+        for text, size in ((path, 13), (what, 11)):
+            if text_width(text, size) > room:
+                raise ValueError(f"{text!r} needs {text_width(text, size):.0f}px, "
+                                 f"column gives {room:.0f}px")
+        body.append(f'<text x="{x+16}" y="{ry+12}" fill="{colour}" font-family="{MONO}" '
+                    f'font-size="13" font-weight="600">{esc(path)}</text>')
+        body.append(f'<text x="{x+16}" y="{ry+27}" fill="{colour}" font-family="{MONO}" '
+                    f'font-size="11" opacity="0.78">{esc(what)}</text>')
+    return "".join(body), h
+
+
+PRODUCT = [
+    ("broker/", "tool API · egress proxy · PDP client"),
+    ("broker/adapters/", "describe() + execute(), one per tool kind"),
+    ("broker/config/", "warden.toml + your tools.toml"),
+    ("policies/authz.rego", "the seven rules"),
+    ("cli/", "serve · control · replay · verify-chain"),
+    ("reference/", "pointing it at your own tools"),
+]
+DEPLOYMENT = [
+    ("scenario/*.toml", "tools, task, wiring — no code"),
+    ("scenario/data.json", "purposes, allowlists, limits"),
+    ("agent/", "the loop, model clients, cassettes"),
+    ("mocks/", "docstore · mailer · sinkhole · seed data"),
+    ("cli/", "menu · up · explain · sweep · record"),
+]
+PROOF = [
+    ("tests/warden/", "broker, policy, identity, audit"),
+    ("tests/demo/", "the exploit itself, as a regression test"),
+    ("tests/golden/", "frozen audit log + expected replay"),
+    ("tools/", "pinned OPA, corpora, these diagrams"),
+]
+
+
+def repo_map():
+    cw, gap = 340, 90
+    x1, x2, x3 = 0, cw + gap, 2 * (cw + gap)
+    W = x3 + cw          # derived, not guessed: the first version clipped
+                         # the third column by 20px against a hardcoded 1180
+    top = 16
+    body = []
+    a, ha = _tree_zone(x1, top, cw, "warden/  —  THE PRODUCT", PRODUCT, "enforce")
+    b, hb = _tree_zone(x2, top, cw, "demo/  —  ONE DEPLOYMENT", DEPLOYMENT, "control")
+    c, hc = _tree_zone(x3, top, cw, "tests/  tools/  —  THE PROOF", PROOF, "target")
+    body += [a, b, c]
+
+    # The seam, drawn in the gap between the first two columns.
+    mid = x1 + cw + gap / 2
+    y_dep, y_no = top + 96, top + 168
+    body.append(f'<path d="M{x2-6},{y_dep} L{x1+cw+8},{y_dep}" fill="none" stroke="{LINE}" '
+                f'stroke-width="2" marker-end="url(#arrow)"/>')
+    body.append(f'<path d="M{x1+cw+8},{y_no} L{x2-8},{y_no}" fill="none" stroke="{FORBIDDEN}" '
+                f'stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowbad)"/>')
+    body.append(_chip(mid, y_dep - 46, "depends on", 11, ZONE["enforce"]))
+    body.append(_chip(mid, y_no + 14, "cannot import", 11, ZONE["untrusted"]))
+
+    h = max(ha, hb, hc) + top
+    body.append(_chip(W / 2, h + 12,
+                      "tests/test_seam.py enforces both directions — no product file may "
+                      "even contain a scenario string", 11.5, TITLE_CHIP))
+    H = h + 56
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
+            f'height="{H}" role="img" aria-label="Repository map: warden is the product, '
+            f'demo is one deployment that depends on it, and the product cannot import the '
+            f'demo — enforced by tests/test_seam.py">'
+            f'<title>Repository map</title><defs>'
+            f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
+            f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{LINE}"/></marker>'
+            f'<marker id="arrowbad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
+            f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{FORBIDDEN}"/>'
+            f'</marker></defs>' + "".join(body) + '</svg>\n')
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     failed = False
@@ -709,6 +803,10 @@ def main():
         if png:
             note += f", +{png.name}"
         print(f"wrote {path.relative_to(OUT.parent.parent)}  ({note})")
+    rp = OUT / "repo-map.svg"
+    rp.write_text(repo_map(), encoding="utf-8")
+    rpng = export_png(rp)
+    print(f"wrote docs/assets/repo-map.svg" + (f" +{rpng.name}" if rpng else ""))
     for line in illustrations():
         print(f"wrote docs/assets/{line}")
     if not failed and export_png(OUT / "architecture.svg") is None:

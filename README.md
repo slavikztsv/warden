@@ -178,6 +178,24 @@ the policy's inputs and precedence: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.m
 
 ---
 
+## Repository
+
+<p align="center">
+  <img src="docs/assets/repo-map.png" width="100%" alt="warden/ is the product — broker, adapters, config, policies, CLI, reference. demo/ is one deployment — scenario TOML, policy data, agent, mocks. tests/ and tools/ are the proof. demo depends on warden; warden cannot import demo, enforced by tests/test_seam.py">
+</p>
+
+`warden/` is the product, and it ships **no scenario** — no tool catalog, no
+hostnames, no task. `demo/` is one deployment of it: four TOML files, a policy
+data document and a recorded transcript. Pointing the same broker at your own
+tools is a config change, not a fork.
+
+The dependency runs one way only, and it is not a convention.
+[tests/test_seam.py](tests/test_seam.py) fails the build if a `warden/` module
+imports `demo`, if the product tree ever ships a `tools.toml`, or if any file
+under `warden/` so much as *contains* one of the demo's strings.
+
+---
+
 ## Known limitations
 
 Real properties of the system as shipped, found during implementation and
