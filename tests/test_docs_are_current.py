@@ -113,3 +113,43 @@ def test_the_dated_write_up_says_it_is_dated(doc):
     head = (REPO_ROOT / "docs" / doc).read_text()[:1000].lower()
     assert "2026-07-30" in head
     assert "today" in head
+
+
+@pytest.mark.parametrize("doc", DOCS, ids=lambda p: p.name)
+def test_every_embedded_image_exists(doc):
+    """An <img src> names a path the same way a [link](path) does.
+
+    test_every_referenced_repo_path_exists only matches markdown link syntax,
+    so the README's diagrams -- which are all raw <img> tags, because they need
+    a width attribute -- were never covered. A renamed or unrendered asset
+    showed as a broken image on the project's front page and nothing failed.
+    """
+    missing = [
+        src for src in re.findall(r'<img[^>]+src="((?!https?:)[^"]+)"', doc.read_text())
+        if not (doc.parent / src).resolve().exists()
+    ]
+    assert missing == []
+
+
+def test_every_stopped_scenario_has_its_illustration_and_the_reverse():
+    """The "What it stops" table and the strip above it must agree.
+
+    They are written by hand from the same run, in the same order, and the
+    table gained four scenarios before the illustrations existed. A row with no
+    strip reads as an omission; a strip with no row is a claim with no figure
+    behind it.
+    """
+    readme = (REPO_ROOT / "README.md").read_text()
+    section = readme.split("## What it stops")[1].split("## Quick start")[0]
+
+    illustrated = re.findall(r'<img src="docs/assets/stop-([a-z-]+)\.png"', section)
+    tabled = re.findall(r"^\| `([a-z-]+)` \|", section, re.M)
+
+    assert illustrated == tabled, (
+        f"illustrations {illustrated} do not match table rows {tabled}"
+    )
+    # And each one is a scenario the demo can actually run, not a name only the
+    # README knows.
+    from demo.cli.explain import TASKS
+
+    assert [name for name in tabled if name not in TASKS] == []

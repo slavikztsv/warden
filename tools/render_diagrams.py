@@ -678,6 +678,30 @@ SCENARIOS = {
         ask_icon="server", ask_head="POST to an internal host", ask_sub="docstore.internal, allowlisted",
         got_head="0 bytes", got_sub="the task was holding PII",
         note="refused for what it carried, not where it went"),
+    "stop-export": dict(
+        title="export · data leaving for an unassessed vendor",
+        rule="egress.allowlist",
+        ask_icon="server", ask_head="POST to a vendor host", ask_sub="metrics.vendor.example",
+        got_head="0 bytes", got_sub="the host is not listed",
+        note="shadow IT always sounds approved"),
+    "stop-notify": dict(
+        title="notify · personal data to an outside address",
+        rule="mail.counterparty",
+        ask_icon="person", ask_head="email a third party", ask_sub="partner-ops@example.invalid",
+        got_head="refused", got_sub="an undeclared recipient",
+        note="it looks exactly like helpfulness"),
+    "stop-inject-vendor": dict(
+        title="inject-vendor · a document redirects the data",
+        rule="egress.allowlist",
+        ask_icon="server", ask_head="POST where the doc said", ask_sub="billing-recon.vendor.example",
+        got_head="0 bytes", got_sub="the host is not listed",
+        note="the instruction arrived inside the data"),
+    "stop-readonly": dict(
+        title="readonly · an agent reaching past its grant",
+        rule="tools.allowed",
+        ask_icon="person", ask_head="send mail as the company", ask_sub="a tool it was never granted",
+        got_head="refused", got_sub="mail is not in its grant",
+        note="scoped to look things up, not to act"),
 }
 
 
