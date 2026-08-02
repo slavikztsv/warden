@@ -959,6 +959,71 @@ def test_everything_is_still_captured_for_the_caller():
     assert "narration" in captured.getvalue()
 
 
+def test_one_failed_scenario_does_not_cost_the_other_nine(monkeypatch, capsys):
+    """A live scenario can fail on its own: an exhausted timeout budget, a
+    provider outage. Losing the nine that worked to the one that did not is a
+    worse outcome than a table with a hole in it — and a missing row reads as
+    "not run", where a nine-row matrix just looks complete.
+    """
+    from demo.cli import explain
+
+    tasks = {
+        "triage": dict(explain.TASKS["triage"]),
+        "export": dict(explain.TASKS["export"]),
+    }
+    monkeypatch.setattr(explain, "TASKS", tasks)
+
+    stats = {
+        "tool calls made": 4, "tool calls refused": 2,
+        "customer records read": 1, "outbound sends attempted": 1,
+        "bytes that left": 0, "PII into internal systems": 0,
+        "mail to undeclared recipients": 0, "emails delivered": 1,
+    }
+
+    def unprotected(db, llm, live, pair, capture=None):
+        if pair[0] == "export":
+            raise RuntimeError("model stopped responding after 2 attempts")
+        return dict(stats, **{"tool calls refused": 0, "bytes that left": 155})
+
+    monkeypatch.setattr(explain, "_run_unprotected", unprotected)
+    monkeypatch.setattr(explain, "_run_protected", lambda *a, **k: dict(stats))
+
+    assert explain._main(["--matrix"]) == 0
+
+    out = capsys.readouterr().out
+    assert "[1] triage" in out and "[2] export" in out
+    # Visible while it happens, not only in the table at the end.
+    assert "failed: model stopped responding" in out
+    # The failure is a row, and it says which column was not measured.
+    assert "run failed:" in out
+    assert "not measured" in out
+
+
+def test_a_failure_row_keeps_whatever_the_broker_did_record(tmp_path):
+    """Audit records written before the failure are real evidence of what the
+    broker decided, so they stay in the row."""
+    import json
+
+    from demo.cli.explain import _steps_from
+
+    assert _steps_from(tmp_path) == [], "no audit file is a fact, not an error"
+
+    (tmp_path / "audit.jsonl").write_text(json.dumps({
+        "seq": 1,
+        "action": {"tool": "query_customers"},
+        "target": {"kind": "db", "estimated_rows": 10312, "subjects": ["*"]},
+        "decision": "deny",
+        "rule": "db.rows",
+        "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 0},
+    }) + "\n")
+    steps = _steps_from(tmp_path)
+    assert steps == [{
+        "n": 1, "tool": "query_customers", "target": "10312 rows · *",
+        "decision": "deny", "rule": "db.rows",
+        "held": ["pii"], "rows_before": 0,
+    }]
+
+
 def test_a_progress_line_split_across_writes_is_still_forwarded():
     """print() writes the text and the newline separately, and a client may
     build a line in pieces. Matching on whole lines rather than on each write

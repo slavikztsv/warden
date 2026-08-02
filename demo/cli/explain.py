@@ -1144,6 +1144,17 @@ class ProgressFilter(io.StringIO):
         return super().write(text)
 
 
+def _short(exc: BaseException) -> str:
+    """One line, short enough not to wreck the table's column widths.
+
+    Every matrix column is sized with max(len(...)), so a multi-line provider
+    traceback in one cell would push the header off the screen — and the table
+    is the whole point of this command.
+    """
+    first = str(exc).strip().splitlines()
+    return (first[0] if first else type(exc).__name__)[:44]
+
+
 def _steps_from(scratch: Path) -> list[dict]:
     """The per-call decisions a protected run recorded, if it got that far.
 
@@ -1398,8 +1409,21 @@ def _main(argv: list[str], run=None) -> int:
             # as a trend and is an artifact.
             scratch = Path(tempfile.mkdtemp())
             print(f"  [{len(rows) + 1}] {name}", flush=True)
-            with contextlib.redirect_stdout(quiet):
-                row = _matrix_row(name, spec, db, live, scratch, reset)
+            try:
+                with contextlib.redirect_stdout(quiet):
+                    row = _matrix_row(name, spec, db, live, scratch, reset)
+            except Exception as exc:  # noqa: BLE001 - any scenario may fail live
+                # KeyboardInterrupt is deliberately NOT caught: an operator
+                # stopping a run means stop, not "mark it failed and carry on".
+                print(f"      failed: {_short(exc)}", flush=True)
+                row = {
+                    "steps": _steps_from(scratch),
+                    "scenario": name,
+                    "rule": "—",
+                    "harm": f"run failed: {_short(exc)}",
+                    "protected": "not measured",
+                    "note": spec["damage"],
+                }
             rows.append(row)
         print(render_matrix(rows, live))
         if run is not None:
