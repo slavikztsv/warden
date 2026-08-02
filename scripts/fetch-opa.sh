@@ -9,9 +9,21 @@ mkdir -p "$(dirname "$DEST")"
 if [ -x "$DEST" ]; then
   echo "already present: $DEST"
 else
-  curl -sSL -o "$DEST" \
+  # --fail, and download beside the target rather than onto it. Without --fail
+  # curl exits 0 on a 404 or a CDN error page, writes that HTML body to $DEST,
+  # and chmod +x promotes it to "the OPA binary": the next line then fails with
+  # a syntax error from a shell trying to run HTML, and every policy decision
+  # under test is blocked behind a file that is not OPA. Worse, the fast path
+  # above only tests -x, so the poisoned file is served from the version-keyed
+  # cache on every later run -- on a dev machine, permanently. Moving into
+  # place only after a clean download means $DEST never exists unless it is
+  # real, and a half-written file from an interrupted run is not inherited.
+  TMP="$DEST.part.$$"
+  trap 'rm -f "$TMP"' EXIT
+  curl -sSL --fail -o "$TMP" \
     "https://openpolicyagent.org/downloads/v$VERSION/opa_linux_amd64_static"
-  chmod +x "$DEST"
+  chmod +x "$TMP"
+  mv "$TMP" "$DEST"
 fi
 # sed, NOT `head -1`: head exits after the first line and closes the pipe, opa
 # takes SIGPIPE while writing its other seven lines, and the `set -o pipefail`

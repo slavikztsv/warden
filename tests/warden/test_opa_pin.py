@@ -128,3 +128,53 @@ def test_resolve_opa_returns_a_binary_of_the_pinned_version():
     except RuntimeError as exc:
         pytest.skip(f"pinned opa not installed: {exc}")
     assert Path(binary).is_file()
+
+
+def test_a_failed_download_never_becomes_the_cached_opa_binary(tmp_path):
+    """A download that fails must leave no file behind, let alone an executable one.
+
+    `curl -sSL -o "$DEST"` exits 0 on a 404 or a CDN error page and writes the
+    HTML body to $DEST; `chmod +x` then makes that "the OPA binary". The next
+    line fails with a shell syntax error from trying to run HTML, which is a
+    long way from "the download failed" -- and because the fast path only tests
+    -x, the poisoned file is served from the version-keyed cache on every later
+    run rather than being re-fetched.
+
+    Both halves are pinned here: --fail, so curl treats an HTTP error as an
+    error, and the download landing on a temp path that is only moved into
+    place on success.
+    """
+    import os
+
+    script = REPO_ROOT / "scripts" / "fetch-opa.sh"
+    assert re.search(r"curl[^\n]*--fail", script.read_text()), \
+        "curl must be given --fail, or an HTTP error page is downloaded as success"
+
+    home = tmp_path / "home"
+    home.mkdir()
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    # Stands in for curl --fail meeting a 404: it has already written part of
+    # the error body to the -o target by the time it decides to exit non-zero.
+    (stub_bin / "curl").write_text(
+        "#!/usr/bin/env bash\n"
+        "out=\n"
+        'while [ $# -gt 0 ]; do [ "$1" = "-o" ] && { out=$2; shift; }; shift; done\n'
+        '[ -n "$out" ] && printf "<html>404 Not Found</html>" > "$out"\n'
+        "exit 22\n"
+    )
+    (stub_bin / "curl").chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=REPO_ROOT,
+        env={**os.environ, "HOME": str(home), "PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0, "a failed download must fail the step, not continue"
+    cached = home / ".cache" / "warden" / f"opa-{OPA_VERSION}"
+    assert not cached.exists(), f"a failed download was cached as the binary: {cached}"
+    assert not list((home / ".cache" / "warden").glob("*.part.*")), \
+        "the partial download must not be left behind either"
