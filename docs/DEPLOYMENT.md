@@ -57,8 +57,6 @@ against anything real.
 
 ---
 
----
-
 ## Security validation
 
 ```bash
@@ -87,8 +85,6 @@ a real API.
 Denied and allowed requests are both exercised directly, without an agent, in
 Part 4 of [docs/WALKTHROUGH.md](WALKTHROUGH.md) — the broker driven
 entirely with `curl`.
-
----
 
 ---
 

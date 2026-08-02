@@ -1,6 +1,7 @@
 .superpowers/
 bin/
 __pycache__/
+.pytest_cache/
 *.pyc
 .venv/
 audit.jsonl

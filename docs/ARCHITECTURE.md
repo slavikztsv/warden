@@ -53,8 +53,6 @@ multi-agent delegation chains, and authenticating the control plane itself.
 
 ---
 
----
-
 ## Trust boundaries
 
 <p align="center">
@@ -79,8 +77,6 @@ against a fully compromised broker.
   the TCB for identity: holding the public key alone, a compromised broker
   still cannot mint a token.
 - The audit log is trusted to detect tampering, not to prevent it.
-
----
 
 ---
 
@@ -121,8 +117,6 @@ decision path — a decision is made, recorded and acted on within one request.
 snapshot through `record_read` is synchronous, so on a single event loop the
 read-decide-record sequence cannot interleave. Only the proxy's byte-piping is
 concurrent, and it happens after the decision.
-
----
 
 ---
 
@@ -208,8 +202,6 @@ and nothing else; a human-approval path is not built and is not claimed.
 
 ---
 
----
-
 ## Stateful enforcement
 
 Individually valid actions become unsafe as a sequence. This is the case
@@ -256,8 +248,6 @@ what the *task* is carrying, which is a property no single request contains.
 | Expiry | Process lifetime. Tokens expire in 5 minutes; the state does not expire on its own |
 | Concurrency | Safe by construction under **one worker** — no lock. Two workers share no state and reopen a TOCTOU on the row budget |
 | Distributed | Not supported. Horizontal scaling needs shared state that is not built |
-
----
 
 ---
 
@@ -332,8 +322,6 @@ usable token was presented). Both deny, and both are recorded.
 |---|---|---|
 | `allow` | No rule objected | Recorded first, then executed through the adapter |
 | `deny` | A rule objected, or no decision could be obtained | Recorded with the rule; 403; nothing executes |
-
----
 
 ---
 
