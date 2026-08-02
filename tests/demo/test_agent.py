@@ -561,19 +561,45 @@ def test_the_gemini_client_is_built_with_a_bounded_request_timeout(monkeypatch):
     — so a stalled response is never retried and never abandoned. A live matrix
     run blocked on one socket for 24 minutes with no CPU and no output, and
     nothing in the process was going to notice.
-    """
-    pytest.importorskip("google.genai")
-    from google import genai
 
-    from demo.agent.llm import GEMINI_TIMEOUT_MS, GeminiClient
+    This does NOT importorskip("google.genai"): CI never installs the package
+    (deliberately absent from requirements.txt), so an importorskip'd version
+    of this test SKIPS in CI, and nothing else in the suite references
+    http_options -- deleting it from GeminiClient.__init__ would still be
+    green. Instead a fake google.genai is installed into sys.modules, so
+    `from google import genai` / `from google.genai import types` inside
+    __init__ resolve to the stubs and the assertion runs everywhere, exactly
+    the fake-module approach the design doc called for.
+    """
+    import sys
+    import types as module_types
 
     seen = {}
 
-    def recorder(**kwargs):
-        seen.update(kwargs)
-        return SimpleNamespace(models=None)
+    class FakeHttpOptions:
+        def __init__(self, timeout=None) -> None:
+            self.timeout = timeout
 
-    monkeypatch.setattr(genai, "Client", recorder)
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            seen.update(kwargs)
+
+    fake_types = module_types.ModuleType("google.genai.types")
+    fake_types.HttpOptions = FakeHttpOptions
+
+    fake_genai = module_types.ModuleType("google.genai")
+    fake_genai.Client = FakeClient
+    fake_genai.types = fake_types  # so `from google.genai import types` resolves
+
+    fake_google = module_types.ModuleType("google")
+    fake_google.genai = fake_genai  # so `from google import genai` resolves
+
+    monkeypatch.setitem(sys.modules, "google", fake_google)
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    from demo.agent.llm import GEMINI_TIMEOUT_MS, GeminiClient
+
     GeminiClient("key")
 
     assert GEMINI_TIMEOUT_MS == 120_000, "must match OpenRouterClient's 120.0s"

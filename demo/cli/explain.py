@@ -1123,9 +1123,18 @@ class ProgressFilter(io.StringIO):
     Matching is on whole lines, not on each write: print() emits the text and
     the newline as separate writes, and a client may build a line in pieces,
     so a per-write prefix test would miss the newline and drop the tail.
+
+    "[agent]" is forwarded alongside "[llm]" for the same reason, one layer
+    up: every model turn is now bounded (see GEMINI_TIMEOUT_MS in
+    demo/agent/llm.py), so a live model that keeps issuing tool calls and
+    never emits `final` is no longer a hung socket -- it is agent/loop.py
+    making progress, one bounded turn after another, forever. Forwarding only
+    "[llm]" showed nothing for that case after the scenario line printed, and
+    a live process producing no output reads as a hang whether or not it
+    actually is one.
     """
 
-    FORWARD = ("[llm]",)
+    FORWARD = ("[llm]", "[agent]")
 
     def __init__(self, passthrough) -> None:
         super().__init__()
@@ -1386,7 +1395,6 @@ def _main(argv: list[str], run=None) -> int:
 
     if "--matrix" in argv:
         import contextlib
-        import io
 
         SHOW_WHY = False
         rows = []
@@ -1394,10 +1402,12 @@ def _main(argv: list[str], run=None) -> int:
             print("\n  running every scenario against a LIVE model.")
             print("  Each row: the model runs once unprotected, then the SAME run is")
             print("  replayed through the broker — so the broker is the only variable.\n")
-        # Before the loop, not after it. Set afterwards, an interrupted run
-        # recorded model: "" — and it also built a throwaway client purely to
-        # read a name. Doing it here also fails fast on a missing API key,
-        # rather than ten scenarios later.
+        # Moved before the loop, not after it, so an interrupted run still
+        # records its model -- set afterwards, it recorded model: "" instead.
+        # The call below still builds a throwaway client purely to read its
+        # name; moving it here does not remove that cost, it just pays it
+        # before anything else can fail, so a missing API key surfaces at
+        # once instead of ten scenarios in.
         if run is not None:
             run.model = _model_name(_fresh_llm(live, ("triage", TASKS["triage"])))
         for name, spec in TASKS.items():
