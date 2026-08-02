@@ -916,3 +916,287 @@ Expected: a populated `model`, every scenario that ran listed in `results`, and 
 - **Do not delete `runs/2026-08-02T12-27-53Z-explain-matrix-triage-live.*`.** It is the evidence this work is about, and the index chain seals it at seq 10 — removing it breaks `verify_index()` for every later run.
 - The nine `/tmp/tmp*/audit.jsonl` files from that run are deliberately not being recovered; that was decided during design. Do not build a recovery path.
 - `demo/cli/explain.py` is 1424 lines and this plan adds ~90 more to it. That is worth a look eventually, but splitting it is not in this plan's scope and would bury a small fix in a large diff.
+
+---
+
+## Addendum — residual findings from the whole-branch review
+
+Two findings the final review raised that the original six tasks deliberately
+did not cover. Both were decided by the human after that review.
+
+---
+
+### Task 8: Bound the agent loop, and refuse to report a capped run as a measurement
+
+**Files:**
+- Modify: `demo/agent/loop.py:41-45` (name the marker), `demo/cli/explain.py` (constant, two `run_task` call sites, one guard in `_matrix_row`)
+- Test: `tests/demo/test_cli.py`
+
+**Interfaces:**
+- Consumes: `_matrix_row`, `_short`, and the `try/except Exception` failure path from Tasks 3-5.
+- Produces: `demo.agent.loop.STOPPED_MARKER: str` and `demo.cli.explain.MAX_STEPS: int`.
+
+**Why:** `demo/agent/loop.py:35` is `while True`. Bounding the model call (Tasks 1-2) stopped a stalled *request* from hanging forever, but a live model that keeps issuing tool calls and never emits `final` still loops indefinitely. The `[agent]` progress lines now reach the terminal, so it is no longer silent — but it is not bounded.
+
+`max_steps` already exists and is unused on this path. It does NOT raise: it appends a `final` step reading `(stopped after N steps)` and returns normally. So simply passing it would make a truncated run print a row of partial counts — bytes that left, rows read — as though the agent had finished. This task passes it AND refuses to report the result as a measurement.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/demo/test_cli.py`:
+
+```python
+def test_a_capped_scenario_is_reported_as_failed_not_measured(monkeypatch, capsys):
+    """A capped run is not a measurement.
+
+    run_task stops gracefully and returns, so a truncated scenario would
+    otherwise print partial counts — bytes that left, records read — in the
+    same columns as a scenario that ran to completion. Those numbers are a
+    floor, not a total, and nothing in the table would say so.
+    """
+    from demo.agent.loop import STOPPED_MARKER
+    from demo.cli import explain
+
+    monkeypatch.setattr(explain, "TASKS", {"triage": dict(explain.TASKS["triage"])})
+
+    def capped(db, llm, live, pair, capture=None):
+        if capture is not None:
+            capture.append({"type": "final", "text": f"{STOPPED_MARKER} 80 steps)"})
+        return {
+            "tool calls made": 80, "tool calls refused": 0,
+            "customer records read": 10312, "outbound sends attempted": 1,
+            "bytes that left": 155, "PII into internal systems": 0,
+            "mail to undeclared recipients": 0, "emails delivered": 0,
+        }
+
+    monkeypatch.setattr(explain, "_run_unprotected", capped)
+
+    def unreachable(*a, **k):
+        raise AssertionError("the protected side must be skipped for a capped run")
+
+    monkeypatch.setattr(explain, "_run_protected", unreachable)
+
+    explain._main(["--matrix"])
+
+    out = capsys.readouterr().out
+    assert "run failed: agent did not finish" in out
+    assert "not measured" in out
+    # The partial counts must NOT appear as if they were a result.
+    assert "10,312 records read" not in out
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/demo/test_cli.py::test_a_capped_scenario_is_reported_as_failed_not_measured -v`
+
+Expected: FAIL with `ImportError: cannot import name 'STOPPED_MARKER'`.
+
+- [ ] **Step 3: Name the marker in the loop**
+
+In `demo/agent/loop.py`, directly above `def run_task(`:
+
+```python
+# The text a capped run's final step carries. Named rather than inlined so a
+# caller can recognise a truncated transcript without string-matching a literal
+# that lives in another module — explain's matrix does exactly that, and a
+# silent drift between the two would turn a capped run back into a row that
+# looks complete.
+STOPPED_MARKER = "(stopped after"
+```
+
+Then in `run_task`, replace:
+
+```python
+            step = {"type": "final", "text": f"(stopped after {max_steps} steps)"}
+```
+
+with:
+
+```python
+            step = {"type": "final", "text": f"{STOPPED_MARKER} {max_steps} steps)"}
+```
+
+The rendered text is unchanged — `tests/demo/test_cli.py:801` pins it as `"(stopped after 5 steps)"` and must keep passing.
+
+- [ ] **Step 4: Add the ceiling and pass it**
+
+In `demo/cli/explain.py`, extend the existing import at line 47:
+
+```python
+from demo.agent.loop import STOPPED_MARKER, SYSTEM_TASK, run_task
+```
+
+Add the constant beside the module's other constants, above `TASKS`:
+
+```python
+# A runaway-loop backstop, NOT a step budget. demo/cli/sweep.py caps at 12
+# because it sweeps models it has never run and wants a short leash; these are
+# the demo's own scenarios, and the largest real live run measured here made 47
+# brokered calls. 80 leaves that untouched and still stops an agent that will
+# never choose to finish — loop.py's `while True` was the one way this command
+# could still hang once the model call itself was bounded.
+MAX_STEPS = 80
+```
+
+Pass it at BOTH `run_task` call sites — the one in `_run_unprotected` (near line 801) and the one in `_run_protected` (near line 964) — by adding `max_steps=MAX_STEPS` to each call. Both matter: `explain --live` without `--matrix` has the same unbounded loop.
+
+- [ ] **Step 5: Refuse to measure a capped run**
+
+In `demo/cli/explain.py`, in `_matrix_row`, directly after the `un = _run_unprotected(...)` line and BEFORE the second `reset()`:
+
+```python
+    # A capped run is not a measurement. run_task stops gracefully and returns,
+    # so without this the row would print partial counts as though the agent had
+    # finished — which is the reading this table must never invite. Raising hands
+    # it to the loop's failure path, and skips the protected side, which would
+    # only replay the truncated transcript anyway.
+    if captured and captured[-1].get("text", "").startswith(STOPPED_MARKER):
+        raise RuntimeError(f"agent did not finish in {MAX_STEPS} steps")
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/demo/ -v -k "capped or stopped or matrix or agent_loop"`
+Then: `.venv/bin/python -m pytest tests/ -q`
+
+Expected: PASS, including the pre-existing `(stopped after 5 steps)` assertion at `tests/demo/test_cli.py:801`.
+
+- [ ] **Step 7: Verify the recorded matrix is unaffected**
+
+Run: `.venv/bin/python -m demo.cli.explain --matrix --no-log | tail -30`
+
+Expected: a full table with NO `run failed` rows. Cassettes are 5-9 steps, far under 80, so the ceiling must not bite.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add demo/agent/loop.py demo/cli/explain.py tests/demo/test_cli.py
+git commit -m "fix: bound the agent loop, and refuse to measure a capped run
+
+loop.py's while True was the last way this command could hang: bounding the
+model call stopped a stalled request, not a model that keeps calling tools
+and never finishes. max_steps returns rather than raising, so a capped run
+would have reported partial counts in the same columns as a completed one."
+```
+
+---
+
+### Task 9: Exit non-zero when a scenario did not complete
+
+**Files:**
+- Modify: `demo/cli/explain.py` (mark failure rows, summary line, return code)
+- Test: `tests/demo/test_cli.py` (update one existing assertion, add one test)
+
+**Interfaces:**
+- Consumes: the failure row built in the `except Exception` handler (Task 4).
+- Produces: failure rows carry `"failed": True`.
+
+**Why:** `explain --matrix` returns 0 even when every row says `run failed`. `demo/cli/main.py:315` does `sys.exit(main())`, so anything shelling out to this command is told it succeeded. This repo's stance is honest output over reassuring output.
+
+- [ ] **Step 1: Update the existing assertion and add the new test**
+
+In `tests/demo/test_cli.py`, in `test_one_failed_scenario_does_not_cost_the_other_nine`, change:
+
+```python
+    assert explain._main(["--matrix"]) == 0
+```
+
+to:
+
+```python
+    # One scenario failed, so the command did not fully succeed — and anything
+    # shelling out to it (demo/cli/main.py sys.exit()s this) must be told so.
+    assert explain._main(["--matrix"]) == 1
+```
+
+Then append a new test:
+
+```python
+def test_a_matrix_with_nothing_failed_still_exits_zero(monkeypatch, capsys):
+    """The non-zero exit must mean something. A clean run reports success and
+    prints no failure summary."""
+    from demo.cli import explain
+
+    monkeypatch.setattr(explain, "TASKS", {"triage": dict(explain.TASKS["triage"])})
+    stats = {
+        "tool calls made": 4, "tool calls refused": 2,
+        "customer records read": 1, "outbound sends attempted": 1,
+        "bytes that left": 0, "PII into internal systems": 0,
+        "mail to undeclared recipients": 0, "emails delivered": 1,
+    }
+    monkeypatch.setattr(
+        explain, "_run_unprotected",
+        lambda db, llm, live, pair, capture=None: dict(
+            stats, **{"tool calls refused": 0, "bytes that left": 155}
+        ),
+    )
+    monkeypatch.setattr(explain, "_run_protected", lambda *a, **k: dict(stats))
+
+    assert explain._main(["--matrix"]) == 0
+    assert "did not complete" not in capsys.readouterr().out
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/demo/test_cli.py -v -k "failed_scenario or nothing_failed"`
+
+Expected: `test_one_failed_scenario_does_not_cost_the_other_nine` FAILS (`assert 0 == 1`). `test_a_matrix_with_nothing_failed_still_exits_zero` should already PASS — it pins behaviour this task must preserve.
+
+- [ ] **Step 3: Mark the failure row**
+
+In `demo/cli/explain.py`, in the matrix loop's `except Exception` handler, add one key to the row dict it builds:
+
+```python
+                    "failed": True,
+```
+
+Put it directly after the `"note": spec["damage"],` line. An explicit flag, rather than matching on the `"not measured"` display string, so the check cannot break when someone edits the wording. It also reaches the run manifest, which is where a reader later asks which scenarios were real.
+
+- [ ] **Step 4: Report and return**
+
+In `demo/cli/explain.py`, replace:
+
+```python
+        print(render_matrix(rows, live))
+        return 0
+```
+
+with:
+
+```python
+        # Named above the table, not left for the reader to spot among ten
+        # rows — and the exit code says the same thing to anything that
+        # shelled out here. A run that lost scenarios must not report success.
+        failed = [r for r in rows if r.get("failed")]
+        if failed:
+            print(
+                f"\n  {len(failed)} of {len(rows)} scenarios did not complete. "
+                "Their rows read 'run failed' and their columns are not measured."
+            )
+        print(render_matrix(rows, live))
+        return 1 if failed else 0
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+
+Expected: PASS, full suite.
+
+- [ ] **Step 6: Verify a clean recorded run still exits 0**
+
+```bash
+.venv/bin/python -m demo.cli.explain --matrix --no-log > /dev/null; echo "exit=$?"
+```
+
+Expected: `exit=0`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add demo/cli/explain.py tests/demo/test_cli.py
+git commit -m "fix: exit non-zero when a matrix scenario did not complete
+
+main.py sys.exit()s this return code, so a run that lost scenarios was
+telling every caller it succeeded. The count is also named above the table
+rather than left to be spotted among ten rows."
+```
