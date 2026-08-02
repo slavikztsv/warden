@@ -279,6 +279,24 @@ full account.
 
 ---
 
+## How this was built
+
+The implementation was AI-accelerated, under a spec → plan → execute loop;
+`docs/superpowers/` holds those artifacts unedited. The threat model, the trust
+boundaries and every limitation above are mine.
+
+The findings are the part worth reading. Six fail-open Rego rules; a TOCTOU in
+the row budget; a mail control bypassable through the HTTP tool, which
+evaluated to a *clean allow* and so left no trace in the audit log; a control
+plane the agent could reach and mint itself an unlimited token from. Each came
+from attacking and reviewing the system, not from writing it. Generating a
+broker is cheap — establishing that an undefined sub-expression makes a Rego
+rule silently not fire, and that `opa test` cannot catch it because every case
+mocks `data`, is not. [THREAT_MODEL.md](THREAT_MODEL.md) has all of them, with
+the reasoning that found each one.
+
+---
+
 ## Documentation
 
 | | |
