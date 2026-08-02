@@ -589,7 +589,7 @@ def test_the_broker_and_control_services_mount_their_toml_config():
     assert "./demo/scenario/control.toml:/config/control.toml:ro" in control_block
 
 
-def test_warden_demo_up_rebuilds_before_starting_containers():
+def test_warden_demo_up_rebuilds_before_starting_containers(tmp_path):
     """A stale image runs old code while the run looks current.
 
     Observed: an image predating the R7 `subjects` change emitted a target
@@ -616,6 +616,13 @@ def test_warden_demo_up_rebuilds_before_starting_containers():
     RUN for both profiles, so the commands asserted on below are the ones
     the code really emits -- a call site that drops `--build` fails this by
     being exercised, not by a grep that a stray comment could fool.
+
+    `DATA_DIR` is patched to `tmp_path` too: `_cmd_up` calls
+    `DATA_DIR.mkdir(...)` directly (not through any of the mocked seams
+    above), so without this the real `_cmd_up` was creating the repo's
+    actual gitignored `data/` directory as a side effect of running this
+    test -- present-but-empty state that a later test could mistake for
+    "already seeded" depending on run order.
     """
     import argparse
     from unittest.mock import patch
@@ -623,7 +630,8 @@ def test_warden_demo_up_rebuilds_before_starting_containers():
     from demo.cli import main as demo_main
 
     calls: list[tuple] = []
-    with patch.object(demo_main, "_compose", lambda *a, **k: calls.append(a)), \
+    with patch.object(demo_main, "DATA_DIR", tmp_path), \
+         patch.object(demo_main, "_compose", lambda *a, **k: calls.append(a)), \
          patch.object(demo_main, "_wait_for_broker_control", lambda: None), \
          patch.object(demo_main, "_generate_keypair", lambda directory: None), \
          patch.object(demo_main, "seed_customers", lambda path, count: None), \

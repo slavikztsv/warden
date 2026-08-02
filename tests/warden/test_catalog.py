@@ -4,9 +4,28 @@ from pathlib import Path
 
 import pytest
 
+from demo.mocks.seed_db import seed_customers
+from demo.scenario.task import SCENARIO
 from warden.broker.adapters.base import UnknownTool
 from warden.broker.config.catalog import ToolCatalog, load_catalog
 from warden.broker.config.loader import ConfigError
+
+
+@pytest.fixture(scope="module")
+def seeded_db(tmp_path_factory):
+    """A real sqlite file seeded with the scenario's own row count.
+
+    `demo_catalog(db_path=...)` already lets the caller choose the database
+    -- the shipped manifest itself is what must not be faked, not the data
+    behind it. Seeding [scenario].seed_rows (currently 10312) rows once per
+    module keeps the tests below from depending on `data/customers.db`
+    existing on disk, which on a fresh checkout it does not: that file is
+    gitignored and only ever created by `warden-demo up`'s seeding step.
+    """
+    path = tmp_path_factory.mktemp("catalog-db") / "customers.db"
+    seed_customers(path, SCENARIO["seed_rows"])
+    return path
+
 
 MANIFEST = """
 [tools.read_document]
@@ -81,14 +100,14 @@ def test_a_missing_manifest_is_a_startup_failure(tmp_path):
         load_catalog(tmp_path / "tools.toml", env={}, client=None)
 
 
-def test_the_shipped_demo_manifest_loads(tmp_path):
+def test_the_shipped_demo_manifest_loads(seeded_db):
     """Not a fixture -- the real file, which is what every later assertion
     about subjects and row counts is made against."""
     from tests.support.catalog import demo_catalog
 
     catalog = demo_catalog(
         docstore_url="http://docstore.internal",
-        db_path="data/customers.db",
+        db_path=seeded_db,
         mailer_url="http://mailer.internal",
         client=None,
     )
@@ -99,21 +118,23 @@ def test_the_shipped_demo_manifest_loads(tmp_path):
     assert catalog.target_kind("send_email") == "mail"
 
 
-def test_the_shipped_manifest_reproduces_the_subject_join():
+def test_the_shipped_manifest_reproduces_the_subject_join(seeded_db):
     """The prefix must join to the token's counterparties. Without its colon
     the ALLOWED read is denied rows.scope, the task never becomes tainted,
     and the egress to the allowlisted internal sink stops being refused."""
     from tests.support.catalog import demo_catalog
 
     catalog = demo_catalog(
-        docstore_url="http://d", db_path="data/customers.db",
+        docstore_url="http://d", db_path=seeded_db,
         mailer_url="http://m", client=None,
     )
     assert catalog.describe("query_customers", {"filter": "id=8812"}).subjects == (
         "customer:8812",
     )
     assert catalog.describe("query_customers", {"filter": "all"}).subjects == ("*",)
-    assert catalog.describe("query_customers", {"filter": "all"}).estimated_rows == 10312
+    assert catalog.describe("query_customers", {"filter": "all"}).estimated_rows == (
+        SCENARIO["seed_rows"]
+    )
 
 
 def test_a_mail_tool_whose_fields_omit_recipients_arg_is_a_startup_failure(tmp_path):
@@ -168,7 +189,7 @@ def test_a_binding_key_that_belongs_to_a_different_adapter_kind_is_a_startup_fai
         load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
 
 
-def test_the_shipped_demo_manifest_declares_only_recognised_binding_keys():
+def test_the_shipped_demo_manifest_declares_only_recognised_binding_keys(seeded_db):
     """Positive control: the real manifest must keep loading cleanly under
     this check -- it is not exercised by test_the_shipped_demo_manifest_loads
     alone failing loudly if it broke, since that test does not assert
@@ -176,7 +197,7 @@ def test_the_shipped_demo_manifest_declares_only_recognised_binding_keys():
     from tests.support.catalog import demo_catalog
 
     demo_catalog(
-        docstore_url="http://docstore.internal", db_path="data/customers.db",
+        docstore_url="http://docstore.internal", db_path=seeded_db,
         mailer_url="http://mailer.internal", client=None,
     )
 
