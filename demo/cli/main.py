@@ -169,16 +169,19 @@ def _replay(task_id: str) -> int:
 
 
 def _live_env_has_credential() -> bool:
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
-        return True
-    env_file = REPO_ROOT / ".env"
-    if not env_file.exists():
-        return False
-    for line in env_file.read_text().splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key.strip() in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY") and value.strip():
-            return True
-    return False
+    """Whether `--live` could start at all.
+
+    This used to check GEMINI_API_KEY and ANTHROPIC_API_KEY only, and so
+    refused an OpenRouter-only machine -- the provider .env.example
+    recommends first, and the one needing no extra package. It also ignored
+    WARDEN_PROVIDER, so a run forced onto a vendor whose key was absent got
+    past this check and failed later, inside the container.
+    Both are demo/cli/preflight.py's job now, against the same precedence
+    demo/agent/llm.py's live_client_from_env actually applies.
+    """
+    from demo.cli.preflight import live_provider, merged_env
+
+    return live_provider(merged_env()) is not None
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
@@ -188,7 +191,12 @@ def _cmd_up(args: argparse.Namespace) -> int:
     agent_args = "--live" if args.live else ""
     if args.live:
         if not _live_env_has_credential():
-            print("--live needs GEMINI_API_KEY or ANTHROPIC_API_KEY in .env", file=sys.stderr)
+            print(
+                "--live needs OPENROUTER_API_KEY, GEMINI_API_KEY or "
+                "ANTHROPIC_API_KEY in the environment or .env (and, if "
+                "WARDEN_PROVIDER is set, that provider's key specifically).",
+                file=sys.stderr,
+            )
             return 2
         print("--- live model: the agent reaches its provider only because that host")
         print("--- is on this purpose's egress_allow. Every call is still brokered.")
@@ -270,6 +278,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("explain", help="narrated single run: guarded vs unguarded")
     sub.add_parser("sweep", help="measure injection susceptibility across models")
     sub.add_parser("record", help="record a live run into a replayable cassette")
+    # Registered for `--help` only; main() diverts it (and a bare invocation
+    # with no arguments at all) to demo/cli/menu.py before argparse runs.
+    sub.add_parser("menu", help="pick what to run from a list (also: no arguments)")
 
     p_verify = sub.add_parser(
         "verify-runs", help="verify runs/index.jsonl's hash chain"
@@ -281,6 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
+
+    # No arguments is the commonest thing a newcomer types, and argparse's
+    # answer to it was a usage error. Both spellings reach the same menu.
+    # Imported here, and called as `menu.main` rather than bound at import
+    # time, so demo.cli.menu can import this module back without a cycle.
+    if not argv or argv[0] == "menu":
+        from demo.cli import menu
+
+        return menu.main([])
 
     if argv and argv[0] in PASSTHROUGH:
         module = importlib.import_module(PASSTHROUGH[argv[0]])

