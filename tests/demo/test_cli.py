@@ -988,7 +988,9 @@ def test_one_failed_scenario_does_not_cost_the_other_nine(monkeypatch, capsys):
     monkeypatch.setattr(explain, "_run_unprotected", unprotected)
     monkeypatch.setattr(explain, "_run_protected", lambda *a, **k: dict(stats))
 
-    assert explain._main(["--matrix"]) == 0
+    # One scenario failed, so the command did not fully succeed — and anything
+    # shelling out to it (demo/cli/main.py sys.exit()s this) must be told so.
+    assert explain._main(["--matrix"]) == 1
 
     out = capsys.readouterr().out
     assert "[1] triage" in out and "[2] export" in out
@@ -997,6 +999,30 @@ def test_one_failed_scenario_does_not_cost_the_other_nine(monkeypatch, capsys):
     # The failure is a row, and it says which column was not measured.
     assert "run failed:" in out
     assert "not measured" in out
+
+
+def test_a_matrix_with_nothing_failed_still_exits_zero(monkeypatch, capsys):
+    """The non-zero exit must mean something. A clean run reports success and
+    prints no failure summary."""
+    from demo.cli import explain
+
+    monkeypatch.setattr(explain, "TASKS", {"triage": dict(explain.TASKS["triage"])})
+    stats = {
+        "tool calls made": 4, "tool calls refused": 2,
+        "customer records read": 1, "outbound sends attempted": 1,
+        "bytes that left": 0, "PII into internal systems": 0,
+        "mail to undeclared recipients": 0, "emails delivered": 1,
+    }
+    monkeypatch.setattr(
+        explain, "_run_unprotected",
+        lambda db, llm, live, pair, capture=None: dict(
+            stats, **{"tool calls refused": 0, "bytes that left": 155}
+        ),
+    )
+    monkeypatch.setattr(explain, "_run_protected", lambda *a, **k: dict(stats))
+
+    assert explain._main(["--matrix"]) == 0
+    assert "did not complete" not in capsys.readouterr().out
 
 
 def test_a_failure_row_keeps_whatever_the_broker_did_record(tmp_path):

@@ -1455,6 +1455,7 @@ def _main(argv: list[str], run=None) -> int:
                     "harm": f"run failed: {_short(exc)}",
                     "protected": "not measured",
                     "note": spec["damage"],
+                    "failed": True,
                 }
             rows.append(row)
             # Per scenario, not once at the end. A run that dies on scenario
@@ -1463,8 +1464,17 @@ def _main(argv: list[str], run=None) -> int:
             # run still worth having.
             if run is not None:
                 run.results[name] = row
+        # Named above the table, not left for the reader to spot among ten
+        # rows — and the exit code says the same thing to anything that
+        # shelled out here. A run that lost scenarios must not report success.
+        failed = [r for r in rows if r.get("failed")]
+        if failed:
+            print(
+                f"\n  {len(failed)} of {len(rows)} scenarios did not complete. "
+                "Their rows read 'run failed' and their columns are not measured."
+            )
         print(render_matrix(rows, live))
-        return 0
+        return 1 if failed else 0
 
     # The unprotected profile starts no OPA and builds no broker. Not to save
     # time — so that "the policy was not consulted" is a fact about the run
