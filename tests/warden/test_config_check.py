@@ -330,3 +330,58 @@ def test_opa_mode_reports_a_connection_failure(tmp_path, monkeypatch):
     _stub_opa_get(monkeypatch, raises=httpx.ConnectError("connection refused"))
     problems = check_catalog(catalog, data, env={}, opa_url="http://opa:8181")
     assert any("cannot read data.tools" in p for p in problems)
+
+
+# --- The finding must reach a customer, not just check_catalog_findings ----
+#
+# check_catalog_findings() itself is exercised above (and has been since the
+# data_class fix landed). What was NEVER exercised is the two print loops
+# that make its return value visible on an actual `warden config check` --
+# one in warden/cli/main.py's _cmd_config_check, a second, independently
+# written, in warden/cli/replay.py's `config` command (still the one CI
+# invokes: .github/workflows/ci.yml calls
+# `python -m warden.cli.replay config ...`, not the console script). Deleting
+# either loop left 497/497 passing: nothing drove either entrypoint's real
+# stdout/stderr, so nothing could notice the finding stopped printing.
+#
+# These two tests call each module's own main(argv) -- the literal function a
+# customer's shell invokes `warden config check` / `python -m
+# warden.cli.replay config` into -- and read capsys, not a mocked print(). A
+# manifest identical in shape to MANIFEST above (a *reading* tool,
+# read_document, with no data_class) must produce the advisory line on that
+# real output, and the command must still exit 0: the omission is advisory,
+# not an error -- send_email legitimately has no data_class, being a write,
+# and the exit code must not distinguish "consistent, nothing to see" from
+# "consistent, with an advisory".
+
+
+def test_cli_main_config_check_prints_the_finding_on_real_output(tmp_path, capsys):
+    from warden.cli.main import main as cli_main
+
+    catalog, data = files(
+        tmp_path, MANIFEST, {"tools": {"read_document": {"target_kind": "doc"}}}
+    )
+    exit_code = cli_main(
+        ["config", "check", "--catalog", str(catalog), "--data", str(data)]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "ℹ read_document: binding declares no data_class" in captured.err
+
+
+def test_cli_replay_config_prints_the_finding_on_real_output(tmp_path, capsys):
+    """The second, independent print loop -- warden/cli/replay.py's `config`
+    command, still the one .github/workflows/ci.yml invokes."""
+    from warden.cli.replay import main as cli_replay_main
+
+    catalog, data = files(
+        tmp_path, MANIFEST, {"tools": {"read_document": {"target_kind": "doc"}}}
+    )
+    exit_code = cli_replay_main(
+        ["config", "--catalog", str(catalog), "--data", str(data)]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "ℹ read_document: binding declares no data_class" in captured.err

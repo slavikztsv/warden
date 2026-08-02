@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     # exit code said success, and the verdict would live only in stdout. This is
     # the same command that used to assert integrity it had never checked --
     # it must not now check it and then shrug. `verify-chain` already exits 1;
-    # so does this. `warden-demo up` (demo/cli/main.py's `_cmd_up`) propagates
+    # so does this. `warden-demo up` (the demo CLI's `_cmd_up`) propagates
     # this exact exit code as its own return value, unmodified, so a broken
     # chain still aborts the run loudly -- the same property the retired
     # shell script got for free from `set -euo pipefail`. A demo that

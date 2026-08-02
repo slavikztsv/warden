@@ -30,6 +30,21 @@ PRODUCT = REPO_ROOT / "warden"
 SCENARIO_STRINGS = (
     "4711", "8812", "attacker.example", "docstore.internal",
     "support-triage", "triage-bot", "refund", "customers",
+    # "demo/", not "demo/scenario" and not bare "demo". The property this
+    # scan exists to hold is "no file under warden/ references a demo path"
+    # -- not merely "no file references demo/scenario" -- so a needle scoped
+    # to that one subdirectory would miss a reference to, say, demo/cli or
+    # demo/agent and still let the scan report clean. Bare "demo" goes the
+    # other way: it matches ordinary English ("the demo shows...", "exists
+    # to demonstrate") throughout warden/'s own docstrings, which would force
+    # this scan into exception-ridden uselessness just to keep passing --
+    # exactly the rot a scan exists to avoid. "demo/" -- the substring that
+    # only appears when a real filesystem path into the demo tree is being
+    # named -- is the narrowest needle that still pins the actual property.
+    # It is what would have caught `warden config check` shipping
+    # `--catalog demo/scenario/tools.toml` as its own default: that value is
+    # exactly this shape, and no other needle above happens to overlap it.
+    "demo/",
 )
 
 # The full set of extensions the scan below considers, named once so a

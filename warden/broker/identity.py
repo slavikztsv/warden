@@ -5,7 +5,7 @@ so adding verifiers never grants minting power.
 
 That property is only worth anything if the two keys actually live in
 different places. The keypair is generated outside every container (see
-demo/cli/main.py's `_generate_keypair`, invoked by `warden-demo up`) and
+the demo CLI's `_generate_keypair`, invoked by `warden-demo up`) and
 handed out split: the control plane loads the private key and is the sole
 minter; the broker -- the enforcement point the agent can actually reach --
 loads only the public key. A fully compromised broker therefore still cannot

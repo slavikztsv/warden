@@ -3,8 +3,8 @@
 Moved (Task 20): broker/, cli/ and policies/ now live under warden/broker,
 warden/cli/replay.py and warden/policies. This module imports `warden.broker.*`
 and `warden.cli.replay` exclusively -- nothing at the repo root -- so the
-product wheel is self-contained: installed alone (no demo/ sibling on disk),
-every one of these imports still resolves.
+product wheel is self-contained: installed alone (no demo package sibling on
+disk), every one of these imports still resolves.
 
 `replay` and `verify-chain` delegate to warden.cli.replay.main() UNCHANGED --
 that function (not a reimplementation of it) is what test_golden_replay.py
@@ -35,8 +35,21 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if args.config:
         os.environ["WARDEN_CONFIG"] = args.config
     import warden.broker.__main__ as serve_mod
+    from warden.broker.config.loader import ConfigError
 
-    asyncio.run(serve_mod.main())
+    # load_broker_config() and build() both run synchronously, before this
+    # coroutine ever awaits anything -- so a ConfigError (a malformed or
+    # unreadable warden.toml / tools.toml) or an OSError (a public_key path
+    # naming a file that is not there) surfaces here before a single socket
+    # is opened, not partway through serving. Anything past that point --
+    # the actual agent-facing API and proxy -- runs to completion inside this
+    # same call and is deliberately NOT shielded: a fault there is a bug in
+    # the broker, not a config problem, and must still crash loudly.
+    try:
+        asyncio.run(serve_mod.main())
+    except (ConfigError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -44,8 +57,17 @@ def _cmd_control(args: argparse.Namespace) -> int:
     if args.config:
         os.environ["WARDEN_CONTROL_CONFIG"] = args.config
     import warden.broker.control_main as control_mod
+    from warden.broker.config.loader import ConfigError
 
-    control_mod.main()
+    # Same shape as _cmd_serve: load_control_config() and build() (which
+    # loads the private key file) both run before uvicorn.run() ever binds a
+    # socket, so a ConfigError or a missing-key-file OSError is a boot-time
+    # failure, not a runtime one.
+    try:
+        control_mod.main()
+    except (ConfigError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -67,17 +89,31 @@ def _cmd_verify_chain(args: argparse.Namespace) -> int:
 
 def _cmd_config_check(args: argparse.Namespace) -> int:
     from warden.broker.config.check import check_catalog, check_catalog_findings
+    from warden.broker.config.loader import ConfigError
 
-    problems = check_catalog(
-        Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
-    )
+    # check_catalog()/check_catalog_findings() both call load_catalog(),
+    # which raises ConfigError for a manifest that fails to parse or names a
+    # binding key its adapter does not recognise -- exactly the
+    # subject_prefixx-for-subject_prefix typo this command exists to catch.
+    # A missing --data file surfaces as an OSError from Path.read_text()
+    # inside check_catalog() itself. Both are a malformed INPUT to this
+    # command, not a bug in it: same "print and exit non-zero" treatment as
+    # the ✗ problems already printed below, not a traceback.
+    try:
+        problems = check_catalog(
+            Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
+        )
+        findings = check_catalog_findings(Path(args.catalog), env=os.environ)
+    except (ConfigError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     for problem in problems:
         print(f"✗ {problem}", file=sys.stderr)
     # Findings are advisory -- printed either way, never a reason to exit 1.
     # A tool declaring no data_class is legitimate for a write (send_email),
     # so this must stay visible without becoming a hard failure the way an
     # actual inconsistency does.
-    for finding in check_catalog_findings(Path(args.catalog), env=os.environ):
+    for finding in findings:
         print(f"ℹ {finding}", file=sys.stderr)
     if problems:
         return 1
