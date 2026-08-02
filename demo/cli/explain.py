@@ -707,7 +707,7 @@ WHICH PROFILE
 WHICH MODEL
   (default)     the recording — fixed output, so the broker is the only variable
   --live        a real model, sampled fresh each run
-                needs OPENROUTER_API_KEY, GEMINI_API_KEY or ANTHROPIC_API_KEY.
+                needs OPENROUTER_API_KEY or GEMINI_API_KEY.
                 OpenRouter needs no extra package and reaches many vendors with
                 one key: set OPENROUTER_MODEL to compare models on one scenario.
                 Every run prints the provider and model it used.

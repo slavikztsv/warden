@@ -171,8 +171,8 @@ def _replay(task_id: str) -> int:
 def _live_env_has_credential() -> bool:
     """Whether `--live` could start at all.
 
-    This used to check GEMINI_API_KEY and ANTHROPIC_API_KEY only, and so
-    refused an OpenRouter-only machine -- the provider .env.example
+    This used to check GEMINI_API_KEY only, and so refused an
+    OpenRouter-only machine -- the provider .env.example
     recommends first, and the one needing no extra package. It also ignored
     WARDEN_PROVIDER, so a run forced onto a vendor whose key was absent got
     past this check and failed later, inside the container.
@@ -192,9 +192,9 @@ def _cmd_up(args: argparse.Namespace) -> int:
     if args.live:
         if not _live_env_has_credential():
             print(
-                "--live needs OPENROUTER_API_KEY, GEMINI_API_KEY or "
-                "ANTHROPIC_API_KEY in the environment or .env (and, if "
-                "WARDEN_PROVIDER is set, that provider's key specifically).",
+                "--live needs OPENROUTER_API_KEY or GEMINI_API_KEY in the "
+                "environment or .env (and, if WARDEN_PROVIDER is set, that "
+                "provider's key specifically).",
                 file=sys.stderr,
             )
             return 2

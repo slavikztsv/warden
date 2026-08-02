@@ -1,7 +1,7 @@
 """What the menu is allowed to claim is runnable.
 
 The provider precedence here must match demo/agent/llm.py's
-live_client_from_env exactly -- openrouter, then gemini, then anthropic, with
+live_client_from_env exactly -- openrouter, then gemini, with
 WARDEN_PROVIDER overriding outright. A menu that labels a run "ready" and
 then dies on a missing credential is worse than no label at all.
 """
@@ -41,7 +41,6 @@ def test_no_credential_anywhere_means_no_provider():
 def test_each_key_on_its_own_selects_its_provider():
     assert preflight.live_provider({"OPENROUTER_API_KEY": "k"}) == "openrouter"
     assert preflight.live_provider({"GEMINI_API_KEY": "k"}) == "gemini"
-    assert preflight.live_provider({"ANTHROPIC_API_KEY": "k"}) == "anthropic"
 
 
 def test_precedence_matches_the_agent_runtime():
@@ -49,15 +48,14 @@ def test_precedence_matches_the_agent_runtime():
     every = {
         "OPENROUTER_API_KEY": "k",
         "GEMINI_API_KEY": "k",
-        "ANTHROPIC_API_KEY": "k",
     }
     assert preflight.live_provider(every) == "openrouter"
     assert preflight.live_provider({k: v for k, v in every.items() if "OPENROUTER" not in k}) == "gemini"
 
 
 def test_warden_provider_overrides_the_precedence():
-    env = {"OPENROUTER_API_KEY": "k", "ANTHROPIC_API_KEY": "k", "WARDEN_PROVIDER": "anthropic"}
-    assert preflight.live_provider(env) == "anthropic"
+    env = {"OPENROUTER_API_KEY": "k", "GEMINI_API_KEY": "k", "WARDEN_PROVIDER": "gemini"}
+    assert preflight.live_provider(env) == "gemini"
 
 
 def test_warden_provider_without_its_key_is_not_runnable():

@@ -113,7 +113,7 @@ what goes in one. Both fail loudly at boot on a bad config, before a socket is
 opened.
 
 Tests that need something external: `tests/demo/test_isolation.sh` and
-`warden-demo up` need Docker; the Gemini and Anthropic client tests skip unless
+`warden-demo up` need Docker; the Gemini client tests skip unless
 `requirements-live.txt` is installed; `--live` runs need a provider key.
 Everything else runs offline. There is no lint, format or type-check step
 configured — [.github/workflows/ci.yml](../.github/workflows/ci.yml) runs the

@@ -998,7 +998,7 @@ To use a live model:
 
 ```bash
 .venv/bin/pip install -r requirements-live.txt
-cp .env.example .env          # add GEMINI_API_KEY or ANTHROPIC_API_KEY
+cp .env.example .env          # add OPENROUTER_API_KEY or GEMINI_API_KEY
 set -a; . ./.env; set +a
 
 WARDEN_TRACE=1 BROKER_URL=http://127.0.0.1:8080 TASK_TOKEN="$TOKEN" TASK_ID=5002 \

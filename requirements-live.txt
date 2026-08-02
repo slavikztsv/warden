@@ -1,19 +1,17 @@
 # OPTIONAL — only needed for `warden-demo up --live` (demo/agent/loop.py).
 #
 # Deliberately separate from requirements.txt: the broker, the policy layer and
-# all 431 tests run without either of these, and CI never installs them. A
-# model SDK is not a dependency of the enforcement point.
+# all 606 tests run without this, and CI never installs it. A model SDK is not
+# a dependency of the enforcement point.
 #
 #   pip install -r requirements-live.txt
 #
-# NOT needed for OpenRouter, which is the third live provider: it speaks the
+# NOT needed for OpenRouter, which is the other live provider: it speaks the
 # OpenAI HTTP shape, so httpx reaches it and httpx is already in
 # requirements.txt. Set OPENROUTER_API_KEY and `--live` works with nothing
 # installed from this file -- which is also why OpenRouterClient is the only
 # live client covered by tests that run in CI.
 #
-# Provide OPENROUTER_API_KEY, GEMINI_API_KEY or ANTHROPIC_API_KEY in .env; the
-# runtime picks the first of those three that is set, or whichever
-# WARDEN_PROVIDER names.
+# Provide OPENROUTER_API_KEY or GEMINI_API_KEY in .env; the runtime picks the
+# first of those two that is set, or whichever WARDEN_PROVIDER names.
 google-genai==2.15.0
-anthropic==0.69.0

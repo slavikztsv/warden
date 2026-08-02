@@ -210,166 +210,11 @@ def test_both_profiles_hand_the_model_the_same_response_envelope(tmp_path):
         assert direct.call(tool, args).keys() == brokered.keys(), tool
 
 
-# --- The --live path -------------------------------------------------------
+# --- The tool schemas the live clients send --------------------------------
 #
-# LiveClient.next_step never passed `tools=`, so the model was never told any
-# tools existed, no tool_use block could come back, and every turn returned
-# `final` on the first response. TOOL_SCHEMAS was dead code outside tests, and
-# http_fetch's schema had no `body` -- so even a working live client could only
-# issue bare GETs and the exfiltration attempt would carry nothing.
-#
-# These drive LiveClient through a stub in place of the anthropic client. They
-# pin the request shape and the message alternation; they cannot prove the real
-# API accepts it. The `anthropic` package is deliberately not a dependency, so
-# the live path is NOT exercised end to end anywhere, here or in CI.
-
-
-class _Block:
-    """A content block shaped like the SDK's, for the stub responses below."""
-
-    def __init__(self, **fields):
-        self.__dict__.update(fields)
-
-
-class _Response:
-    def __init__(self, content):
-        self.content = content
-
-
-class StubAnthropic:
-    """Records every messages.create call and replays queued responses."""
-
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.calls = []
-        self.messages = self
-
-    def create(self, **kwargs):
-        # Snapshot `messages`: LiveClient passes its live history list and
-        # keeps appending to it, so recording the reference would let later
-        # turns rewrite what an earlier call is asserted to have sent. The real
-        # SDK serializes at call time, so the aliasing is harmless in
-        # production and only matters to this recorder.
-        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
-        return self._responses.pop(0)
-
-
-def _tool_use(block_id, name, args):
-    return _Block(type="tool_use", id=block_id, name=name, input=args)
-
-
-def _text(value):
-    return _Block(type="text", text=value)
-
-
-def test_live_client_declares_the_tools():
-    """Without `tools=`, no tool_use block can ever come back -- the whole
-    --live path collapses to a single text turn."""
-    from demo.agent.llm import MAX_TOKENS, MODEL, LiveClient
-    from demo.agent.tools import TOOL_SCHEMAS
-
-    stub = StubAnthropic([_Response([_text("done")])])
-    LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
-
-    call = stub.calls[0]
-    assert call["tools"] == TOOL_SCHEMAS
-    assert call["max_tokens"] == MAX_TOKENS
-    assert call["model"] == MODEL
-
-
-def test_live_client_returns_a_tool_use_step_the_loop_understands():
-    from demo.agent.llm import LiveClient
-
-    stub = StubAnthropic(
-        [_Response([_tool_use("toolu_1", "read_document", {"doc_id": "ticket-4711"})])]
-    )
-    step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
-
-    assert step == {
-        "type": "tool_use",
-        "tool": "read_document",
-        "args": {"doc_id": "ticket-4711"},
-    }
-
-
-def test_live_client_returns_text_as_a_final_step():
-    from demo.agent.llm import LiveClient
-
-    stub = StubAnthropic([_Response([_text("Ticket triaged."), _text("Done.")])])
-    step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
-
-    assert step["type"] == "final"
-    assert "Ticket triaged." in step["text"]
-
-
-def test_live_client_prefers_a_tool_use_block_over_accompanying_text():
-    from demo.agent.llm import LiveClient
-
-    stub = StubAnthropic(
-        [_Response([_text("I'll read the ticket."), _tool_use("toolu_1", "read_document", {})])]
-    )
-    step = LiveClient("key", client=stub).next_step([{"role": "user", "content": "triage"}])
-
-    assert step["type"] == "tool_use"
-
-
-def test_live_client_maintains_assistant_user_alternation_with_tool_results():
-    """The API rejects a tool_use turn that is not answered by a tool_result
-    with a matching id. The loop only knows how to append a plain user message,
-    so LiveClient has to do this mapping itself."""
-    from demo.agent.llm import LiveClient
-
-    first = _tool_use("toolu_abc", "read_document", {"doc_id": "ticket-4711"})
-    stub = StubAnthropic([_Response([first]), _Response([_text("all done")])])
-    client = LiveClient("key", client=stub)
-
-    messages = [{"role": "user", "content": "triage"}]
-    step = client.next_step(messages)
-    assert step["type"] == "tool_use"
-
-    # What agent/loop.py does after dispatching the call.
-    messages.append({"role": "user", "content": json.dumps({"content": "the ticket"})})
-    client.next_step(messages)
-
-    sent = stub.calls[1]["messages"]
-    assert [message["role"] for message in sent] == ["user", "assistant", "user"]
-    # The assistant turn is echoed back verbatim, blocks and all.
-    assert sent[1]["content"] == [first]
-    assert sent[2]["content"] == [
-        {
-            "type": "tool_result",
-            "tool_use_id": "toolu_abc",
-            "content": json.dumps({"content": "the ticket"}),
-        }
-    ]
-
-
-def test_live_client_drives_the_real_loop():
-    """End to end through run_task with a stub client: the loop cannot tell a
-    live client from a cassette, which is the property that makes --live worth
-    offering at all."""
-    from demo.agent.llm import LiveClient
-    from demo.agent.loop import run_task
-
-    stub = StubAnthropic(
-        [
-            _Response([_tool_use("t1", "read_document", {"doc_id": "ticket-4711"})]),
-            _Response([_tool_use("t2", "http_fetch", {"url": "http://x/y", "body": "rows"})]),
-            _Response([_text("done")]),
-        ]
-    )
-    calls = []
-
-    class RecordingDispatcher:
-        def call(self, tool, args):
-            calls.append((tool, args))
-            return {"content": "ok", "rows": 0}
-
-    transcript = run_task(RecordingDispatcher(), LiveClient("key", client=stub), task_id="4711")
-
-    assert [tool for tool, _ in calls] == ["read_document", "http_fetch"]
-    assert calls[1][1]["body"] == "rows"
-    assert transcript[-1] == {"type": "final", "text": "done"}
+# TOOL_SCHEMAS was once dead code outside tests, and http_fetch's schema had no
+# `body` -- so even a working live client could only issue bare GETs and the
+# exfiltration attempt would carry nothing.
 
 
 def test_the_http_fetch_schema_advertises_the_body_field():
@@ -422,9 +267,9 @@ def test_advertised_schemas_agree_with_the_brokers_shape_check():
 # ---------------------------------------------------------------------------
 # GeminiClient empty-turn handling.
 #
-# GeminiClient is the client every live run actually uses, and until now it had
-# no tests -- its own docstring claimed a stub drove it, which was true only of
-# LiveClient. The gap showed up in a live run: a thought-only turn
+# GeminiClient is the client every live run actually uses, and for a long time
+# it had no tests at all despite its own docstring claiming a stub drove it.
+# The gap showed up in a live run: a thought-only turn
 # (finish_reason=STOP, no parts returned) printed "retrying once" on the final
 # attempt, when no retry followed.
 #
@@ -770,7 +615,7 @@ def test_a_non_transient_error_is_not_retried_at_all(monkeypatch):
 # chat-completions shape, which is plain JSON over HTTP, so httpx reaches it and
 # httpx is already a hard dependency. That makes it the only provider these
 # tests can drive end to end in CI -- no importorskip, no package CI refuses to
-# install. The Gemini and Anthropic clients cannot be covered this way.
+# install. The Gemini client cannot be covered this way.
 # ---------------------------------------------------------------------------
 def _openrouter(handler, **kw):
     from demo.agent.llm import OpenRouterClient

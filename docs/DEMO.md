@@ -198,13 +198,12 @@ A real model drives the same loop:
 |---|---|---|
 | OpenRouter | `OPENROUTER_API_KEY` | none — it speaks the OpenAI HTTP shape over `httpx` |
 | Gemini | `GEMINI_API_KEY` | `pip install -r requirements-live.txt` |
-| Anthropic | `ANTHROPIC_API_KEY` | `pip install -r requirements-live.txt` |
 
-Precedence is openrouter → gemini → anthropic, or set `WARDEN_PROVIDER` to
-settle it. `OPENROUTER_MODEL=…` re-runs the same scenario against a different
-vendor with one key. Every run prints the provider and model it actually used.
+Precedence is openrouter → gemini, or set `WARDEN_PROVIDER` to settle it.
+`OPENROUTER_MODEL=…` re-runs the same scenario against a different vendor with
+one key. Every run prints the provider and model it actually used.
 
-No provider is privileged: all three sit behind one interface, and the broker
+No provider is privileged: both sit behind one interface, and the broker
 never learns a model was involved. Cassettes replay model responses only —
 policy, egress, and the audit chain always execute for real.
 

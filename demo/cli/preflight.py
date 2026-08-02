@@ -4,10 +4,10 @@ The menu labels options ready or blocked, so this has to agree with the code
 that would do the work. Two commitments:
 
   · Provider selection mirrors demo/agent/llm.py's live_client_from_env --
-    openrouter, then gemini, then anthropic, with WARDEN_PROVIDER overriding
-    the precedence outright and FAILING rather than falling back when the
-    provider it names has no key. A menu that promises a run which then dies
-    on a missing credential is worse than no label at all.
+    openrouter, then gemini, with WARDEN_PROVIDER overriding the precedence
+    outright and FAILING rather than falling back when the provider it names
+    has no key. A menu that promises a run which then dies on a missing
+    credential is worse than no label at all.
   · demo/cli/sweep.py needs OPENROUTER_API_KEY specifically, not any live
     key, so callers ask about that separately.
 
@@ -29,11 +29,10 @@ from pathlib import Path
 LIVE_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",
     "gemini": "GEMINI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
 }
 
 # The order live_client_from_env tries them in.
-PRECEDENCE = ("openrouter", "gemini", "anthropic")
+PRECEDENCE = ("openrouter", "gemini")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOTENV_PATH = REPO_ROOT / ".env"

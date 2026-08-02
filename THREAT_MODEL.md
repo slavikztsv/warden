@@ -112,32 +112,29 @@ quietly fixed. Each is a real property of the system as shipped.
   loads the public half alone. **The enforcement point now holds no signing
   key**, which is strictly stronger than the original design: even a fully
   compromised broker cannot mint.
-- **The Anthropic client still answers only the first tool call in a turn, and
-  two of the three live clients are invisible to CI.** Neither `anthropic` nor
-  `google-genai` is a dependency, so their tests skip in CI and nothing reaches
-  a real API. The OpenRouter client is the exception: it speaks the OpenAI HTTP
-  shape over `httpx`, needs no vendor package, and its request/response cycle is
-  covered by tests that do run in CI — the provider with no SDK is the only one
-  with continuous coverage. `LiveClient` is driven by a stub that pins the request shape and the `tool_use`/`tool_result` alternation
-  but cannot prove the API accepts it, and within that path parallel tool use is
-  unhandled: a turn returning two `tool_use` blocks gets a `tool_result` for the
-  first only, and the API rejects the next request because the second is
-  unanswered. Accepted rather than fixed there, since nothing exercises it.
+- **One of the two live clients is invisible to CI.** `google-genai` is not a
+  dependency, so its tests skip in CI and nothing reaches a real API. The
+  OpenRouter client is the exception: it speaks the OpenAI HTTP shape over
+  `httpx`, needs no vendor package, and its request/response cycle is covered
+  by tests that do run in CI — the provider with no SDK is the only one with
+  continuous coverage. `GeminiClient` is driven by a stub that pins the request
+  shape and the turn alternation but cannot prove the live API accepts it.
 
-  `GeminiClient` had the same defect and it was **not** theoretical — Gemini
-  returns multi-call turns routinely, and dropping the extras produced a
-  delayed, badly misleading symptom: the model's own turn was left holding a
-  call that never received a response, and a turn or two later the reply
-  degraded into a stray CJK glyph, the call restated as prose
-  (`object:default_api:query_customers{…}`), or an empty turn. One live reply
-  read `"巾 eyes open: query_customers returned: … Wait, was it returned in the
-  result?"` — the model asking where the dropped result had gone. Diagnosed by
-  dumping the raw parts rather than by reasoning about it, and initially
-  misattributed to the model being too small. Now every call in a turn is
-  queued, served one at a time without spending an extra turn, and answered in a
-  single user turn matched by function name; tests cover it. **The cassette path
-  the demo actually runs was never affected**, because a cassette yields exactly
-  one step at a time — which is also why the bug survived so long.
+  That client once answered only the first tool call in a turn, and the defect
+  was **not** theoretical — Gemini returns multi-call turns routinely, and
+  dropping the extras produced a delayed, badly misleading symptom: the model's
+  own turn was left holding a call that never received a response, and a turn
+  or two later the reply degraded into a stray CJK glyph, the call restated as
+  prose (`object:default_api:query_customers{…}`), or an empty turn. One live
+  reply read `"巾 eyes open: query_customers returned: … Wait, was it returned
+  in the result?"` — the model asking where the dropped result had gone.
+  Diagnosed by dumping the raw parts rather than by reasoning about it, and
+  initially misattributed to the model being too small. Now every call in a
+  turn is queued, served one at a time without spending an extra turn, and
+  answered in a single user turn matched by function name; tests cover it.
+  **The cassette path the demo actually runs was never affected**, because a
+  cassette yields exactly one step at a time — which is also why the bug
+  survived so long.
 
   Relatedly, `MAX_TOKENS = 4096`
   is a ceiling on thinking *and* response text together, and the model this

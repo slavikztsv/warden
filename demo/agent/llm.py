@@ -12,7 +12,6 @@ from pathlib import Path
 
 from demo.agent.tools import TOOL_SCHEMAS
 
-ANTHROPIC_MODEL = "claude-sonnet-5"
 GEMINI_MODEL = "gemini-3.6-flash"
 # OpenRouter needs a vendor-qualified id. Override with OPENROUTER_MODEL;
 # ids are listed at https://openrouter.ai/models and the client says so by
@@ -54,16 +53,13 @@ GEMINI_TIMEOUT_MS = 120_000
 GEMINI_TIMEOUT_ATTEMPTS = 3
 GEMINI_TIMEOUT_BACKOFF = 5.0
 
-# Kept for the Anthropic client, whose call site predates the second provider.
-MODEL = ANTHROPIC_MODEL
-
 
 class TracingLLM:
     """Wraps any LLM client and prints exactly what goes in and what comes back.
 
     The most common question about an agent is "what did you actually send it?",
     and answering that should not require a debugger. This wraps rather than
-    instruments, so all three clients stay identical and the trace has the same
+    instruments, so every client stays identical and the trace has the same
     shape whichever provider is in use — including the cassette, where it shows
     the conversation that *would* have been sent alongside the recorded reply.
 
@@ -132,111 +128,8 @@ class Cassette:
         return step
 
 
-class LiveClient:
-    """Used with --live. Kept deliberately small; the cassette is the default.
-
-    This class previously could not work at all: `next_step` called
-    `messages.create` without a `tools=` argument, so the model was never told
-    any tools existed, no `tool_use` block could ever come back, and every turn
-    returned `final` on the first response. `--live` is the project's answer to
-    "is this canned?", and an answer that silently degrades to a single text
-    turn is worse than no answer.
-
-    Two conversations exist, and conflating them was the other half of the
-    problem. agent/loop.py keeps a simple transcript — one user message per
-    tool result — because that is all the cassette path needs. The Messages API
-    needs something stricter: the assistant turn carrying the `tool_use` block
-    must be echoed back verbatim, and the result must return as a `tool_result`
-    block whose `tool_use_id` matches. This class therefore keeps its own
-    API-shaped history and maps the loop's latest message onto it, so the loop
-    stays byte-identical across both profiles and both LLM sources.
-
-    The `anthropic` import stays lazy and the package is deliberately NOT in
-    requirements.txt: the broker, the policy layer, and every test run without
-    it. **This path is not exercised by any test that talks to the real API,
-    and CI never installs the package** — the tests below drive it through a
-    stub client, which pins the request shape and the message alternation but
-    cannot prove the live API accepts it.
-    """
-
-    def __init__(self, api_key: str, *, client=None) -> None:
-        if client is None:
-            import anthropic
-
-            client = anthropic.Anthropic(api_key=api_key)
-        self._client = client
-        self.name = f"anthropic:{MODEL}"
-        # Messages in Anthropic API shape, which is NOT the loop's shape.
-        self._history: list[dict] = []
-        self._pending_tool_use_id: str | None = None
-
-    def _absorb(self, messages: list[dict]) -> None:
-        """Folds the loop's latest turn into the API-shaped history.
-
-        First call: seed from whatever the loop has (normally the single task
-        message). Later calls: the loop has appended exactly one message, the
-        JSON-encoded result of the tool call we returned last time. If that
-        call was a tool_use, the result MUST come back as a tool_result block
-        carrying the same id -- the API rejects a tool_use turn that is not
-        answered, and mismatched ids are how that silently goes wrong.
-        """
-        if not self._history:
-            self._history.extend(
-                {"role": message["role"], "content": message["content"]}
-                for message in messages
-            )
-            return
-
-        latest = messages[-1]["content"]
-        if self._pending_tool_use_id is not None:
-            self._history.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": self._pending_tool_use_id,
-                            "content": latest,
-                        }
-                    ],
-                }
-            )
-            self._pending_tool_use_id = None
-        else:
-            self._history.append({"role": "user", "content": latest})
-
-    def next_step(self, messages: list[dict]) -> dict:
-        self._absorb(messages)
-
-        response = self._client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            tools=TOOL_SCHEMAS,
-            messages=self._history,
-        )
-
-        # The assistant turn goes back verbatim -- content blocks are appended
-        # as returned, not reconstructed. Reconstructing drops block types this
-        # code does not know about (thinking blocks among them, which carry a
-        # signature the API validates), and an edited assistant turn is
-        # rejected on the next request.
-        self._history.append({"role": "assistant", "content": response.content})
-
-        for block in response.content:
-            if getattr(block, "type", None) == "tool_use":
-                self._pending_tool_use_id = block.id
-                return {"type": "tool_use", "tool": block.name, "args": block.input}
-
-        text = "\n".join(
-            block.text
-            for block in response.content
-            if getattr(block, "type", None) == "text"
-        )
-        return {"type": "final", "text": text}
-
-
 class GeminiClient:
-    """A second provider behind the same protocol, and that is the point.
+    """One of two providers behind the same protocol, and that is the point.
 
     `run_task` is unchanged by this class existing. It asks an object for the
     next step and gets back `{"type": "tool_use", ...}` or `{"type": "final",
@@ -250,18 +143,19 @@ class GeminiClient:
 
       · tools go in as Tool(function_declarations=[FunctionDeclaration(...)]),
         and `parameters` accepts a plain JSON Schema dict — so the SAME
-        TOOL_SCHEMAS the Anthropic path uses is translated mechanically, only
-        the key name differs (`input_schema` there, `parameters` here).
+        TOOL_SCHEMAS the other client sends is translated mechanically, only
+        the key name differs (`input_schema` in the catalogue, `parameters`
+        here).
       · a call comes back as a part carrying `.function_call` with `.name`,
         `.args` and `.id`.
       · the result goes back as a user turn holding
         Part.from_function_response(name=..., response={...}); Gemini matches
-        on the function NAME, where Anthropic matches on a tool_use_id.
+        on the function NAME, where OpenRouter matches on a tool_call_id.
       · the model's own turn has role "model", not "assistant".
 
-    As with the Anthropic client, `google-genai` is imported lazily and is
-    deliberately absent from requirements.txt: the broker, the policy layer and
-    all tests run without it, and CI never installs it. The tests drive this
+    `google-genai` is imported lazily and is deliberately absent from
+    requirements.txt: the broker, the policy layer and all tests run without
+    it, and CI never installs it. The tests drive this
     class through a stub, which pins the request shape and the turn
     alternation but cannot prove the live API accepts it.
     """
@@ -328,7 +222,7 @@ class GeminiClient:
         latest = messages[-1]["content"]
         if self._awaiting is not None:
             # Collected, not appended. An unanswered function call is a protocol
-            # error, the same way an unanswered tool_use is on the Anthropic
+            # error, the same way an unanswered tool_call is on the OpenRouter
             # side — and when the turn carried several calls, every response
             # belongs in the same user turn, so these accumulate until the last
             # queued call has been executed.
@@ -548,12 +442,12 @@ class GeminiClient:
 
 
 class OpenRouterClient:
-    """A third provider behind the same protocol — one key, many vendors.
+    """The second provider behind the same protocol — one key, many vendors.
 
     OpenRouter speaks the OpenAI chat-completions shape, which is plain JSON
     over HTTP, so this talks to it with `httpx` and adds NO dependency. That is
-    worth more than convenience: `google-genai` and `anthropic` are absent from
-    requirements.txt on purpose, so neither of the other live clients can be
+    worth more than convenience: `google-genai` is absent from
+    requirements.txt on purpose, so the other live client cannot be
     exercised in CI. This one can be, and is — the provider with no SDK is the
     only one with real test coverage.
 
@@ -609,7 +503,7 @@ class OpenRouterClient:
 
     @staticmethod
     def _tools() -> list[dict]:
-        """One tool definition, three providers. Only the wrapper changes."""
+        """One tool definition, either provider. Only the wrapper changes."""
         return [
             {
                 "type": "function",
@@ -800,12 +694,10 @@ def live_client_from_env(env: dict) -> object:
         "gemini": lambda: GeminiClient(
             env["GEMINI_API_KEY"], model=env.get("GEMINI_MODEL") or None
         ),
-        "anthropic": lambda: LiveClient(env["ANTHROPIC_API_KEY"]),
     }
     keys = {
         "openrouter": "OPENROUTER_API_KEY",
         "gemini": "GEMINI_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
     }
 
     forced = (env.get("WARDEN_PROVIDER") or "").strip().lower()
@@ -821,12 +713,12 @@ def live_client_from_env(env: dict) -> object:
             )
         return providers[forced]()
 
-    for name in ("openrouter", "gemini", "anthropic"):
+    for name in ("openrouter", "gemini"):
         if env.get(keys[name]):
             return providers[name]()
 
     raise RuntimeError(
-        "--live needs one of OPENROUTER_API_KEY, GEMINI_API_KEY or "
-        "ANTHROPIC_API_KEY in the environment. Without one, drop --live and "
-        "the agent replays a cassette."
+        "--live needs either OPENROUTER_API_KEY or GEMINI_API_KEY in the "
+        "environment. Without one, drop --live and the agent replays a "
+        "cassette."
     )

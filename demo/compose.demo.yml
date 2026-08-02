@@ -86,7 +86,6 @@ services:
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       WARDEN_PROVIDER: ${WARDEN_PROVIDER:-}
       AGENT_ARGS: ${AGENT_ARGS:-}
     networks: [agent-net]           # the ONLY network — no route anywhere else
