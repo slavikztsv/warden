@@ -153,6 +153,34 @@ scenario that finished, with the model that produced them.
 Setting `run.model` early also drops a throwaway `_fresh_llm()` call that
 existed only to read a client's name.
 
+### 5. Record the commit at the start, not the end
+
+Found while confirming §4 against the aborted run's manifest, and folded in
+because it is a defect in the same object.
+
+`_commit()` is called from `__exit__`, so a run is sealed against whatever
+`HEAD` happened to be when it *finished*. The aborted run demonstrates it: it
+started at `56c1579` and its manifest records `490267c`, a commit made while it
+was still running — the commit that added this document.
+
+The function's own comment says "Which revision produced this. Absent is fine;
+wrong would not be." Absent is handled (`unknown`); wrong is what it does. A
+manifest that names the wrong revision is worse than one that names none,
+because nothing about it looks uncertain, and the hash chain will happily seal
+it.
+
+Capture the commit in `__init__`, beside `self._started`, which is already
+taken at the start for exactly this reason.
+
+`_digest()` stays where it is, and the difference is worth stating rather than
+assuming. It has the same shape of risk — it reads `warden/policies/` and
+`data.json` at exit — but unlike `HEAD` those files are genuinely re-read
+during the run: each protected scenario starts its own OPA from them. So the
+exit value is at least one of the values actually in force, where the exit
+commit may be a revision the run never saw. That is a weaker guarantee than it
+sounds and worth revisiting; it is not what broke here, and widening this
+change to chase it would be scope creep.
+
 ## Testing
 
 Against the existing stub-client seam (`GeminiClient(..., client=...)`), so
@@ -169,6 +197,8 @@ none of these need the SDK or the network:
 5. Client construction passes a bounded timeout, verified by injecting a fake
    `google.genai` into `sys.modules` so the assertion runs where the real SDK
    is absent.
+6. A `RunLog` whose `HEAD` moves between `__enter__` and `__exit__` records the
+   commit it started at.
 
 ## Out of scope
 
