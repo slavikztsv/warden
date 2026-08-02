@@ -133,6 +133,12 @@ class RunLog:
         self.results: dict = {}
         self.model = ""
         self._started = datetime.now(timezone.utc)
+        # Taken here, beside the timestamp, and for the same reason. Read at
+        # exit this named whatever HEAD happened to be when the run finished:
+        # a matrix run that spanned a commit was sealed against a revision it
+        # never executed. Absent is fine; wrong is worse than absent, because
+        # nothing about it looks uncertain.
+        self._commit_at_start = _commit()
         stamp = self._started.strftime("%Y-%m-%dT%H-%M-%SZ")
         RUNS.mkdir(exist_ok=True)
         self.log_path = RUNS / f"{stamp}-{kind}-{label}.log"
@@ -162,7 +168,7 @@ class RunLog:
             "argv": sys.argv[1:],
             "model": self.model,
             "policy_digest": _digest(),
-            "commit": _commit(),
+            "commit": self._commit_at_start,
             "log_sha256": digest,
             "results": self.results,
             "prev_hash": prev,
