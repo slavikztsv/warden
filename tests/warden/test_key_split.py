@@ -474,7 +474,7 @@ def test_control_entrypoint_refuses_a_public_key_where_the_private_one_belongs(t
 
 
 def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path, monkeypatch):
-    """`warden-demo up` and tests/test_isolation.sh generate the keypair with
+    """`warden-demo up` and tests/demo/test_isolation.sh generate the keypair with
     openssl, outside every container. Nothing else in the suite exercises that
     exact format (PKCS#8 private, SubjectPublicKeyInfo public), so a format
     mismatch would only show up in the room."""

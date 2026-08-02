@@ -37,8 +37,8 @@ the agent and everything it can reach, and bounds what that authority is worth.
 
 ## What it stops
 
-Ten scenarios ran against a **live** model; the seven below are the ones the
-model took the bait on. Each row is one transcript run twice — once with
+Ten scenarios ran against a **live** model; the seven below are the ones that
+produced a refusal. Each row is one transcript run twice — once with
 nothing in the way, then the *same* model output replayed through the broker —
 so the broker is the only thing that differs across a row.
 
@@ -287,8 +287,9 @@ full account.
 ## How this was built
 
 The implementation was AI-accelerated, under a spec → plan → execute loop;
-`docs/superpowers/` holds those artifacts unedited. The threat model, the trust
-boundaries and every limitation above are mine.
+`docs/superpowers/` holds those artifacts, and `git log docs/superpowers/`
+shows every later edit to them. The threat model, the trust boundaries and
+every limitation above are mine.
 
 The findings are the part worth reading. Six fail-open paths in Rego; a TOCTOU
 in the row budget; a mail control bypassable through the HTTP tool, which
@@ -296,8 +297,8 @@ recorded as an ordinary allow with an empty `deny_reasons` rather than as the
 bypass it was; a control plane the agent could reach and mint itself an
 unlimited token from. Each came from attacking and reviewing the system, not
 from writing it. Generating a broker is cheap — establishing that an undefined
-sub-expression makes a Rego rule silently not fire, and that `opa test` could
-not catch them because every case then mocked `data`, is not.
+sub-expression makes a Rego rule silently not fire, and that `opa test` hid
+two of them because every case then mocked `data`, is not.
 [THREAT_MODEL.md](THREAT_MODEL.md) has all of them, with the reasoning that
 found each one.
 

@@ -192,7 +192,7 @@ def test_port_out_of_range_is_rejected(tmp_path):
 #
 # Task 14 review finding: load_broker_config had 20 tests; load_control_config
 # had none of its own -- it was only exercised along the happy path via
-# tests/test_key_split.py, where the one "file absent" case actually failed
+# tests/warden/test_key_split.py, where the one "file absent" case actually failed
 # inside Signer.from_private_key_file, not inside the loader. These mirror
 # the broker-config tests above directly against load_control_config.
 #

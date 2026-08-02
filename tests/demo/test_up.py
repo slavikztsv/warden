@@ -10,7 +10,7 @@ return value unmodified -- not be swallowed into some generic non-zero.
 They also pin that `--build` is structurally baked into every `up` and
 `run` invocation this command emits, for both profiles -- re-pointing
 tests/warden/test_key_split.py's
-test_demo_script_rebuilds_before_starting_containers, which read the now-
+test_warden_demo_up_rebuilds_before_starting_containers, which read the now-
 deleted shell script's text. Unlike that text scan, these tests execute the
 real dispatch path (with docker/openssl/http mocked out) and inspect the
 actual argv `_compose` was called with, so a call site that quietly drops

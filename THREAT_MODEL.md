@@ -142,7 +142,7 @@ quietly fixed. Each is a real property of the system as shipped.
   therefore truncate the answer.
 - **The containment property is topological and is not exercised by CI.** The
   network isolation, the key split at the container level, and
-  `tests/test_isolation.sh` all require Docker. The Python suite proves the
+  `tests/demo/test_isolation.sh` all require Docker. The Python suite proves the
   wiring (the broker builds a `Verifier` from a public-key file, holds no
   `Signer`, exposes no minting route; the control entrypoint signs with the
   private half and the broker's verifier accepts it) and reads the Compose file
