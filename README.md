@@ -246,6 +246,7 @@ both are standard enough that a third-party SDK you cannot patch is covered
 too.
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}} }%%
 flowchart LR
     subgraph YOURS["YOUR AGENT — code unchanged"]
         direction TB
@@ -465,6 +466,7 @@ does not fire. Adversarial `opa eval`, not `opa test`, is what found them.
 ## Trust boundaries
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}} }%%
 flowchart LR
     subgraph UNTRUSTED["UNTRUSTED — agent-net, internal: true"]
         direction TB
@@ -554,6 +556,7 @@ against a fully compromised broker.
 ## System architecture
 
 ```mermaid
+%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}} }%%
 flowchart TB
     Ctl["broker-control<br/>control_main.py"]
     Client(["Agent runtime · untrusted"])
@@ -562,16 +565,16 @@ flowchart TB
         direction TB
         API["Tool API :8080<br/>app.py"]
         Proxy["Egress proxy :3128<br/>proxy.py"]
-        Ident["Token verifier<br/>identity.py"]
-        Cat["Tool catalog<br/>config/catalog.py"]
-        Taint["Taint + row budget<br/>taint.py"]
-        PDPc["PDP client<br/>pdp.py"]
-        Aud[("Audit log<br/>audit.py")]
+        Ident["1 · Verify token<br/>identity.py"]
+        Taint["2 · Snapshot task state<br/>taint.py"]
+        Cat["3 · Validate + describe<br/>config/catalog.py"]
+        PDPc["4 · Decide<br/>pdp.py"]
+        Aud[("5 · Record<br/>audit.py")]
     end
 
     OPA{{"OPA 1.19.0 :8181<br/>authz.rego + data.json"}}
 
-    subgraph ADAPT["ADAPTERS — broker/adapters/"]
+    subgraph ADAPT["6 · EXECUTE — broker/adapters/"]
         direction LR
         Doc["docstore"]
         Sql["sql"]
@@ -591,21 +594,11 @@ flowchart TB
     Client -- "Bearer" --> API
     Client -- "CONNECT" --> Proxy
 
-    API --> Ident
-    API --> Cat
-    API --> Taint
-    API --> PDPc
+    API --> Ident --> Taint --> Cat --> PDPc
     Proxy --> PDPc
-    PDPc -- "input document" --> OPA
-    OPA -- "allow + deny_reasons" --> PDPc
-
-    API -- "written before execution" --> Aud
-    Proxy --> Aud
-
-    API --> Doc
-    API --> Sql
-    API --> Http
-    API --> Mail
+    PDPc <-- "input · allow + deny_reasons" --> OPA
+    PDPc -- "allow" --> Aud
+    Aud -- "written before execution" --> ADAPT
 
     Doc --> DS
     Sql --> DB
@@ -623,7 +616,7 @@ flowchart TB
     class Client untrusted
     class Ctl control
     class API,Proxy enforce
-    class Ident,Cat,Taint,PDPc plumbing
+    class Ident,Taint,Cat,PDPc plumbing
     class Aud store
     class OPA core
     class Doc,Sql,Http,Mail plumbing
@@ -631,7 +624,7 @@ flowchart TB
     style BROKER fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
     style ADAPT fill:#F4F1FD,stroke:#7760DB,color:#3F2E8C
     style PROT fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
-    linkStyle 10 stroke:#37474F,stroke-width:2px
+    linkStyle 9,10 stroke:#37474F,stroke-width:2px
 ```
 
 | Component | Responsibility | Trust level | Failure impact |
