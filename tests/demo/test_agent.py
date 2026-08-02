@@ -618,34 +618,121 @@ def _raising_gemini_stub(exc):
     return SimpleNamespace(models=Models()), calls
 
 
-def test_a_stalled_request_is_retried_once_and_then_abandoned(monkeypatch, capsys):
-    """A stall gets a smaller budget than a rate limit, and says which it was.
+class _ServerError(Exception):
+    """Stands in for google.genai.errors.ServerError, which carries `.code`."""
+
+    def __init__(self, code: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def test_a_stalled_request_is_retried_and_then_abandoned(monkeypatch, capsys):
+    """A deadline overrun gets a smaller budget than a rate limit, and says so.
 
     A 429 is the expected case on a free tier, the server states how long to
-    wait, and waiting works. A stalled socket says nothing, costs the full
-    120s to discover, and a connection that died once usually dies again —
-    five attempts would spend ten minutes proving it.
+    wait, and waiting works. An overrun says nothing and costs up to the full
+    120s to discover, so it does not get the rate limit's five attempts.
     """
     import time
 
     import httpx
 
-    from demo.agent.llm import GeminiClient
+    from demo.agent.llm import GEMINI_TIMEOUT_ATTEMPTS, GeminiClient
 
     waits = []
     monkeypatch.setattr(time, "sleep", waits.append)
     stub, calls = _raising_gemini_stub(httpx.ReadTimeout("timed out"))
 
-    with pytest.raises(RuntimeError, match="stopped responding"):
+    with pytest.raises(RuntimeError, match="did not finish a turn"):
         GeminiClient("key", client=stub)._generate(config=None)
 
-    assert len(calls) == 2, "two attempts total, not the rate-limit budget of five"
-    assert waits == [5.0], "one backoff, between the two attempts"
+    assert len(calls) == GEMINI_TIMEOUT_ATTEMPTS < 5, "not the rate-limit budget"
+    assert waits == [5.0] * (GEMINI_TIMEOUT_ATTEMPTS - 1), "one backoff between each"
     out = capsys.readouterr().out
-    assert "[llm] request timed out after 120s, retrying" in out
-    # A stall must not be announced as a rate limit -- they call for different
-    # operator responses, and the wait line is the only thing on screen.
+    assert "[llm] turn exceeded 120s, retrying" in out
+    # An overrun must not be announced as a rate limit -- they call for
+    # different operator responses, and the wait line is all that is on screen.
     assert "transient provider error" not in out
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        _ServerError(504, "504 DEADLINE_EXCEEDED. {'error': {'code': 504}}"),
+        # No `.code` attribute: the text alone still has to be enough, since
+        # the wrapper type differs between google-genai versions.
+        Exception("504 DEADLINE_EXCEEDED. Deadline expired before operation"),
+    ],
+    ids=["with-code", "text-only"],
+)
+def test_a_server_side_deadline_overrun_is_retried_like_a_stall(
+    monkeypatch, capsys, exc
+):
+    """Regression: a 504 killed every live scenario on the first occurrence.
+
+    GEMINI_TIMEOUT_MS is not only httpx's socket deadline — google-genai sends
+    it to Google as X-Server-Timeout, so an overlong turn is abandoned by the
+    SERVER and comes back as 504 DEADLINE_EXCEEDED a moment before httpx would
+    have stalled. The stall branch therefore almost never fired, and 504 was
+    not in the transient set, so `_generate` re-raised at once: the 2026-08-02
+    live matrix recorded "run failed: 504 DEADLINE_EXCEEDED" for every scenario
+    with nothing wrong with any of the requests.
+    """
+    import time
+
+    from demo.agent.llm import GEMINI_TIMEOUT_ATTEMPTS, GeminiClient
+
+    waits = []
+    monkeypatch.setattr(time, "sleep", waits.append)
+    stub, calls = _raising_gemini_stub(exc)
+
+    with pytest.raises(RuntimeError, match="did not finish a turn"):
+        GeminiClient("key", client=stub)._generate(config=None)
+
+    assert len(calls) == GEMINI_TIMEOUT_ATTEMPTS, "retried, not re-raised at once"
+    assert waits == [5.0] * (GEMINI_TIMEOUT_ATTEMPTS - 1)
+    assert "[llm] turn exceeded 120s, retrying" in capsys.readouterr().out
+
+
+def test_a_deadline_overrun_that_clears_lets_the_turn_succeed(monkeypatch):
+    """The point of retrying: an overrun is load shedding, not a broken request.
+
+    A healthy turn on this model measures 2-10s, so the attempt after an
+    overrun normally returns immediately.
+    """
+    import time
+
+    from demo.agent.llm import GeminiClient
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    calls = []
+
+    class Models:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise _ServerError(504, "504 DEADLINE_EXCEEDED.")
+            return "the turn"
+
+    assert GeminiClient("key", client=SimpleNamespace(models=Models()))._generate(
+        config=None
+    ) == "the turn"
+    assert len(calls) == 2
+
+
+def test_a_bad_gateway_is_transient_like_the_other_provider_treats_it(monkeypatch):
+    """502 is in OpenRouterClient's retry set; the two live paths should agree."""
+    import time
+
+    from demo.agent.llm import GeminiClient
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    stub, calls = _raising_gemini_stub(_ServerError(502, "502 Bad Gateway"))
+
+    with pytest.raises(RuntimeError, match="still rate limited"):
+        GeminiClient("key", client=stub)._generate(config=None)
+
+    assert len(calls) == 5, "the transient budget, not the overrun one"
 
 
 def test_a_rate_limit_still_gets_its_five_attempts(monkeypatch, capsys):

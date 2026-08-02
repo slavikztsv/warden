@@ -30,13 +30,28 @@ GEMINI_MAX_TOKENS = 16384
 # indefinitely", and the SDK's own retry is off by default. 120s matches the
 # value OpenRouterClient already passes, so the two live paths agree rather
 # than each carrying its own number.
+#
+# This number is NOT only httpx's socket deadline. google-genai also forwards it
+# to Google as the X-Server-Timeout header (see populate_server_timeout_header
+# in google/genai/_api_client.py), so it is equally an instruction to the
+# server: abandon the generation after this long. The server acts on it first --
+# measured against the live API, a 10s value came back at 8.9s and a 45s value
+# at 44.3s -- so a turn that overruns arrives as an HTTP 504 DEADLINE_EXCEEDED
+# response, not as a stalled socket. _generate has to treat both as one event.
 GEMINI_TIMEOUT_MS = 120_000
 
-# A stall gets a smaller budget than a rate limit, on purpose. A 429 is the
-# expected case on a free tier, the server says how long to wait, and waiting
-# works. A stalled socket carries no information, costs the full timeout to
-# discover, and a connection that died once will usually die again.
-GEMINI_TIMEOUT_ATTEMPTS = 2
+# A deadline overrun gets a smaller budget than a rate limit, on purpose. A 429
+# is the expected case on a free tier, the server says how long to wait, and
+# waiting works. An overrun carries no such instruction and costs up to the full
+# deadline to discover.
+#
+# Three attempts rather than two: until 504 was recognised as an overrun this
+# budget was unreachable -- the server's answer beat httpx's timeout every time,
+# so the number here was never actually exercised. A matrix run makes several
+# calls per scenario across several scenarios, and an overrun is the provider
+# shedding load rather than a dead socket, so the retry usually lands in
+# seconds: a healthy turn on this model measures 2-10s.
+GEMINI_TIMEOUT_ATTEMPTS = 3
 GEMINI_TIMEOUT_BACKOFF = 5.0
 
 # Kept for the Anthropic client, whose call site predates the second provider.
@@ -351,8 +366,16 @@ class GeminiClient:
         That bound covered error RESPONSES, not absent ones. A request that
         never returns never raises, so until the client was given a deadline
         this loop could not see the failure it claimed to bound — a live matrix
-        run hung on one socket for 24 minutes. A stall now lands in its own
+        run hung on one socket for 24 minutes. An overrun now lands in its own
         branch with its own, smaller budget.
+
+        Giving the client a deadline then moved the failure rather than ending
+        it. GEMINI_TIMEOUT_MS is sent to Google as X-Server-Timeout too, so the
+        server abandons an overlong generation and answers 504 DEADLINE_EXCEEDED
+        just before httpx would have stalled — turning the silent case into a
+        loud one, which this method was not reading. Every scenario of the
+        2026-08-02 live matrix reported "run failed: 504 DEADLINE_EXCEEDED" for
+        that reason, and none of them had anything wrong with the request.
         """
         import re
         import time as _time
@@ -360,37 +383,54 @@ class GeminiClient:
         import httpx
 
         last = None
-        attempt = 0   # transient provider errors: 429/500/503
-        timeouts = 0  # stalled requests, budgeted separately
+        attempt = 0   # transient provider errors: 429/500/502/503
+        timeouts = 0  # deadline overruns, budgeted separately
         while attempt < 5:
             try:
                 return self._client.models.generate_content(
                     model=self._model, contents=self._history, config=config
                 )
-            except httpx.TimeoutException as exc:
-                # Deliberately NOT httpx.ConnectError: that fails fast and says
-                # something specific, where this is the silent case the whole
-                # deadline exists for.
-                timeouts += 1
-                if timeouts >= GEMINI_TIMEOUT_ATTEMPTS:
-                    raise RuntimeError(
-                        f"model stopped responding after {timeouts} attempts "
-                        f"of {GEMINI_TIMEOUT_MS // 1000}s each. The request was "
-                        "accepted and no response came back."
-                    ) from exc
-                print(
-                    f"[llm] request timed out after {GEMINI_TIMEOUT_MS // 1000}s,"
-                    " retrying",
-                    flush=True,
-                )
-                _time.sleep(GEMINI_TIMEOUT_BACKOFF)
-                # A stall does not spend a rate-limit attempt: the two budgets
-                # count different failures.
-                continue
             except Exception as exc:  # noqa: BLE001 - vendor error types vary
                 text = str(exc)
+                code = getattr(exc, "code", None)
+
+                # A deadline overrun, in both the shapes it arrives in. The
+                # stalled socket is what GEMINI_TIMEOUT_MS was written for; the
+                # 504 is the SAME event reported by the server, which was told
+                # the same deadline via X-Server-Timeout and nearly always
+                # answers before httpx gives up. Handling only the first shape
+                # is what made every scenario of the 2026-08-02 live matrix run
+                # die: a 504 fell through to the transient test below, did not
+                # match it, and re-raised on the very first occurrence.
+                #
+                # httpx.ConnectError is deliberately still excluded: it fails
+                # fast and says something specific, where this is the silent
+                # case the deadline exists for.
+                if (
+                    isinstance(exc, httpx.TimeoutException)
+                    or code == 504
+                    or "DEADLINE_EXCEEDED" in text
+                ):
+                    timeouts += 1
+                    if timeouts >= GEMINI_TIMEOUT_ATTEMPTS:
+                        raise RuntimeError(
+                            "model did not finish a turn within "
+                            f"{GEMINI_TIMEOUT_MS // 1000}s, {timeouts} times "
+                            "running. The request was accepted and the "
+                            "generation was abandoned at the deadline."
+                        ) from exc
+                    print(
+                        f"[llm] turn exceeded {GEMINI_TIMEOUT_MS // 1000}s, "
+                        "retrying",
+                        flush=True,
+                    )
+                    _time.sleep(GEMINI_TIMEOUT_BACKOFF)
+                    # An overrun does not spend a rate-limit attempt: the two
+                    # budgets count different failures.
+                    continue
+
                 transient = (
-                    getattr(exc, "code", None) in (429, 500, 503)
+                    code in (429, 500, 502, 503)
                     or "RESOURCE_EXHAUSTED" in text
                     or "UNAVAILABLE" in text
                 )
