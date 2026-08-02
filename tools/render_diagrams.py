@@ -58,6 +58,8 @@ ZONE = {
     "control": ("#FAF1DF", "#976D19", "#6B4C0F"),
     "target": ("#E3F2EB", "#2E7D5B", "#1D4E39"),
     "plumbing": ("#F4F1FD", "#7760DB", "#3F2E8C"),
+    "core": ("#E9E4F8", "#4527A0", "#2A1968"),
+    "store": ("#E7EBED", "#37474F", "#1E282D"),
 }
 LINE = "#8B85A6"
 FORBIDDEN = "#B23A34"
@@ -783,6 +785,89 @@ def repo_map():
             f'</marker></defs>' + "".join(body) + '</svg>\n')
 
 
+# --------------------------------------------------------------------------
+# Demo flow — who starts a task, from which file, and why.
+#
+# The one question the demo itself does not answer on screen: nothing here
+# begins with the agent. Each step names the file that does the work, so the
+# diagram is a table of contents for the code as well as an explanation.
+# --------------------------------------------------------------------------
+
+FLOW_STEPS = [
+    ("demo/scenario/task.toml", "control",
+     "Declares the task: purpose, allowed tools, counterparties, the prompt",
+     "The authority is decided here, in config, before a line of code runs"),
+    ("demo/cli/main.py  _generate_keypair()", "control",
+     "Generates the Ed25519 keypair OUTSIDE every container, then starts OPA, broker, broker-control",
+     "The broker gets the public half only, so it can verify but never mint"),
+    ("demo/cli/main.py  _mint_token()", "control",
+     "POSTs that [task] table to broker-control on :8081",
+     "The orchestrator asks for authority — the agent never does, and has no route to"),
+    ("warden/broker/control.py", "enforce",
+     "Signs one task token, five-minute TTL, scoped to exactly what was asked for",
+     "The only process holding the private key, reachable only from backend-net"),
+    ("demo/agent/loop.py  main()", "untrusted",
+     "Runs with TASK_TOKEN, BROKER_URL and HTTP_PROXY set; asks the model, proposes tool calls",
+     "Untrusted by design: it reads documents an attacker can influence"),
+    ("warden/broker/app.py  invoke()", "enforce",
+     "verify → snapshot → validate → decide → record → execute",
+     "Every call judged against the token AND everything the task has done so far"),
+    ("warden/policies/authz.rego", "core",
+     "Answers allow, or deny_reasons naming the rule that objected",
+     "The deployment's rules, evaluated outside the process being governed"),
+    ("data/audit.jsonl → warden replay 4711", "store",
+     "Hash-chained record of every decision, written before the action",
+     "What happened is provable afterwards, including the refusals"),
+]
+
+
+def demo_flow():
+    W = 1120
+    cx0, cw, chh, gap = 74, 1020, 84, 20
+    top = 62
+    body = []
+
+    body.append(_chip(0, 6, "who starts a task in the demo, and from which file",
+                      13.5, TITLE_CHIP, anchor_left=True))
+
+    for i, (path, tone, what, why) in enumerate(FLOW_STEPS):
+        y = top + i * (chh + gap)
+        fill, stroke, colour = ZONE[tone]
+        room = cw - 32
+        for text, size in ((path, 14), (what, 12.5), (why, 11)):
+            if text_width(text, size) > room:
+                raise ValueError(f"{text!r} needs {text_width(text, size):.0f}px, "
+                                 f"card gives {room:.0f}px")
+        body.append(f'<rect x="{cx0}" y="{y}" width="{cw}" height="{chh}" rx="8" '
+                    f'fill="{fill}" stroke="{stroke}"/>')
+        body.append(f'<text x="{cx0+18}" y="{y+24}" fill="{colour}" font-family="{MONO}" '
+                    f'font-size="14" font-weight="700">{esc(path)}</text>')
+        body.append(f'<text x="{cx0+18}" y="{y+47}" fill="{colour}" font-family="{MONO}" '
+                    f'font-size="12.5">{esc(what)}</text>')
+        body.append(f'<text x="{cx0+18}" y="{y+68}" fill="{colour}" font-family="{MONO}" '
+                    f'font-size="11" opacity="0.75">{esc(why)}</text>')
+
+        # numbered badge, straddling the card's left edge
+        bx, by = cx0 - 22, y + chh / 2
+        pf, ps, pc = PALETTE[tone]
+        body.append(f'<circle cx="{bx}" cy="{by}" r="19" fill="{pf}" stroke="{ps}"/>')
+        body.append(f'<text x="{bx}" y="{by}" fill="{pc}" font-family="{MONO}" '
+                    f'font-size="15" font-weight="700" text-anchor="middle" '
+                    f'dominant-baseline="central">{i+1}</text>')
+        if i < len(FLOW_STEPS) - 1:
+            body.append(f'<path d="M{bx},{y+chh+2} L{bx},{y+chh+gap-4}" fill="none" '
+                        f'stroke="{LINE}" stroke-width="2" marker-end="url(#arrow)"/>')
+
+    H = top + len(FLOW_STEPS) * (chh + gap) + 6
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
+            f'height="{H}" role="img" aria-label="Eight steps from demo/scenario/task.toml '
+            f'to the audit log, naming the file responsible for each">'
+            f'<title>Who starts a task in the demo</title><defs>'
+            f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
+            f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{LINE}"/></marker>'
+            f'</defs>' + "".join(body) + '</svg>\n')
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     failed = False
@@ -803,6 +888,10 @@ def main():
         if png:
             note += f", +{png.name}"
         print(f"wrote {path.relative_to(OUT.parent.parent)}  ({note})")
+    fp = OUT / "demo-flow.svg"
+    fp.write_text(demo_flow(), encoding="utf-8")
+    fpng = export_png(fp)
+    print("wrote docs/assets/demo-flow.svg" + (f" +{fpng.name}" if fpng else ""))
     rp = OUT / "repo-map.svg"
     rp.write_text(repo_map(), encoding="utf-8")
     rpng = export_png(rp)

@@ -202,6 +202,22 @@ the policy's inputs and precedence: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.m
 
 ---
 
+## One task, end to end
+
+The demo as a worked example, with the file responsible for each step. Nothing
+begins with the agent: by the time `demo/agent/loop.py` runs, its authority has
+already been decided in [demo/scenario/task.toml](demo/scenario/task.toml),
+minted by `broker-control`, and handed to it as one five-minute token.
+
+<p align="center">
+  <img src="docs/assets/demo-flow.png" width="100%" alt="Eight steps: task.toml declares the task; demo/cli/main.py generates the keypair and starts the services; _mint_token() POSTs to broker-control; warden/broker/control.py signs the token; demo/agent/loop.py runs with it; warden/broker/app.py verifies, decides, records and executes; authz.rego answers; the audit log proves it afterwards">
+</p>
+
+Steps 1–3 and 5 are the deployment's — swap them for your own orchestrator and
+agent. Steps 4 and 6–8 are the product and do not change.
+
+---
+
 ## Repository
 
 <p align="center">
