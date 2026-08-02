@@ -600,41 +600,58 @@ def _card(x, y, w, h, kind, icon, head, sub, tone):
     return "".join(body)
 
 
-def _strip(rule, ask_icon, ask_head, ask_sub, got_head, got_sub, note):
-    W, H, cy = 1080, 158, 46
-    ch = 88
-    body = []
-    body.append(_card(0, cy - ch / 2 + 20, 250, ch, None, "agent", "the agent", "one task token", "untrusted"))
-    body.append(_card(310, cy - ch / 2 + 20, 340, ch, None, ask_icon, ask_head, ask_sub, "untrusted"))
-    body.append(_card(800, cy - ch / 2 + 20, 280, ch, None, "shield", got_head, got_sub, "target"))
+TITLE_CHIP = ("#EDEAF4", "#B9B2CC", "#2A2440")
 
-    gy = cy + 20
+
+def _chip(x_centre, y, text, size, tone, anchor_left=False):
+    """Text on an opaque pill.
+
+    Everything outside a card sits on whatever colour the page happens to be,
+    and NO single ink clears 4.5:1 against both white and GitHub's #0d1117 --
+    the two requirements are arithmetically incompatible (luminance <= 0.183
+    for one, >= 0.200 for the other). The rule name used to be bare text at
+    1.79:1 on dark. A pill sidesteps the whole problem.
+    """
+    fill, stroke, colour = tone
+    w = text_width(text, size) + 22
+    x = x_centre if anchor_left else x_centre - w / 2
+    h = size + 11
+    return (f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="{h/2:.1f}" '
+            f'fill="{fill}" stroke="{stroke}" stroke-width="0.8"/>'
+            f'<text x="{x + w/2:.1f}" y="{y + h/2:.1f}" fill="{colour}" font-family="{MONO}" '
+            f'font-size="{size}" font-weight="600" text-anchor="middle" '
+            f'dominant-baseline="central">{esc(text)}</text>')
+
+
+def _strip(title, rule, ask_icon, ask_head, ask_sub, got_head, got_sub, note):
+    W, H = 1080, 186
+    ch, top = 88, 44           # card height, and where the cards begin
     gate_x = 706
-    fill, stroke, colour = PALETTE["enforce"]
-    body.append(f'<rect x="{gate_x}" y="{gy - 34}" width="14" height="88" rx="5" '
-                f'fill="{fill}" stroke="{stroke}"/>')
-    body.append(f'<text x="{gate_x + 7}" y="{gy - 44}" fill="{colour if False else ZONE["enforce"][2]}" '
-                f'font-family="{MONO}" font-size="12.5" font-weight="600" '
-                f'text-anchor="middle">{esc(rule)}</text>')
+    body = []
 
-    for x1, x2 in ((250, 310), (650, gate_x)):
-        body.append(f'<path d="M{x1+8},{gy+10} L{x2-6},{gy+10}" fill="none" stroke="{LINE}" '
+    body.append(_chip(0, 4, title, 13.5, TITLE_CHIP, anchor_left=True))
+
+    body.append(_card(0, top, 250, ch, None, "agent", "the agent", "one task token", "untrusted"))
+    body.append(_card(310, top, 340, ch, None, ask_icon, ask_head, ask_sub, "untrusted"))
+    body.append(_card(800, top, 280, ch, None, "shield", got_head, got_sub, "target"))
+
+    fill, stroke, _ = PALETTE["enforce"]
+    body.append(f'<rect x="{gate_x}" y="{top - 6}" width="14" height="{ch + 12}" rx="5" '
+                f'fill="{fill}" stroke="{stroke}"/>')
+
+    mid = top + ch / 2
+    for x1, x2 in ((250, 310), (650, gate_x), (gate_x + 14, 800)):
+        body.append(f'<path d="M{x1+8},{mid} L{x2-6},{mid}" fill="none" stroke="{LINE}" '
                     f'stroke-width="2" marker-end="url(#arrow)"/>')
-    body.append(f'<path d="M{gate_x+14+6},{gy+10} L{794},{gy+10}" fill="none" stroke="{LINE}" '
-                f'stroke-width="2" marker-end="url(#arrow)"/>')
-    # A chip, not bare text: this line sits outside every card, on whatever
-    # colour the page happens to be, and no single ink reads on both.
-    nf, ns, nc = ZONE["enforce"]
-    nw = text_width(note, 12) + 22
-    body.append(f'<rect x="{W/2 - nw/2:.1f}" y="{gy + 58}" width="{nw:.1f}" height="22" rx="11" '
-                f'fill="{nf}" stroke="{ns}" stroke-width="0.8"/>'
-                f'<text x="{W/2:.1f}" y="{gy + 69}" fill="{nc}" font-family="{MONO}" '
-                f'font-size="12" text-anchor="middle" dominant-baseline="central">'
-                f'{esc(note)}</text>')
+
+    # The rule travels with its explanation, in one pill, rather than floating
+    # above the gate where it was unreadable on a dark page.
+    body.append(_chip(W / 2, top + ch + 14, f"{rule} · {note}", 12, ZONE["enforce"]))
 
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
-            f'height="{H}" role="img" aria-label="{esc(ask_head + " " + ask_sub + ", refused by " + rule + "; " + got_head + " " + got_sub)}">'
-            f'<title>{esc(rule)}</title><defs>'
+            f'height="{H}" role="img" aria-label="{esc(title)}: {esc(ask_head)}, '
+            f'{esc(ask_sub)}; {esc(rule)} gives {esc(got_head)}, {esc(got_sub)}">'
+            f'<title>{esc(title)}</title><defs>'
             f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
             f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{LINE}"/></marker>'
             f'</defs>' + "".join(body) + '</svg>\n')
@@ -642,16 +659,19 @@ def _strip(rule, ask_icon, ask_head, ask_sub, got_head, got_sub, note):
 
 SCENARIOS = {
     "stop-report": dict(
+        title="report · bulk extraction",
         rule="rows.bounded",
         ask_icon="records", ask_head="read the whole table", ask_sub="20,651 customer records",
         got_head="1 record", got_sub="the one the task named",
         note="splitting the read into thirds changed nothing"),
     "stop-crosscheck": dict(
+        title="crosscheck · out-of-scope read",
         rule="rows.scope",
         ask_icon="person", ask_head="read another customer", ask_sub="one row, inside the budget",
         got_head="refused", got_sub="an undeclared subject",
         note="wrong subject, not too many rows"),
     "stop-share": dict(
+        title="share · data reaching an unapproved sink",
         rule="egress.pii_sink",
         ask_icon="server", ask_head="POST to an internal host", ask_sub="docstore.internal, allowlisted",
         got_head="0 bytes", got_sub="the task was holding PII",

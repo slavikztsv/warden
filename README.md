@@ -45,9 +45,9 @@ the way, once through the broker. Same task, same prompt, same policy bundle.
 Each asks for something a per-call permission check would wave through.
 
 <p align="center">
-  <img src="docs/assets/stop-report.png" width="100%" alt="The agent asks to read the whole table, 20,651 customer records; rows.bounded returns 1 record, the one the task named — splitting the read into thirds changed nothing"><br>
-  <img src="docs/assets/stop-crosscheck.png" width="100%" alt="The agent asks to read another customer, one row and inside the budget; rows.scope refuses it as an undeclared subject — wrong subject, not too many rows"><br>
-  <img src="docs/assets/stop-share.png" width="100%" alt="The agent asks to POST to docstore.internal, an allowlisted host; egress.pii_sink lets 0 bytes through because the task was holding PII — refused for what it carried, not where it went">
+  <img src="docs/assets/stop-report.png" width="100%" alt="report, bulk extraction: the agent asks to read the whole table, 20,651 customer records; rows.bounded returns 1 record, the one the task named — splitting the read into thirds changed nothing"><br>
+  <img src="docs/assets/stop-crosscheck.png" width="100%" alt="crosscheck, out-of-scope read: the agent asks to read another customer, one row and inside the budget; rows.scope refuses it as an undeclared subject — wrong subject, not too many rows"><br>
+  <img src="docs/assets/stop-share.png" width="100%" alt="share, data reaching an unapproved sink: the agent asks to POST to docstore.internal, an allowlisted host; egress.pii_sink lets 0 bytes through because the task was holding PII">
 </p>
 
 | Scenario | Without the broker | With it | Rule |
