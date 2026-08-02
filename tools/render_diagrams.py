@@ -663,7 +663,7 @@ SCENARIOS = {
     "stop-report": dict(
         title="report · bulk extraction",
         rule="rows.bounded",
-        ask_icon="records", ask_head="read the whole table", ask_sub="20,651 customer records",
+        ask_icon="records", ask_head="read the whole table", ask_sub="20,652 customer records",
         got_head="1 record", got_sub="the one the task named",
         note="splitting the read into thirds changed nothing"),
     "stop-crosscheck": dict(
