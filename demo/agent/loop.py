@@ -19,6 +19,14 @@ from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
 from demo.scenario.task import PROMPT as SYSTEM_TASK
 
 
+# The text a capped run's final step carries. Named rather than inlined so a
+# caller can recognise a truncated transcript without string-matching a literal
+# that lives in another module — explain's matrix does exactly that, and a
+# silent drift between the two would turn a capped run back into a row that
+# looks complete.
+STOPPED_MARKER = "(stopped after"
+
+
 def run_task(
     dispatcher, llm, task_id: str, task: str | None = None, max_steps: int | None = None
 ) -> list[dict]:
@@ -39,7 +47,7 @@ def run_task(
         # default so the demo is unchanged; the model sweep sets it, because a
         # model it has never run before may never choose to finish.
         if max_steps is not None and len(transcript) >= max_steps:
-            step = {"type": "final", "text": f"(stopped after {max_steps} steps)"}
+            step = {"type": "final", "text": f"{STOPPED_MARKER} {max_steps} steps)"}
             transcript.append(step)
             print(f"[agent] {step['text']}")
             return transcript

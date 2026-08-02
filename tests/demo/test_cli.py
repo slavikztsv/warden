@@ -1176,3 +1176,42 @@ def test_an_aborted_matrix_keeps_the_scenarios_that_finished(monkeypatch):
     assert run.results["triage"]["scenario"] == "triage"
     # And the model is known, so the saved rows say what produced them.
     assert run.model
+
+
+def test_a_capped_scenario_is_reported_as_failed_not_measured(monkeypatch, capsys):
+    """A capped run is not a measurement.
+
+    run_task stops gracefully and returns, so a truncated scenario would
+    otherwise print partial counts — bytes that left, records read — in the
+    same columns as a scenario that ran to completion. Those numbers are a
+    floor, not a total, and nothing in the table would say so.
+    """
+    from demo.agent.loop import STOPPED_MARKER
+    from demo.cli import explain
+
+    monkeypatch.setattr(explain, "TASKS", {"triage": dict(explain.TASKS["triage"])})
+
+    def capped(db, llm, live, pair, capture=None):
+        if capture is not None:
+            capture.append({"type": "final", "text": f"{STOPPED_MARKER} 80 steps)"})
+        return {
+            "tool calls made": 80, "tool calls refused": 0,
+            "customer records read": 10312, "outbound sends attempted": 1,
+            "bytes that left": 155, "PII into internal systems": 0,
+            "mail to undeclared recipients": 0, "emails delivered": 0,
+        }
+
+    monkeypatch.setattr(explain, "_run_unprotected", capped)
+
+    def unreachable(*a, **k):
+        raise AssertionError("the protected side must be skipped for a capped run")
+
+    monkeypatch.setattr(explain, "_run_protected", unreachable)
+
+    explain._main(["--matrix"])
+
+    out = capsys.readouterr().out
+    assert "run failed: agent did not finish" in out
+    assert "not measured" in out
+    # The partial counts must NOT appear as if they were a result.
+    assert "10,312 records read" not in out

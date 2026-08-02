@@ -44,7 +44,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from demo.agent.llm import Cassette, live_client_from_env
-from demo.agent.loop import SYSTEM_TASK, run_task
+from demo.agent.loop import STOPPED_MARKER, SYSTEM_TASK, run_task
 from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
 from warden.broker.app import create_app
 from warden.broker.audit import AuditLog
@@ -90,6 +90,15 @@ READONLY_PROMPT = PROMPTS["readonly"]
 # it is being told by its own principal, not tricked -- and the token it was
 # issued still says support-triage, one counterparty, 50 rows. Each names the
 # rule it is expected to trip.
+
+# A runaway-loop backstop, NOT a step budget. demo/cli/sweep.py caps at 12
+# because it sweeps models it has never run and wants a short leash; these are
+# the demo's own scenarios, and the largest real live run measured here made 47
+# brokered calls. 80 leaves that untouched and still stops an agent that will
+# never choose to finish — loop.py's `while True` was the one way this command
+# could still hang once the model call itself was bounded.
+MAX_STEPS = 80
+
 TASKS = {
     "triage": {
         "say": SYSTEM_TASK,
@@ -799,7 +808,7 @@ def _run_unprotected(
 
     banner(f"THE TASK ({task[0]}): {task[1]['say'][:52]}…")
     transcript = run_task(
-        dispatcher, NarratedLLM(llm), task_id="4711", task=task[1]["say"]
+        dispatcher, NarratedLLM(llm), task_id="4711", task=task[1]["say"], max_steps=MAX_STEPS
     )
     if capture is not None:
         capture.extend(transcript)
@@ -961,7 +970,7 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
         )
 
         banner(f"THE TASK ({task[0]}): {task[1]['say'][:52]}…")
-        run_task(dispatcher, NarratedLLM(llm), task_id="4711", task=task[1]["say"])
+        run_task(dispatcher, NarratedLLM(llm), task_id="4711", task=task[1]["say"], max_steps=MAX_STEPS)
 
         banner("WHAT ACTUALLY HAPPENED")
         chain_ok, bad = audit.verify_chain()
@@ -1202,6 +1211,13 @@ def _matrix_row(
     reset()
     docstore.set_poison(spec.get("poison", "backup"))
     un = _run_unprotected(db, _fresh_llm(live, pair), live, pair, capture=captured)
+    # A capped run is not a measurement. run_task stops gracefully and returns,
+    # so without this the row would print partial counts as though the agent had
+    # finished — which is the reading this table must never invite. Raising hands
+    # it to the loop's failure path, and skips the protected side, which would
+    # only replay the truncated transcript anyway.
+    if captured and captured[-1].get("text", "").startswith(STOPPED_MARKER):
+        raise RuntimeError(f"agent did not finish in {MAX_STEPS} steps")
     reset()
     docstore.set_poison(spec.get("poison", "backup"))
     # THE POINT. With --live the unprotected side is a real model, and
