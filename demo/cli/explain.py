@@ -1202,7 +1202,14 @@ def _fresh_llm(live: bool, task: tuple[str, dict] | None = None):
     and conversation history — so the two profiles must never share one.
     """
     if live:
-        return live_client_from_env(os.environ)
+        # merged_env(), not os.environ: .env.example tells you to put the key
+        # in .env, and `up --live` honours that because Compose interpolates
+        # the file. This path did not, so a key that lived only in .env made
+        # the menu show "live model gemini" and then die here one keystroke
+        # later. The process environment still wins over the file.
+        from demo.cli import preflight
+
+        return live_client_from_env(preflight.merged_env())
     recorded = Path(f"demo/agent/cassettes/{task[0]}.json") if task else None
     if recorded and recorded.exists():
         return Cassette(recorded)

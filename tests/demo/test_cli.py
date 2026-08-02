@@ -1029,3 +1029,42 @@ def test_the_retired_profile_name_is_rejected_by_up():
 
     with _pytest.raises(SystemExit):
         build_parser().parse_args(["up", "--profile", "guarded"])
+
+
+# --- .env reaches the live path ---------------------------------------------
+#
+# .env.example tells you to put your key in .env, and `up --live` honours that
+# because Compose interpolates the file. The in-process paths did not: they
+# read os.environ alone, so a key that lived only in .env produced a menu
+# showing "live model gemini" in green and then a traceback from
+# live_client_from_env one keystroke later. Found by running the documented
+# command in a shell that had not exported anything.
+
+
+def test_the_live_client_is_built_from_the_dotenv_merged_environment(monkeypatch):
+    from demo.cli import explain, preflight
+
+    seen = {}
+    monkeypatch.setattr(
+        explain, "live_client_from_env", lambda env: seen.setdefault("env", env)
+    )
+    monkeypatch.setattr(preflight, "merged_env", lambda: {"MARKER": "from-dotenv"})
+    explain._fresh_llm(True, None)
+    assert seen["env"] == {"MARKER": "from-dotenv"}
+
+
+def test_sweep_finds_a_key_that_only_exists_in_the_dotenv(monkeypatch):
+    from demo.cli import preflight, sweep
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        preflight, "merged_env", lambda: {"OPENROUTER_API_KEY": "from-dotenv"}
+    )
+    assert sweep._api_key() == "from-dotenv"
+
+
+def test_sweep_still_reports_a_genuinely_absent_key(monkeypatch):
+    from demo.cli import preflight, sweep
+
+    monkeypatch.setattr(preflight, "merged_env", lambda: {})
+    assert sweep._api_key() is None

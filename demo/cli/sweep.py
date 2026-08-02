@@ -194,15 +194,29 @@ def render(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _api_key() -> str | None:
+    """The OpenRouter key, from the environment or .env.
+
+    Same reason as explain's _fresh_llm: .env.example says to put it in .env,
+    and reading os.environ alone made the menu advertise a run that then
+    exited on a missing credential.
+    """
+    from demo.cli import preflight
+
+    return preflight.merged_env().get("OPENROUTER_API_KEY", "").strip() or None
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--help" in argv or "-h" in argv:
         print(__doc__)
         return 0
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = _api_key()
     if not api_key:
-        sys.exit("warden-demo sweep needs OPENROUTER_API_KEY in the environment.")
+        sys.exit(
+            "warden-demo sweep needs OPENROUTER_API_KEY in the environment or .env."
+        )
 
     picked: list[str] = []
     for index, arg in enumerate(argv):
