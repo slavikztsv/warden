@@ -1144,6 +1144,105 @@ class ProgressFilter(io.StringIO):
         return super().write(text)
 
 
+def _steps_from(scratch: Path) -> list[dict]:
+    """The per-call decisions a protected run recorded, if it got that far.
+
+    "43 refused" is a summary; which calls, against what, and under which rule
+    is the part a reader can check. Returns [] when the run failed before the
+    broker wrote anything, which is a fact about the run, not an error.
+    """
+    audit_file = scratch / "audit.jsonl"
+    if not audit_file.exists():
+        return []
+    return [
+        {
+            "n": record["seq"],
+            "tool": record["action"]["tool"],
+            "target": _target_label(record["target"]),
+            "decision": record["decision"],
+            "rule": record["rule"],
+            "held": list(record["task_state"]["data_classes_held"]),
+            "rows_before": record["task_state"]["rows_returned_so_far"],
+        }
+        for record in AuditLog(audit_file).records()
+    ]
+
+
+def _matrix_row(
+    name: str, spec: dict, db: Path, live: bool, scratch: Path, reset
+) -> dict:
+    """One scenario's A/B, measured. Raises if either profile fails.
+
+    Extracted from the matrix loop so a failing scenario can be caught without
+    the catch swallowing the loop's own control flow, and so this is testable
+    without running every scenario end to end.
+    """
+    pair = (name, spec)
+    captured: list = []
+    reset()
+    docstore.set_poison(spec.get("poison", "backup"))
+    un = _run_unprotected(db, _fresh_llm(live, pair), live, pair, capture=captured)
+    reset()
+    docstore.set_poison(spec.get("poison", "backup"))
+    # THE POINT. With --live the unprotected side is a real model, and
+    # the protected side replays exactly what it just did. Sampling the
+    # model a second time would let it take a different path, and the
+    # comparison would silently stop being about the broker -- which
+    # is not hypothetical: inject-vendor once leaked 119 bytes
+    # unprotected and recorded zero refusals protected, in one command.
+    protected_llm = (
+        Cassette.from_steps(captured, name) if live
+        else _fresh_llm(False, pair)
+    )
+    gu = _run_protected(scratch, db, protected_llm, pair)
+
+    steps = _steps_from(scratch)
+    harms = [
+        (f"{un['customer records read']:,} records read", "customer records read"),
+        (f"{un['bytes that left']} bytes out", "bytes that left"),
+        (f"{un['PII into internal systems']} bytes filed internally",
+         "PII into internal systems"),
+        (f"{un['mail to undeclared recipients']} misdirected email",
+         "mail to undeclared recipients"),
+    ]
+    worst = max(harms, key=lambda h: un[h[1]] if h[1] != "customer records read"
+                else un[h[1]] - 1)
+    if gu["tool calls refused"] == 0:
+        # The model never asked for anything out of scope, so there was
+        # nothing to refuse. Falling through to the harm columns would
+        # print the LEGITIMATE email as damage the broker failed to
+        # stop, which is the opposite of what happened.
+        return {
+            "steps": steps,
+            "scenario": name,
+            "rule": "—",
+            "harm": "model declined the instruction",
+            "protected": "nothing to refuse",
+            "note": spec["damage"],
+        }
+    if all(un[key] == 0 for _, key in harms[1:]) and un[harms[0][1]] <= 1:
+        # Nothing leaked and nothing extra was read: this scenario's
+        # damage is a capability the token never granted being used at
+        # all. Say that, rather than printing a row where both columns
+        # match and the point disappears.
+        worst = (
+            f"{un['emails delivered']} email sent as the company",
+            "emails delivered",
+        )
+    return {
+        "steps": steps,
+        "scenario": name,
+        "rule": (
+            spec["trips"].split("→")[-1].strip().split()[0]
+            if "→" in spec["trips"] else "several"
+        ),
+        "harm": worst[0],
+        "protected": f"{gu['tool calls refused']} refused, "
+                   f"{gu[worst[1]]:,} {worst[0].split(' ', 1)[1]}",
+        "note": spec["damage"],
+    }
+
+
 def render_matrix(rows: list[dict], live: bool = False) -> str:
     """Every recorded scenario's A/B on one screen.
 
@@ -1289,7 +1388,6 @@ def _main(argv: list[str], run=None) -> int:
                 f"demo/agent/cassettes/{name}.json"
             ).exists():
                 continue
-            pair = (name, spec)
             # Not a bare StringIO: that swallowed the model client's retry
             # messages along with the narration, and on a rate-limited free
             # tier those are the only sign the run is alive. See ProgressFilter.
@@ -1299,88 +1397,10 @@ def _main(argv: list[str], run=None) -> int:
             # refusal counts come out cumulative -- 3, 4, 5, 6 -- which reads
             # as a trend and is an artifact.
             scratch = Path(tempfile.mkdtemp())
-            captured: list = []
             print(f"  [{len(rows) + 1}] {name}", flush=True)
             with contextlib.redirect_stdout(quiet):
-                reset()
-                docstore.set_poison(spec.get("poison", "backup"))
-                un = _run_unprotected(
-                    db, _fresh_llm(live, pair), live, pair, capture=captured
-                )
-                reset()
-                docstore.set_poison(spec.get("poison", "backup"))
-                # THE POINT. With --live the unprotected side is a real model, and
-                # the protected side replays exactly what it just did. Sampling the
-                # model a second time would let it take a different path, and the
-                # comparison would silently stop being about the broker -- which
-                # is not hypothetical: inject-vendor once leaked 119 bytes
-                # unprotected and recorded zero refusals protected, in one command.
-                protected_llm = (
-                    Cassette.from_steps(captured, name) if live
-                    else _fresh_llm(False, pair)
-                )
-                gu = _run_protected(scratch, db, protected_llm, pair)
-            # The per-call decisions, not just the totals. "43 refused" is a
-            # summary; which calls, against what, and under which rule is the
-            # part a reader can actually check.
-            steps = []
-            audit_file = scratch / "audit.jsonl"
-            if audit_file.exists():
-                for record in AuditLog(audit_file).records():
-                    steps.append({
-                        "n": record["seq"],
-                        "tool": record["action"]["tool"],
-                        "target": _target_label(record["target"]),
-                        "decision": record["decision"],
-                        "rule": record["rule"],
-                        "held": list(record["task_state"]["data_classes_held"]),
-                        "rows_before": record["task_state"]["rows_returned_so_far"],
-                    })
-            harms = [
-                (f"{un['customer records read']:,} records read", "customer records read"),
-                (f"{un['bytes that left']} bytes out", "bytes that left"),
-                (f"{un['PII into internal systems']} bytes filed internally",
-                 "PII into internal systems"),
-                (f"{un['mail to undeclared recipients']} misdirected email",
-                 "mail to undeclared recipients"),
-            ]
-            worst = max(harms, key=lambda h: un[h[1]] if h[1] != "customer records read"
-                        else un[h[1]] - 1)
-            if gu["tool calls refused"] == 0:
-                # The model never asked for anything out of scope, so there was
-                # nothing to refuse. Falling through to the harm columns would
-                # print the LEGITIMATE email as damage the broker failed to
-                # stop, which is the opposite of what happened.
-                rows.append({
-                    "steps": steps,
-                    "scenario": name,
-                    "rule": "—",
-                    "harm": "model declined the instruction",
-                    "protected": "nothing to refuse",
-                    "note": spec["damage"],
-                })
-                continue
-            if all(un[key] == 0 for _, key in harms[1:]) and un[harms[0][1]] <= 1:
-                # Nothing leaked and nothing extra was read: this scenario's
-                # damage is a capability the token never granted being used at
-                # all. Say that, rather than printing a row where both columns
-                # match and the point disappears.
-                worst = (
-                    f"{un['emails delivered']} email sent as the company",
-                    "emails delivered",
-                )
-            rows.append({
-                "steps": steps,
-                "scenario": name,
-                "rule": (
-                    spec["trips"].split("→")[-1].strip().split()[0]
-                    if "→" in spec["trips"] else "several"
-                ),
-                "harm": worst[0],
-                "protected": f"{gu['tool calls refused']} refused, "
-                           f"{gu[worst[1]]:,} {worst[0].split(' ', 1)[1]}",
-                "note": spec["damage"],
-            })
+                row = _matrix_row(name, spec, db, live, scratch, reset)
+            rows.append(row)
         print(render_matrix(rows, live))
         if run is not None:
             run.results = {r["scenario"]: r for r in rows}
