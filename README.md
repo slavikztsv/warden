@@ -270,7 +270,12 @@ full account.
 - **No TLS interception.** The proxy sees `CONNECT host:port` only, matches on
   host and never port, and records nothing further once a tunnel is open.
 - **The model provider sits inside the data boundary, deliberately.** An agent
-  cannot reason about a record without it entering the model's context.
+  cannot reason about a record without it entering the model's context, so a
+  remote provider is a data processor or the agent is useless after its first
+  PII read. The alternatives are in-boundary inference — the sovereign-cloud
+  answer — or redacting before the tool result returns. This was not designed
+  in: the taint rule denied the agent's own model call during a live protected
+  run, which forced the choice.
 - **Audit records are tamper-evident, not tamper-proof.** They make an edit
   detectable; they do not prevent it, or the action.
 - **Model refusal is not counted as a control.** In a live run the model
