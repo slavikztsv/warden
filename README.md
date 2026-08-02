@@ -153,15 +153,39 @@ The three config files, the keypair split and minting a task token are in
   <img src="docs/assets/architecture.png" alt="The request pipeline: verify token, snapshot task state, validate, decide against OPA, record, then execute through an adapter" width="100%">
 </p>
 
+**Your orchestrator mints the token — never the agent.** Whatever starts a unit
+of work (a helpdesk, a queue, a cron) POSTs to `broker-control`, naming the
+task, its purpose, the tools it may call and the counterparties it may contact.
+`broker-control` holds the only private key and sits on `backend-net` with no
+route from the agent. That is the whole reason a subverted agent cannot widen
+its own capabilities, or reset its row budget by claiming a fresh `task_id`.
+
+**The agent gets one token, valid five minutes, and uses it on two surfaces.**
+It holds no credential for anything behind the broker — no database password,
+no key to the systems it reaches. (In the demo it does hold a model API key,
+because it calls its provider itself.)
+
+| | What it carries | What goes through it, and why |
+|---|---|---|
+| **`:8080` tool API** | `Authorization: Bearer` | The tools the deployment declared. Arguments are schema-checked, so policy judges a structured target — *this database, these subjects, this many rows* — rather than a URL. |
+| **`:3128` egress proxy** | `Proxy-Authorization`, set from the proxy URL's userinfo | Everything else that speaks HTTP, including the agent's own call to its model provider. It is the **only** route off `agent-net`, so an out-of-band attempt is denied *and recorded* instead of merely failing to connect. It authorizes `CONNECT host:port` and then pipes bytes — no TLS interception. |
+
+**Adapters are the two halves of one tool call.** `describe()` turns the
+validated arguments into the target policy judges; `execute()` performs it.
+Both read the same arguments, so what was judged and what happened cannot
+differ — the gap where a check passes on one reading of a request and the
+backend acts on another.
+
 The order is the security property: **verify → snapshot → validate → decide →
 record → execute**. A deny is recorded and returns 403; an allow is recorded
 *first*, and if that write fails the request returns 503 and nothing runs.
 Every failure denies — an unreachable OPA, an incoherent decision, an
 unrecognised input, an unwritable log.
 
-Policy is Rego, evaluated by OPA. `deny_reasons` is the source of truth and
-`allow` is its negation, so the rule in the audit log is provably the rule that
-objected:
+OPA answers the decision and holds no state; the broker keeps the per-task
+state and hands it in with every question. `deny_reasons` is the source of
+truth and `allow` is its negation, so the rule in the audit log is provably the
+rule that objected:
 
 | Rule | Denies when |
 |---|---|
