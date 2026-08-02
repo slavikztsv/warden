@@ -246,7 +246,7 @@ both are standard enough that a third-party SDK you cannot patch is covered
 too.
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}} }%%
+%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 55, "rankSpacing": 70, "padding": 12}} }%%
 flowchart LR
     subgraph YOURS["YOUR AGENT — code unchanged"]
         direction TB
@@ -466,7 +466,7 @@ does not fire. Adversarial `opa eval`, not `opa test`, is what found them.
 ## Trust boundaries
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}} }%%
+%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 55, "rankSpacing": 70, "padding": 12}} }%%
 flowchart LR
     subgraph UNTRUSTED["UNTRUSTED — agent-net, internal: true"]
         direction TB
@@ -556,7 +556,7 @@ against a fully compromised broker.
 ## System architecture
 
 ```mermaid
-%%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 45, "rankSpacing": 55}} }%%
+%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 55, "rankSpacing": 70, "padding": 12}} }%%
 flowchart TB
     Ctl["broker-control<br/>control_main.py"]
     Client(["Agent runtime · untrusted"])
