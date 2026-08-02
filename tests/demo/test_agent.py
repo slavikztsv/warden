@@ -553,6 +553,33 @@ def test_gemini_serves_every_call_from_a_multi_call_turn():
     assert len(turns_with_responses) == 1, "both responses belong to one user turn"
 
 
+def test_the_gemini_client_is_built_with_a_bounded_request_timeout(monkeypatch):
+    """A client built without http_options waits forever.
+
+    google-genai defaults HttpOptions.timeout to None, which reaches httpx as
+    timeout=None, and its default retry_options resolve to stop_after_attempt(1)
+    — so a stalled response is never retried and never abandoned. A live matrix
+    run blocked on one socket for 24 minutes with no CPU and no output, and
+    nothing in the process was going to notice.
+    """
+    pytest.importorskip("google.genai")
+    from google import genai
+
+    from demo.agent.llm import GEMINI_TIMEOUT_MS, GeminiClient
+
+    seen = {}
+
+    def recorder(**kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(models=None)
+
+    monkeypatch.setattr(genai, "Client", recorder)
+    GeminiClient("key")
+
+    assert GEMINI_TIMEOUT_MS == 120_000, "must match OpenRouterClient's 120.0s"
+    assert seen["http_options"].timeout == GEMINI_TIMEOUT_MS
+
+
 # ---------------------------------------------------------------------------
 # OpenRouter.
 #

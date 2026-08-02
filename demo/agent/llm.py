@@ -25,6 +25,13 @@ MAX_TOKENS = 4096
 # finished". Budget the live path separately.
 GEMINI_MAX_TOKENS = 16384
 
+# A request with no deadline is a demo that can hang forever, and one did:
+# google-genai defaults HttpOptions.timeout to None, httpx reads that as "wait
+# indefinitely", and the SDK's own retry is off by default. 120s matches the
+# value OpenRouterClient already passes, so the two live paths agree rather
+# than each carrying its own number.
+GEMINI_TIMEOUT_MS = 120_000
+
 # Kept for the Anthropic client, whose call site predates the second provider.
 MODEL = ANTHROPIC_MODEL
 
@@ -242,8 +249,12 @@ class GeminiClient:
         self.name = f"gemini:{self._model}"
         if client is None:
             from google import genai
+            from google.genai import types
 
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+            )
         self._client = client
         self._history: list = []
         # Gemini returns SEVERAL function calls in one turn routinely, and the
