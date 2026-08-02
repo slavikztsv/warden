@@ -64,7 +64,28 @@ FORBIDDEN = "#B23A34"
 MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 
 ZONE_PAD = 16          # gap between a zone's border and its boxes
-ZONE_LABEL_H = 26      # headroom reserved for the zone's own label
+ZONE_LABEL_H = 28      # headroom reserved for the zone's own label
+
+# Type sizes. These are deliberately large relative to the canvas: GitHub
+# renders the diagram at its container width, so a label's readability is set
+# by its size AS A FRACTION of the viewBox, not by the export scale. Doubling
+# the raster only makes small text smoothly small.
+FS_TITLE = 14          # a box's first line
+FS_SUB = 12            # its remaining lines
+FS_CHIP = 11           # an edge label
+FS_ZONE = 11.5         # a zone title
+TEXT_PAD = 14          # minimum breathing room each side of a box's text
+
+# Advance width per character for a monospace face, as a fraction of font
+# size. 0.6 is the usual figure for SF Mono / Menlo / Consolas. Estimating
+# with the MONO ratio is the conservative choice even though cairosvg falls
+# back to a proportional sans (~0.55), because whatever fits the wider of the
+# two fits both.
+MONO_RATIO = 0.6
+
+
+def text_width(text, size):
+    return len(text) * size * MONO_RATIO
 
 
 def esc(t):
@@ -196,7 +217,7 @@ class Diagram:
         (ax, ay), (bx, by) = best
         t = e.get("label_t", 0.5)
         cx, cy = ax + (bx - ax) * t, ay + (by - ay) * t
-        w = 7.0 * len(e["label"]) + 14
+        w = text_width(e["label"], FS_CHIP) + 18
         return (cx - w / 2, cy - 9, cx + w / 2, cy + 9)
 
     def check(self):
@@ -205,6 +226,12 @@ class Diagram:
             for b in self.boxes[i + 1:]:
                 if self._overlap(a.rect(), b.rect()):
                     bad.append(f"boxes overlap: {a.lines[0]!r} / {b.lines[0]!r}")
+
+        for b in self.boxes:
+            need = max(text_width(t, FS_TITLE if i == 0 else FS_SUB)
+                       for i, t in enumerate(b.lines)) + 2 * TEXT_PAD
+            if need > b.w + 0.5:
+                bad.append(f"text overflows {b.lines[0]!r}: needs {need:.0f}px, box is {b.w:.0f}px")
 
         for e in self.edges:
             ends = {e["src"], e["dst"]}
@@ -226,7 +253,9 @@ class Diagram:
                         bad.append(f"label {e['label']!r} lands on {b.lines[0]!r}")
 
         for z in self.zones:
-            label_box = (z.x + 7, z.y + 4, z.x + 21 + 7.2 * len(z.label), z.y + 24)
+            label_box = (z.x + 7, z.y + 4,
+                         z.x + 23 + text_width(z.label, FS_ZONE) + len(z.label) * 0.9,
+                         z.y + 26)
             for e in self.edges:
                 chip = self._chip(e)
                 if chip and self._overlap(chip, label_box, 1.0):
@@ -267,7 +296,8 @@ class Diagram:
         for i, line in enumerate(b.lines):
             out.append(
                 f'<text x="{b.cx}" y="{first + i*14}" fill="{colour}" font-family="{MONO}" '
-                f'font-size="{12 if i == 0 else 10.5}" font-weight="{600 if i == 0 else 400}" '
+                f'font-size="{FS_TITLE if i == 0 else FS_SUB}" '
+                f'font-weight="{600 if i == 0 else 400}" '
                 f'text-anchor="middle" dominant-baseline="central">{esc(line)}</text>')
         return "".join(out)
 
@@ -285,11 +315,11 @@ class Diagram:
         label always wins.
         """
         fill, _, colour = ZONE[z.kind]
-        w = 14 + 7.2 * len(z.label)
+        w = 16 + text_width(z.label, FS_ZONE) + len(z.label) * 0.9
         return (f'<rect x="{z.x+7}" y="{z.y+5}" width="{w:.1f}" height="19" rx="4" '
                 f'fill="{fill}"/>'
                 f'<text x="{z.x+13}" y="{z.y+17}" fill="{colour}" font-family="{MONO}" '
-                f'font-size="10" font-weight="600" letter-spacing="0.9">{esc(z.label)}</text>')
+                f'font-size="{FS_ZONE}" font-weight="600" letter-spacing="0.9">{esc(z.label)}</text>')
 
     def _draw_edge(self, e):
         stroke = FORBIDDEN if e["kind"] == "forbidden" else LINE
@@ -306,7 +336,7 @@ class Diagram:
                 f'<rect x="{x1:.1f}" y="{y1:.1f}" width="{x2-x1:.1f}" height="18" rx="9" '
                 f'fill="{fill}" stroke="{stroke_c}" stroke-width="0.8"/>'
                 f'<text x="{(x1+x2)/2:.1f}" y="{(y1+y2)/2:.1f}" fill="{colour}" '
-                f'font-family="{MONO}" font-size="9.5" text-anchor="middle" '
+                f'font-family="{MONO}" font-size="{FS_CHIP}" text-anchor="middle" '
                 f'dominant-baseline="central">{esc(e["label"])}</text>')
         return "".join(out)
 
@@ -379,7 +409,7 @@ def architecture():
         d.edge(a.at("bottom"), b.at("top"), src=a, dst=b)
     d.edge(pdp.at("bottom"), aud.at("top"), src=pdp, dst=aud, label="allow")
     d.edge(client.at("right"), proxy.at("left"), src=client, dst=proxy,
-           bend="h", label="CONNECT")
+           bend="h", label="CONNECT", label_t=0.25)
     d.edge(proxy.at("bottom"), opa.at("top"), src=proxy, dst=opa)
     d.edge(pdp.at("right"), opa.at("left"), src=pdp, dst=opa, label="input · decision")
     d.edge(aud.at("bottom"), (CX, ad[0].y - ZONE_PAD), src=aud,
@@ -411,9 +441,9 @@ def trust():
     mint = d.box(468, 400, 332, 44, ["broker-control · private key"], "control")
     d.zone("CONTROL PLANE — backend-net only", "control", [mint])
 
-    db = d.box(880, 76, 120, 44, ["customers.db"], "target", "store")
-    intern = d.box(880, 146, 120, 44, ["docstore", "mailer"], "target")
-    ext = d.box(880, 216, 120, 44, ["Allowlisted", "hosts"], "target")
+    db = d.box(880, 76, 142, 44, ["customers.db"], "target", "store")
+    intern = d.box(880, 146, 142, 44, ["docstore", "mailer"], "target")
+    ext = d.box(880, 216, 142, 44, ["Allowlisted", "hosts"], "target")
     d.zone("PROTECTED SYSTEMS", "target", [db, intern, ext])
 
     # Two straight drops into the agent, one into each half of its top edge.
@@ -427,8 +457,11 @@ def trust():
     # Three straight exits, each from its own share of the broker's right edge.
     for i, target in enumerate((db, intern, ext)):
         t = 0.25 + i * 0.25
-        d.route([broker.at("right", t), (840 + i * 6, broker.y + broker.h * t),
-                 (840 + i * 6, target.cy), (target.x, target.cy)],
+        # 18px apart, not 6 -- three corridors that close together read as
+        # one frayed line rather than three routes.
+        corridor = 826 + i * 18
+        d.route([broker.at("right", t), (corridor, broker.y + broker.h * t),
+                 (corridor, target.cy), (target.x, target.cy)],
                 src=broker, dst=target)
     d.route([mint.at("left"), (420, mint.cy), (420, agent.bottom + 46),
              (agent.cx, agent.bottom + 46), (agent.cx, agent.bottom)],
@@ -442,8 +475,8 @@ def trust():
 
 def integration():
     d = Diagram(1000, 330, "integrating warden with an existing agent")
-    loop = d.box(40, 78, 230, 44, ["Agent loop"], "untrusted", "stadium")
-    sdk = d.box(40, 156, 230, 44, ["Model SDK · client · curl"], "untrusted", "stadium")
+    loop = d.box(40, 78, 252, 44, ["Agent loop"], "untrusted", "stadium")
+    sdk = d.box(40, 156, 252, 44, ["Model SDK · client · curl"], "untrusted", "stadium")
     d.zone("YOUR AGENT — CODE UNCHANGED", "untrusted", [loop, sdk])
 
     api = d.box(390, 78, 150, 44, ["Tool API", ":8080"], "enforce")
@@ -469,7 +502,7 @@ def integration():
     return d
 
 
-def export_png(svg_path, scale=2):
+def export_png(svg_path, scale=3):
     """Optional PNG beside the SVG, for readers whose viewer will not render
     SVG. Transparent background on purpose: the diagrams put nothing behind
     their zones, so the page's own colour shows through and one file serves
