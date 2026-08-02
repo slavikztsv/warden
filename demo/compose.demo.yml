@@ -2,7 +2,7 @@
 # agent-runtime-unprotected on top of compose.yml's opa/broker/broker-control
 # and its four network definitions. Always run together with the base file:
 #
-#   docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded ...
+#   docker compose -f compose.yml -f demo/compose.demo.yml --profile protected ...
 #
 # Every service here builds from demo/Dockerfile, which contains BOTH trees
 # by necessity -- see that file's own comment -- unlike warden/Dockerfile,
@@ -26,7 +26,7 @@ services:
     networks:
       backend-net:
         aliases: [docstore.internal]
-    profiles: [guarded, unprotected]
+    profiles: [protected, unprotected]
 
   mailer:
     build:
@@ -36,7 +36,7 @@ services:
     networks:
       backend-net:
         aliases: [mailer.internal]
-    profiles: [guarded, unprotected]
+    profiles: [protected, unprotected]
 
   sinkhole:
     build:
@@ -48,7 +48,7 @@ services:
         aliases: [attacker.example]
       host-net: {}
     ports: ["8099:80"]     # host access so the demo can show what arrived
-    profiles: [guarded, unprotected]
+    profiles: [protected, unprotected]
 
   agent-runtime:
     build:
@@ -91,7 +91,7 @@ services:
       AGENT_ARGS: ${AGENT_ARGS:-}
     networks: [agent-net]           # the ONLY network — no route anywhere else
     depends_on: [broker]
-    profiles: [guarded]
+    profiles: [protected]
 
   agent-runtime-unprotected:
     build:

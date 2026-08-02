@@ -12,12 +12,12 @@ their own `--help`) by hand. They are intercepted in `main()` BEFORE argparse
 ever sees their arguments (see PASSTHROUGH below); `argparse.REMAINDER`
 looked like the obvious way to do this via a subparser instead, and does not
 work: when the first token after the subcommand name is itself an option
-(`--live`, `--pause`, `--unguarded`, all of which these commands take),
+(`--live`, `--pause`, `--unprotected`, all of which these commands take),
 CPython's subparsers dispatch reports it as an "unrecognized argument" of
 the TOP-LEVEL parser rather than collecting it into REMAINDER -- a
 longstanding argparse limitation (the remainder positional only reliably
 grabs a leading token that is *not* option-like), not a bug in this
-dispatcher. Confirmed by hand: `warden-demo explain --unguarded` raised
+dispatcher. Confirmed by hand: `warden-demo explain --unprotected` raised
 exactly that error before this file bypassed argparse for these three.
 """
 
@@ -216,14 +216,14 @@ def _cmd_up(args: argparse.Namespace) -> int:
         (DATA_DIR / "audit.jsonl").unlink(missing_ok=True)
         _generate_keypair(DATA_DIR)
         _compose_up(
-            "guarded", "opa", "docstore", "mailer", "sinkhole", "broker", "broker-control"
+            "protected", "opa", "docstore", "mailer", "sinkhole", "broker", "broker-control"
         )
         _wait_for_broker_control()
         # localhost:8081 is broker-control, published to the host. The agent
         # runtime cannot reach it: broker-control is on backend-net only.
         token = _mint_token()
         _compose_run(
-            "guarded", "agent-runtime",
+            "protected", "agent-runtime",
             env={"AGENT_ARGS": agent_args, "TASK_TOKEN": token},
         )
         _print_sinkhole_report()
@@ -265,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_up = sub.add_parser("up", help="run the end-to-end demo (docker compose)")
     p_up.add_argument(
-        "--profile", default="guarded", choices=["guarded", "unprotected"],
+        "--profile", default="protected", choices=["protected", "unprotected"],
         help="which compose profile to run",
     )
     p_up.add_argument("--live", action="store_true", help="drive it with a real model")
@@ -275,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     # their actual argv to the target module before argparse ever parses it
     # (see PASSTHROUGH and the module docstring), so these three carry no
     # arguments of their own.
-    sub.add_parser("explain", help="narrated single run: guarded vs unguarded")
+    sub.add_parser("explain", help="narrated single run: protected vs unprotected")
     sub.add_parser("sweep", help="measure injection susceptibility across models")
     sub.add_parser("record", help="record a live run into a replayable cassette")
     # Registered for `--help` only; main() diverts it (and a bare invocation

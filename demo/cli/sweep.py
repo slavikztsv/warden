@@ -7,7 +7,7 @@
 
 WHY THIS EXISTS
 
-The demo's weakest moment is a live guarded run that refuses nothing, because
+The demo's weakest moment is a live protected run that refuses nothing, because
 the model declined the injection. The question that follows is "so which model
 *would* follow it?" — and the honest answer is that nobody can know from
 reputation. Susceptibility is a property of a specific model version, it moves
@@ -180,7 +180,7 @@ def render(results: list[dict]) -> str:
     if leaked:
         lines += [
             "  Use the top model for the live demo: it is the only way to show the",
-            "  broker refusing an agent that genuinely tried. Re-run it guarded with",
+            "  broker refusing an agent that genuinely tried. Re-run it protected with",
             f"    OPENROUTER_MODEL={leaked[0]['model']} warden-demo explain --compare --live",
             "",
         ]

@@ -22,7 +22,7 @@ estimated. They are labels on a menu, not a benchmark.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from demo.cli import preflight
@@ -40,6 +40,53 @@ _OFF = "\033[0m"
 
 
 @dataclass(frozen=True)
+class Choice:
+    """One answer to a Prompt, and the flags choosing it contributes."""
+
+    key: str
+    name: str
+    detail: str
+    args: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Prompt:
+    """A follow-up question. `choices` is a callable, not a tuple, for one
+    reason: the task list belongs to demo/cli/explain.py, and importing that
+    module costs FastAPI's test client -- not worth paying to draw a menu the
+    operator may never drill into. Resolving it at prompt time also means the
+    menu cannot offer a task the CLI does not have."""
+
+    title: str
+    choices: Callable[[], tuple[Choice, ...]]
+
+
+def task_choices() -> tuple[Choice, ...]:
+    from demo.cli.explain import TASKS
+
+    return tuple(
+        Choice(str(n), name, spec.get("trips", ""), ("--task", name))
+        for n, (name, spec) in enumerate(TASKS.items(), start=1)
+    )
+
+
+def mode_choices() -> tuple[Choice, ...]:
+    return (
+        Choice("1", "protected", "every tool call goes through the broker", ()),
+        Choice(
+            "2", "unprotected",
+            "no broker at all: the agent holds the credentials itself",
+            ("--unprotected",),
+        ),
+        Choice(
+            "3", "both",
+            "run each and print them side by side — the broker is the only variable",
+            ("--compare",),
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class Option:
     key: str
     name: str
@@ -49,6 +96,9 @@ class Option:
     cost: str
     argv: tuple[str, ...]
     needs: str = ""  # "" | "docker" | "live" | "openrouter"
+    # Asked in order when this option is chosen; each answer's args are
+    # appended to argv. Empty for options that are already one command.
+    prompts: tuple[Prompt, ...] = ()
 
 
 GROUP_ORDER = (
@@ -69,7 +119,7 @@ OPTIONS: tuple[Option, ...] = (
     ),
     Option(
         key="2", name="compare", group="THE PITCH",
-        summary="guarded vs unguarded, side by side",
+        summary="protected vs unprotected, side by side",
         proves="identical model output both sides — the broker is the only variable",
         cost="~1s · offline",
         argv=("explain", "--compare", "--quiet-why"),
@@ -82,18 +132,18 @@ OPTIONS: tuple[Option, ...] = (
         argv=("explain", "--pause"),
     ),
     Option(
-        key="4", name="guarded", group="ONE SCENARIO, STEP BY STEP",
+        key="4", name="protected", group="ONE SCENARIO, STEP BY STEP",
         summary="one brokered run, narrated end to end",
         proves="every refusal names the rule that produced it",
         cost="~1s · offline",
         argv=("explain",),
     ),
     Option(
-        key="5", name="unguarded", group="ONE SCENARIO, STEP BY STEP",
+        key="5", name="unprotected", group="ONE SCENARIO, STEP BY STEP",
         summary="the same run with no broker at all",
         proves="what the planted instruction achieves unopposed",
         cost="~1s · offline",
-        argv=("explain", "--unguarded"),
+        argv=("explain", "--unprotected"),
     ),
     Option(
         key="6", name="up",
@@ -101,7 +151,7 @@ OPTIONS: tuple[Option, ...] = (
         summary="the whole system on agent-net, with no gateway",
         proves="containment is topological, not a check in code",
         cost="minutes · builds images",
-        argv=("up", "--profile", "guarded"),
+        argv=("up", "--profile", "protected"),
         needs="docker",
     ),
     Option(
@@ -115,18 +165,22 @@ OPTIONS: tuple[Option, ...] = (
     ),
     Option(
         key="8", name="live", group="A REAL MODEL — nothing recorded",
-        summary="the matrix again, driven by a real model",
-        proves="the controls do not depend on the model behaving",
+        summary="pick a task and a mode, then run it against a real model",
+        proves="whichever rule that task is built to trip, against an unscripted model",
         cost="costs tokens",
-        argv=("explain", "--matrix", "--live"),
+        argv=("explain", "--live"),
         needs="live",
+        prompts=(
+            Prompt("Which task?", task_choices),
+            Prompt("Which mode?", mode_choices),
+        ),
     ),
     Option(
-        key="9", name="report", group="A REAL MODEL — nothing recorded",
-        summary="ask a live model for a management report",
-        proves="rows.bounded holds even when the agent tries another way",
-        cost="costs tokens",
-        argv=("explain", "--live", "--task", "report"),
+        key="9", name="live-matrix", group="A REAL MODEL — nothing recorded",
+        summary="every scenario at once, driven by a real model",
+        proves="the controls do not depend on the model behaving",
+        cost="costs tokens · slow on a rate-limited free tier",
+        argv=("explain", "--matrix", "--live"),
         needs="live",
     ),
     Option(
@@ -227,6 +281,46 @@ def _lookup(answer: str) -> Option | None:
     return None
 
 
+def render_prompt(prompt: Prompt, *, colour: bool = False) -> str:
+    lines = ["", "  " + _paint(prompt.title, _BOLD, colour_on=colour)]
+    for choice in prompt.choices():
+        lines.append(
+            f"  {choice.key:>3}  {_paint(choice.name, _BOLD, colour_on=colour):<16}"
+            f"  {_paint(choice.detail, _DIM, colour_on=colour)}"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+class _Abort(Exception):
+    """The operator backed out of a follow-up question."""
+
+
+def _ask(prompt: Prompt, *, read, out, colour: bool) -> Choice:
+    """Asks one follow-up question. Raises _Abort on quit or end of input.
+
+    Same rules as the main menu, so there is one thing to learn: a number or a
+    name selects, an empty line or q backs out, anything else re-asks.
+    """
+    out.write(render_prompt(prompt, colour=colour) + "\n")
+    out.flush()
+    choices = prompt.choices()
+    while True:
+        try:
+            answer = read("  Select: ")
+        except (EOFError, KeyboardInterrupt):
+            out.write("\n")
+            raise _Abort from None
+        cleaned = answer.strip().lower()
+        if not cleaned or cleaned in ("q", "quit", "exit"):
+            raise _Abort
+        for choice in choices:
+            if cleaned in (choice.key, choice.name):
+                return choice
+        out.write(f"  no such choice: {answer.strip()!r}\n")
+        out.flush()
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -275,6 +369,15 @@ def main(
             out.flush()
             continue
 
-        out.write(f"\n  $ warden-demo {' '.join(option.argv)}\n\n")
+        selected = list(option.argv)
+        try:
+            for prompt in option.prompts:
+                selected += list(_ask(prompt, read=read, out=out, colour=colour).args)
+        except _Abort:
+            # Backing out of a follow-up returns to the shell rather than to
+            # the menu: the menu is a way in, not a mode to be trapped in.
+            return 0
+
+        out.write(f"\n  $ warden-demo {' '.join(selected)}\n\n")
         out.flush()
-        return dispatch(list(option.argv))
+        return dispatch(selected)

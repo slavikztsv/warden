@@ -239,3 +239,102 @@ def test_menu_is_listed_in_the_top_level_help():
 def test_existing_subcommands_still_parse(command):
     """The menu is additive; nothing documented may stop working."""
     build_parser().parse_args([command])
+
+
+# --- the live builder -------------------------------------------------------
+#
+# "run a live model" is not one command, it is twelve: ten tasks crossed with
+# protected / unprotected / both. Listing all of them flat would bury the rest
+# of the menu, so the live entry asks two questions and composes the argv. The
+# composition is what these pin -- a builder that assembles a command the CLI
+# rejects is worse than no builder.
+
+
+def builder():
+    return next(o for o in menu.OPTIONS if o.prompts)
+
+
+def test_exactly_one_option_asks_follow_up_questions():
+    assert len([o for o in menu.OPTIONS if o.prompts]) == 1
+
+
+def test_the_builder_asks_for_a_task_then_a_mode():
+    titles = [p.title.lower() for p in builder().prompts]
+    assert "task" in titles[0]
+    assert "mode" in titles[1]
+
+
+def test_the_task_choices_are_exactly_the_tasks_the_cli_has():
+    from demo.cli.explain import TASKS
+
+    names = [c.name for c in menu.task_choices()]
+    assert names == list(TASKS)
+
+
+def test_every_task_choice_passes_a_task_the_cli_accepts():
+    from demo.cli.explain import TASKS
+
+    for choice in menu.task_choices():
+        assert choice.args[0] == "--task"
+        assert choice.args[1] in TASKS
+
+
+def test_the_mode_choices_cover_protected_unprotected_and_both():
+    args = {c.name: c.args for c in menu.mode_choices()}
+    assert args["protected"] == ()
+    assert args["unprotected"] == ("--unprotected",)
+    assert args["both"] == ("--compare",)
+
+
+def test_answering_both_prompts_composes_the_argv():
+    """task 'report', mode 'protected'."""
+    tasks = menu.task_choices()
+    report = next(c for c in tasks if c.name == "report")
+    protected = next(c for c in menu.mode_choices() if c.name == "protected")
+    _, calls = run([builder().key, report.key, protected.key])
+    assert calls == [["explain", "--live", "--task", "report"]]
+
+
+def test_unprotected_mode_adds_the_flag():
+    export = next(c for c in menu.task_choices() if c.name == "export")
+    unprotected = next(c for c in menu.mode_choices() if c.name == "unprotected")
+    _, calls = run([builder().key, export.key, unprotected.key])
+    assert calls == [["explain", "--live", "--task", "export", "--unprotected"]]
+
+
+def test_both_mode_runs_the_comparison():
+    share = next(c for c in menu.task_choices() if c.name == "share")
+    both = next(c for c in menu.mode_choices() if c.name == "both")
+    _, calls = run([builder().key, share.key, both.key])
+    assert calls == [["explain", "--live", "--task", "share", "--compare"]]
+
+
+def test_a_choice_can_be_named_rather_than_numbered():
+    _, calls = run([builder().name, "report", "unprotected"])
+    assert calls == [["explain", "--live", "--task", "report", "--unprotected"]]
+
+
+def test_quitting_at_a_prompt_dispatches_nothing():
+    code, calls = run([builder().key, "q"])
+    assert calls == []
+    assert code == 0
+
+
+def test_end_of_input_at_a_prompt_dispatches_nothing():
+    code, calls = run([builder().key])
+    assert calls == []
+    assert code == 0
+
+
+def test_an_invalid_answer_at_a_prompt_reprompts():
+    report = next(c for c in menu.task_choices() if c.name == "report")
+    protected = next(c for c in menu.mode_choices() if c.name == "protected")
+    _, calls = run([builder().key, "nope", "999", report.key, protected.key])
+    assert calls == [["explain", "--live", "--task", "report"]]
+
+
+def test_a_prompt_lists_every_choice():
+    screen = menu.render_prompt(builder().prompts[1])
+    for choice in menu.mode_choices():
+        assert choice.name in screen
+        assert choice.key in screen

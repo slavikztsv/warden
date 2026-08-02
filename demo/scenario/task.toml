@@ -8,7 +8,7 @@
 # seeded row count, or narrowing the token, is now a change to this file --
 # not a hunt across five modules.
 #
-# [task] mirrors the grant `cli/explain.py` mints for the guarded run. Do not
+# [task] mirrors the grant `cli/explain.py` mints for the protected run. Do not
 # edit `task_id`, `agent_id` or `purpose` without also regenerating
 # `tests/golden/audit-4711.jsonl` -- that log was captured from a real run
 # against exactly these values, and `tests/demo/test_scenario_config.py`

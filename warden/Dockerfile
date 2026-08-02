@@ -2,7 +2,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # The product image. This builds `broker` and `broker-control` -- the two
-# services in compose.yml with profiles: [guarded] -- and nothing else. It
+# services in compose.yml with profiles: [protected] -- and nothing else. It
 # contains no demo/ tree, no model SDK, and no curl/dnsutils: those exist
 # only for tests/demo/test_isolation.sh, which runs against the demo image's
 # agent container, not this one. `docker run --rm warden-broker find /app

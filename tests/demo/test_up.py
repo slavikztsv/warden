@@ -27,7 +27,7 @@ import pytest
 from demo.cli import main as main_module
 
 
-def namespace(profile: str = "guarded", live: bool = False) -> argparse.Namespace:
+def namespace(profile: str = "protected", live: bool = False) -> argparse.Namespace:
     return argparse.Namespace(profile=profile, live=live)
 
 
@@ -88,8 +88,8 @@ def test_up_seeds_the_database_from_the_scenario_row_count(stub_steps):
 # --- --build is baked into every up/run this command can emit --------------
 
 
-def test_guarded_profile_builds_before_every_up_and_run(stub_steps):
-    rc = main_module._cmd_up(namespace("guarded"))
+def test_protected_profile_builds_before_every_up_and_run(stub_steps):
+    rc = main_module._cmd_up(namespace("protected"))
 
     assert rc == 0
     ups = [c for c in stub_steps["compose"] if "up" in c]
@@ -116,7 +116,7 @@ def test_both_profiles_together_match_demo_sh_s_original_shape(stub_steps):
     """The retired shell-scan test asserted exactly one `up` and one `run`
     PER PROFILE (two of each across the whole file), all carrying --build.
     Reproduced here by driving both profiles through the real function."""
-    main_module._cmd_up(namespace("guarded"))
+    main_module._cmd_up(namespace("protected"))
     stub_steps["compose"].clear()
     main_module._cmd_up(namespace("unprotected"))
 
@@ -131,8 +131,8 @@ def test_compose_up_bakes_in_build_regardless_of_caller(monkeypatch):
     --build ending up in the emitted command, independent of _cmd_up."""
     calls = []
     monkeypatch.setattr(main_module, "_compose", lambda *a, **k: calls.append(a))
-    main_module._compose_up("guarded", "opa", "broker")
-    assert calls == [("--profile", "guarded", "up", "-d", "--build", "opa", "broker")]
+    main_module._compose_up("protected", "opa", "broker")
+    assert calls == [("--profile", "protected", "up", "-d", "--build", "opa", "broker")]
 
 
 def test_compose_run_bakes_in_build_regardless_of_caller(monkeypatch):
@@ -157,7 +157,7 @@ def test_a_failed_compose_step_aborts_before_minting_or_replay(stub_steps, monke
 
     monkeypatch.setattr(main_module, "_compose", failing_compose)
 
-    rc = main_module._cmd_up(namespace("guarded"))
+    rc = main_module._cmd_up(namespace("protected"))
 
     assert rc == 3, "the failing step's own exit code should propagate"
     assert stub_steps["mint"] == 0
@@ -171,7 +171,7 @@ def test_a_failed_mint_aborts_before_running_the_agent(stub_steps, monkeypatch):
 
     monkeypatch.setattr(main_module, "_mint_token", failing_mint)
 
-    rc = main_module._cmd_up(namespace("guarded"))
+    rc = main_module._cmd_up(namespace("protected"))
 
     assert rc != 0
     # Only the "up" compose call happened; the "run" (the agent) never did.
@@ -181,7 +181,7 @@ def test_a_failed_mint_aborts_before_running_the_agent(stub_steps, monkeypatch):
 
 
 def test_unprotected_profile_never_calls_replay(stub_steps):
-    """Only the guarded profile ends in `warden replay` -- demo.sh never ran
+    """Only the protected profile ends in `warden replay` -- demo.sh never ran
     it for `unprotected`, and the ported version must not either."""
     main_module._cmd_up(namespace("unprotected"))
     assert stub_steps["replay"] == []
@@ -192,7 +192,7 @@ def test_unprotected_profile_never_calls_replay(stub_steps):
 
 def test_replay_success_propagates_as_zero(stub_steps, monkeypatch):
     monkeypatch.setattr(main_module, "_replay", lambda task_id: 0)
-    assert main_module._cmd_up(namespace("guarded")) == 0
+    assert main_module._cmd_up(namespace("protected")) == 0
 
 
 def test_replay_broken_chain_propagates_as_one_not_swallowed(stub_steps, monkeypatch):
@@ -200,11 +200,11 @@ def test_replay_broken_chain_propagates_as_one_not_swallowed(stub_steps, monkeyp
     -- not some other non-zero value manufactured on the way out -- must be
     what `_cmd_up` (and therefore the process) returns."""
     monkeypatch.setattr(main_module, "_replay", lambda task_id: 1)
-    assert main_module._cmd_up(namespace("guarded")) == 1
+    assert main_module._cmd_up(namespace("protected")) == 1
 
 
 def test_replay_is_called_with_the_declared_task_id(stub_steps):
     from demo.scenario.task import TASK
 
-    main_module._cmd_up(namespace("guarded"))
+    main_module._cmd_up(namespace("protected"))
     assert stub_steps["replay"] == [TASK["task_id"]]

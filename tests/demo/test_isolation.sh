@@ -12,14 +12,14 @@ mkdir -p data
 [ -f data/agent.key ] || { openssl genpkey -algorithm ed25519 -out data/agent.key; chmod 600 data/agent.key; }
 openssl pkey -in data/agent.key -pubout -out data/agent.pub
 
-docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded up -d opa docstore mailer sinkhole broker broker-control
+docker compose -f compose.yml -f demo/compose.demo.yml --profile protected up -d opa docstore mailer sinkhole broker broker-control
 sleep 3
 
 fail=0
 # curl -f is required: with the proxy reachable, a denied request returns an
 # HTTP error page rather than failing to connect, and plain `curl` would exit 0.
 check() {  # name, expected-to-fail command
-  if docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded run --rm --entrypoint sh agent-runtime -c "$2" >/dev/null 2>&1; then
+  if docker compose -f compose.yml -f demo/compose.demo.yml --profile protected run --rm --entrypoint sh agent-runtime -c "$2" >/dev/null 2>&1; then
     echo "FAIL: $1 succeeded but must not have"
     fail=1
   else
@@ -43,7 +43,7 @@ check "minting via broker-control:8081" \
 check "minting via broker:8081"         \
   "curl -sf --max-time 5 -X POST http://broker:8081/v1/tokens -H 'content-type: application/json' -d '$MINT_BODY'"
 
-if docker compose -f compose.yml -f demo/compose.demo.yml --profile guarded run --rm --entrypoint sh agent-runtime \
+if docker compose -f compose.yml -f demo/compose.demo.yml --profile protected run --rm --entrypoint sh agent-runtime \
      -c "curl -s --max-time 5 http://broker:8080/docs" >/dev/null 2>&1; then
   echo "ok:   the broker is reachable"
 else

@@ -1,8 +1,8 @@
 # Frozen baseline
 
-Captured from `./scripts/demo.sh guarded` (today: `warden-demo up --profile
-guarded`) in **cassette mode** on a freshly built image, before the
-product/demo seam refactor began. Cassette-guarded produces seven records and
+Captured from `./scripts/demo.sh protected` (today: `warden-demo up --profile
+protected`) in **cassette mode** on a freshly built image, before the
+product/demo seam refactor began. Cassette-protected produces seven records and
 no `CONNECT`; a `--live` run produces an extra proxy record and a different
 count, so the mode matters.
 

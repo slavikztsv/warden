@@ -122,7 +122,7 @@ The full containerised scenario needs Docker:
 
 ```bash
 cp .env.example .env                        # only required for --live
-.venv/bin/warden-demo up --profile guarded
+.venv/bin/warden-demo up --profile protected
 ```
 
 > [!NOTE]
@@ -755,7 +755,7 @@ the demo's own strings.
 Two topologies ship, both Compose-based, and they differ only in profile —
 never in agent code.
 
-| | `--profile guarded` | `--profile unprotected` |
+| | `--profile protected` | `--profile unprotected` |
 |---|---|---|
 | Broker, OPA, control plane | Running | Not started |
 | Agent's networks | `agent-net` only, no gateway | `backend-net` + `egress-net` |

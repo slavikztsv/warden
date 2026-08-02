@@ -49,7 +49,7 @@ def test_sinkhole_starts_empty():
 # /feedback declared `payload: dict`, so FastAPI validated the body and the
 # exfiltrated customer rows -- a JSON ARRAY -- got a 422. The whole point of
 # this endpoint is that it IS allowlisted and IS reachable, so that the
-# guarded run's denial can only be attributed to the taint rule. A 422 here
+# protected run's denial can only be attributed to the taint rule. A 422 here
 # would make the demo prove the wrong thing: the fetch would fail whether or
 # not egress.pii_sink existed.
 

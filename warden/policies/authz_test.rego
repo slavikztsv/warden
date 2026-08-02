@@ -501,7 +501,7 @@ test_shipped_data_denies_an_undeclared_model_endpoint if {
 # an oversight. A remote-model agent cannot read a customer record and then
 # think about it without the record entering its conversation history, so the
 # provider is either inside the data boundary or the agent stops working the
-# moment it touches PII. Discovered by running a live model under the guarded
+# moment it touches PII. Discovered by running a live model under the protected
 # profile: the taint rule denied the agent's own next model call.
 #
 # This test exists so the entry cannot be removed accidentally, and so anyone

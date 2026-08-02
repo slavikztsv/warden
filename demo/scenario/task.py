@@ -1,6 +1,6 @@
 """The demo's scenario, loaded once from `task.toml`.
 
-`[task]` mirrors the grant `cli/explain.py` mints for the guarded run --
+`[task]` mirrors the grant `cli/explain.py` mints for the protected run --
 `agent_id`, `task_id`, `purpose` are the exact three fields the frozen
 `tests/golden/audit-4711.jsonl` recorded from a real run, and
 `tests/demo/test_scenario_config.py` asserts the two cannot drift apart.

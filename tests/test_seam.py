@@ -257,7 +257,7 @@ def test_the_demo_compose_never_redefines_a_product_service():
         )
 
 
-def test_the_product_compose_keeps_the_guarded_profile():
+def test_the_product_compose_keeps_the_protected_profile():
     """Without it, `--profile unprotected` starts the enforcement point, and
     'the broker is not running' is how README and THREAT_MODEL describe the
     control case."""
@@ -278,4 +278,4 @@ def test_the_product_compose_keeps_the_guarded_profile():
         )
         assert match, service
         block = match.group(1)
-        assert "profiles: [guarded]" in block, service
+        assert "profiles: [protected]" in block, service

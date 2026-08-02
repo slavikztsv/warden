@@ -529,7 +529,7 @@ def _compose_service_block(name: str) -> str:
     broker, broker-control) and demo/compose.demo.yml (everything else), so
     a service is looked up in whichever of the two actually declares it --
     the split is exactly what test_the_demo_compose_declares_no_product_service
-    and test_the_product_compose_keeps_the_guarded_profile in test_seam.py
+    and test_the_product_compose_keeps_the_protected_profile in test_seam.py
     pin, so a service name never legitimately appears in both.
     """
     for compose_path in (REPO_ROOT / "compose.yml", REPO_ROOT / "demo" / "compose.demo.yml"):
@@ -607,7 +607,7 @@ def test_warden_demo_up_rebuilds_before_starting_containers(tmp_path):
     never had -- the exact failure mode this test exists to catch, just on
     the invocation kind it did not yet check. Both `up` and `run` are
     checked here now, each against its own expected count, so neither kind
-    can silently gain an unguarded line.
+    can silently gain an unprotected line.
 
     Task 24 retired demo/scripts/demo.sh (this test used to scan its text)
     and moved the same orchestration into demo.cli.main._cmd_up. Re-pointed
@@ -638,7 +638,7 @@ def test_warden_demo_up_rebuilds_before_starting_containers(tmp_path):
          patch.object(demo_main, "_mint_token", lambda: "minted-token"), \
          patch.object(demo_main, "_print_sinkhole_report", lambda: None), \
          patch.object(demo_main, "_replay", lambda task_id: 0):
-        for profile in ("guarded", "unprotected"):
+        for profile in ("protected", "unprotected"):
             demo_main._cmd_up(argparse.Namespace(profile=profile, live=False))
 
     ups = [call for call in calls if "up" in call]

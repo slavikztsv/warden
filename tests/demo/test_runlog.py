@@ -19,7 +19,7 @@ def runs(tmp_path, monkeypatch):
 def test_a_run_writes_its_output_and_a_manifest(runs):
     with runlog.RunLog("explain", "compare-triage") as run:
         print("bytes that left: 121")
-        run.results = {"guarded": {"refused": 3}}
+        run.results = {"protected": {"refused": 3}}
         run.model = "recorded — support-triage.json"
 
     logs = list(runs.glob("*.log"))
@@ -28,7 +28,7 @@ def test_a_run_writes_its_output_and_a_manifest(runs):
 
     manifest = json.loads(logs[0].with_suffix(".json").read_text())
     assert manifest["kind"] == "explain"
-    assert manifest["results"]["guarded"]["refused"] == 3
+    assert manifest["results"]["protected"]["refused"] == 3
     assert manifest["model"] == "recorded — support-triage.json"
     # Provenance is the reason this is evidence rather than a printout.
     for field in ("started", "finished", "commit", "policy_digest", "log_sha256"):
@@ -38,7 +38,7 @@ def test_a_run_writes_its_output_and_a_manifest(runs):
 def test_the_manifest_hash_matches_the_log_it_names(runs):
     import hashlib
 
-    with runlog.RunLog("explain", "guarded") as run:
+    with runlog.RunLog("explain", "protected") as run:
         print("the transcript")
         run.results = {}
     log = next(runs.glob("*.log"))
@@ -95,7 +95,7 @@ def test_an_empty_index_verifies_rather_than_erroring(runs):
 def test_the_manifest_never_records_the_environment(runs):
     """An API key lives in the environment. A file that exists to be shown to
     someone must not carry one."""
-    with runlog.RunLog("explain", "guarded") as run:
+    with runlog.RunLog("explain", "protected") as run:
         run.results = {}
     manifest = json.loads(next(runs.glob("*.json")).read_text())
     assert "env" not in manifest
@@ -108,7 +108,7 @@ def test_the_manifest_never_records_the_environment(runs):
 def test_output_still_reaches_the_terminal(runs, capsys):
     """Capturing without teeing would leave the operator watching a blank
     screen for the length of a live run."""
-    with runlog.RunLog("explain", "guarded") as run:
+    with runlog.RunLog("explain", "protected") as run:
         print("visible")
         run.results = {}
     assert "visible" in capsys.readouterr().out

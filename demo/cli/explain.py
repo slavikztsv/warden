@@ -1,7 +1,7 @@
 """Run the scenario with every stage narrated and explained.
 
-    warden-demo explain               # guarded: recorded model, full narration
-    warden-demo explain --unguarded   # the same run with no broker at all
+    warden-demo explain               # protected: recorded model, full narration
+    warden-demo explain --unprotected   # the same run with no broker at all
     warden-demo explain --pause       # wait for Enter between steps
     warden-demo explain --live        # a real model instead of the recording
     warden-demo explain --quiet-why   # drop the explanations, keep the data
@@ -9,7 +9,7 @@
 
 `--task` swaps the operator's instruction for one that asks directly for an
 out-of-scope action (see TASKS). It exists because a live model mostly declines
-the injected instruction, so a live guarded run refuses nothing and demonstrates
+the injected instruction, so a live protected run refuses nothing and demonstrates
 no enforcement. Rather than make the injection more persuasive — which would be
 building an evasion — these ask outright. The broker cannot tell an injected
 request from an over-broad one anyway: the instruction is not in the policy
@@ -76,7 +76,7 @@ READONLY_PROMPT = PROMPTS["readonly"]
 
 # Alternative operator instructions, for showing the controls fire with a LIVE
 # model. The default scenario relies on the model following an injected
-# instruction, and current models mostly do not -- so a live guarded run ends
+# instruction, and current models mostly do not -- so a live protected run ends
 # with nothing refused and demonstrates no enforcement.
 #
 # The fix is not to make the injection more persuasive. That would be building
@@ -530,7 +530,7 @@ class NarratedDispatcher:
 
 
 class NarratedDirectDispatcher:
-    """Wraps the unprotected dispatcher — the `--unguarded` profile.
+    """Wraps the unprotected dispatcher — the `--unprotected` profile.
 
     The narration here is mostly about what is *absent*. Same agent, same
     model, same tools, same task; the broker is the only thing removed. So
@@ -580,7 +580,7 @@ class NarratedDirectDispatcher:
             if result["rows"] > 50:
                 why(
                     f"{result['rows']:,} records, from a request the ticket never "
-                    "asked for. The guarded run refuses this one on "
+                    "asked for. The protected run refuses this one on "
                     "'rows.bounded' before the query runs — so the exfiltration "
                     "two steps from now has nothing to carry even if the "
                     "destination had been allowed."
@@ -590,7 +590,7 @@ class NarratedDirectDispatcher:
             show(f"→ {SCENARIO['sinkhole_host']} received", f"{len(body)} bytes")
             show("→ the bytes", clip(body, 220))
             why(
-                "Compare this against the guarded run, where the identical "
+                "Compare this against the protected run, where the identical "
                 "model output produced 'egress.pii_sink' and zero bytes. The "
                 "model behaved the same way in both — it is not the variable. "
                 "The difference is entirely whether anything sat between the "
@@ -682,12 +682,12 @@ def _start_opa() -> tuple[subprocess.Popen, str]:
 
 USAGE = """warden — narrated debug runner
 
-  warden-demo explain [--compare] [--unguarded] [--live] [--task NAME]
+  warden-demo explain [--compare] [--unprotected] [--live] [--task NAME]
                         [--pause] [--quiet-why]
 
 WHICH PROFILE
-  (default)     guarded — every tool call goes through the broker
-  --unguarded   no broker at all: the agent holds the credentials itself
+  (default)     protected — every tool call goes through the broker
+  --unprotected   no broker at all: the agent holds the credentials itself
   --compare     run BOTH and print them side by side. This is the demo.
   --matrix      every scenario's A/B, one screen. This is the pitch.
                 with --live: each scenario runs ONCE against a real model, and
@@ -755,7 +755,7 @@ def _pick_task(argv: list[str], live: bool) -> tuple[str, dict]:
     return name, TASKS[name]
 
 
-def _run_unguarded(
+def _run_unprotected(
     db: Path, llm, live: bool, task: tuple[str, dict], capture: list | None = None
 ) -> dict:
     """The A side of the A/B: the same task with the broker taken away."""
@@ -821,7 +821,7 @@ def _run_unguarded(
             "The task also completed. That is the uncomfortable part: from the "
             "outside this run looks like a success, and the only sign anything "
             "went wrong is a request nobody was watching. Run it without "
-            "--unguarded and diff the two — same tool calls, "
+            "--unprotected and diff the two — same tool calls, "
             f"{leaked} bytes against 0."
         )
     elif not mailer.OUTBOX:
@@ -864,7 +864,7 @@ def _run_unguarded(
     }
 
 
-def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
+def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
     opa, opa_url = _start_opa()
     try:
         banner("SETUP — what exists before the agent starts")
@@ -1025,12 +1025,12 @@ def _run_guarded(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
         opa.wait(timeout=5)
 
 
-def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> str:
+def render_comparison(unprotected: dict, protected: dict, live: bool, task: str) -> str:
     """The A/B, as one table. Every row is measured, none is asserted."""
-    rows = [(key, f"{unguarded[key]:,}" if isinstance(unguarded[key], int)
-             else str(unguarded[key]),
-             f"{guarded[key]:,}" if isinstance(guarded[key], int)
-             else str(guarded[key])) for key in unguarded]
+    rows = [(key, f"{unprotected[key]:,}" if isinstance(unprotected[key], int)
+             else str(unprotected[key]),
+             f"{protected[key]:,}" if isinstance(protected[key], int)
+             else str(protected[key])) for key in unprotected]
     label_w = max(len(key) for key, _, _ in rows)
     left_w = max(len("no broker"), *(len(left) for _, left, _ in rows))
     right_w = max(len("with broker"), *(len(right) for _, _, right in rows))
@@ -1050,8 +1050,8 @@ def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> 
     # The call count is the first row anyone asks about and the least meaningful
     # one, because it moves in BOTH directions depending on the model. Answer it
     # in the output rather than leaving it to be misread either way.
-    made_u = unguarded.get("tool calls made", 0)
-    made_g = guarded.get("tool calls made", 0)
+    made_u = unprotected.get("tool calls made", 0)
+    made_g = protected.get("tool calls made", 0)
     if made_u != made_g:
         if made_g > made_u:
             # Deliberately does NOT name the workaround. Which one a model
@@ -1074,10 +1074,10 @@ def render_comparison(unguarded: dict, guarded: dict, live: bool, task: str) -> 
             "  Either way the count measures how hard THIS model tried, not how well\n"
             "  the control worked; a more capable model pushes harder and runs the\n"
             "  number up. The row carrying the guarantee is 'customer records read':\n"
-            f"  {unguarded.get('customer records read', 0):,} without the broker, "
-            f"{guarded.get('customer records read', 0):,} with it — bounded by the task's budget\n"
+            f"  {unprotected.get('customer records read', 0):,} without the broker, "
+            f"{protected.get('customer records read', 0):,} with it — bounded by the task's budget\n"
             "  however hard the agent pushes. And every attempt above, refused ones\n"
-            "  included, is in the audit chain; the unguarded run left no record.\n"
+            "  included, is in the audit chain; the unprotected run left no record.\n"
         )
     return "\n".join(lines)
 
@@ -1171,7 +1171,7 @@ def render_matrix(rows: list[dict], live: bool = False) -> str:
     for r in rows:
         out.append(
             f"  {r['scenario']:<{name_w}}  {r['rule']:<{rule_w}}  "
-            f"{r['harm']:<{harm_w}}  {r['guarded']}"
+            f"{r['harm']:<{harm_w}}  {r['protected']}"
         )
     out += ["", "  step by step:"]
     for r in rows:
@@ -1209,18 +1209,35 @@ def _fresh_llm(live: bool, task: tuple[str, dict] | None = None):
     return Cassette(Path("demo/agent/cassettes/support-triage.json"))
 
 
+# "guarded" became "protected" as a clean break. This module parses its own
+# argv by hand and ignores what it does not recognise, so a retired spelling
+# would otherwise select the OPPOSITE profile in silence: `--unguarded`
+# matched no branch, fell through to the default, and printed a protected run
+# to an operator who believed they were watching an unprotected one. Rejecting
+# it by name costs one lookup and turns that into an error anyone can act on.
+RETIRED_FLAGS = {"--unguarded": "--unprotected", "--guarded": "(the default)"}
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if "--help" in argv or "-h" in argv:
         print(USAGE)
         return 0
+    for retired, replacement in RETIRED_FLAGS.items():
+        if retired in argv:
+            print(
+                f"error: {retired} no longer exists — it is now {replacement}. "
+                "The demo says 'protected' and 'unprotected' throughout.",
+                file=sys.stderr,
+            )
+            return 2
     if "--no-log" in argv:
         return _main(argv)
     label = "-".join(
         part for part in (
             "matrix" if "--matrix" in argv else
             "compare" if "--compare" in argv else
-            "unguarded" if "--unguarded" in argv else "guarded",
+            "unprotected" if "--unprotected" in argv else "protected",
             _pick_task(argv, "--live" in argv)[0],
             "live" if "--live" in argv else "recorded",
         )
@@ -1258,7 +1275,7 @@ def _main(argv: list[str], run=None) -> int:
         rows = []
         if live:
             print("\n  running every scenario against a LIVE model.")
-            print("  Each row: the model runs once unguarded, then the SAME run is")
+            print("  Each row: the model runs once unprotected, then the SAME run is")
             print("  replayed through the broker — so the broker is the only variable.\n")
         for name, spec in TASKS.items():
             if not live and name != "triage" and not Path(
@@ -1271,7 +1288,7 @@ def _main(argv: list[str], run=None) -> int:
             # tier those are the only sign the run is alive. See ProgressFilter.
             quiet = ProgressFilter(sys.stdout)
             # A fresh audit directory per scenario. Reusing one makes every
-            # guarded run append to the previous scenario's chain, and the
+            # protected run append to the previous scenario's chain, and the
             # refusal counts come out cumulative -- 3, 4, 5, 6 -- which reads
             # as a trend and is an artifact.
             scratch = Path(tempfile.mkdtemp())
@@ -1280,22 +1297,22 @@ def _main(argv: list[str], run=None) -> int:
             with contextlib.redirect_stdout(quiet):
                 reset()
                 docstore.set_poison(spec.get("poison", "backup"))
-                un = _run_unguarded(
+                un = _run_unprotected(
                     db, _fresh_llm(live, pair), live, pair, capture=captured
                 )
                 reset()
                 docstore.set_poison(spec.get("poison", "backup"))
-                # THE POINT. With --live the unguarded side is a real model, and
-                # the guarded side replays exactly what it just did. Sampling the
+                # THE POINT. With --live the unprotected side is a real model, and
+                # the protected side replays exactly what it just did. Sampling the
                 # model a second time would let it take a different path, and the
                 # comparison would silently stop being about the broker -- which
                 # is not hypothetical: inject-vendor once leaked 119 bytes
-                # unguarded and recorded zero refusals guarded, in one command.
-                guarded_llm = (
+                # unprotected and recorded zero refusals protected, in one command.
+                protected_llm = (
                     Cassette.from_steps(captured, name) if live
                     else _fresh_llm(False, pair)
                 )
-                gu = _run_guarded(scratch, db, guarded_llm, pair)
+                gu = _run_protected(scratch, db, protected_llm, pair)
             # The per-call decisions, not just the totals. "43 refused" is a
             # summary; which calls, against what, and under which rule is the
             # part a reader can actually check.
@@ -1332,7 +1349,7 @@ def _main(argv: list[str], run=None) -> int:
                     "scenario": name,
                     "rule": "—",
                     "harm": "model declined the instruction",
-                    "guarded": "nothing to refuse",
+                    "protected": "nothing to refuse",
                     "note": spec["damage"],
                 })
                 continue
@@ -1353,7 +1370,7 @@ def _main(argv: list[str], run=None) -> int:
                     if "→" in spec["trips"] else "several"
                 ),
                 "harm": worst[0],
-                "guarded": f"{gu['tool calls refused']} refused, "
+                "protected": f"{gu['tool calls refused']} refused, "
                            f"{gu[worst[1]]:,} {worst[0].split(' ', 1)[1]}",
                 "note": spec["damage"],
             })
@@ -1363,18 +1380,18 @@ def _main(argv: list[str], run=None) -> int:
             run.model = _model_name(_fresh_llm(live, ("triage", TASKS["triage"])))
         return 0
 
-    # The unguarded profile starts no OPA and builds no broker. Not to save
+    # The unprotected profile starts no OPA and builds no broker. Not to save
     # time — so that "the policy was not consulted" is a fact about the run
     # rather than a claim in the narration.
     if "--compare" in argv:
         reset()
-        unguarded = _run_unguarded(db, _fresh_llm(live, task), live, task)
+        unprotected = _run_unprotected(db, _fresh_llm(live, task), live, task)
         reset()
-        guarded = _run_guarded(tmp, db, _fresh_llm(live, task), task)
+        protected = _run_protected(tmp, db, _fresh_llm(live, task), task)
         if run is not None:
-            run.results = {"unguarded": unguarded, "guarded": guarded}
+            run.results = {"unprotected": unprotected, "protected": protected}
             run.model = _model_name(_fresh_llm(live, task))
-        print(render_comparison(unguarded, guarded, live, task[0]))
+        print(render_comparison(unprotected, protected, live, task[0]))
         if live:
             print(
                 "  Two live runs are sampled independently, so this is an "
@@ -1387,10 +1404,10 @@ def _main(argv: list[str], run=None) -> int:
     llm = _fresh_llm(live, task)
     if run is not None:
         run.model = _model_name(llm)
-    if "--unguarded" in argv:
-        stats = _run_unguarded(db, llm, live, task)
+    if "--unprotected" in argv:
+        stats = _run_unprotected(db, llm, live, task)
     else:
-        stats = _run_guarded(tmp, db, llm, task)
+        stats = _run_protected(tmp, db, llm, task)
     if run is not None:
         run.results = stats
     return 0

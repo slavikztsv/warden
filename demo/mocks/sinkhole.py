@@ -1,7 +1,7 @@
 """Stands in for attacker.example.
 
 Records every byte it receives so a test can assert that exactly zero bytes
-arrived under the guarded profile. Nothing ever leaves the machine.
+arrived under the protected profile. Nothing ever leaves the machine.
 """
 
 from __future__ import annotations

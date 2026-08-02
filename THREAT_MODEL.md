@@ -199,7 +199,7 @@ quietly fixed. Each is a real property of the system as shipped.
   then reason about it without that record entering its context, so the
   provider is a processor or the agent is useless after its first PII read. This
   was not designed in — the taint rule denied the agent's own model call during
-  a live guarded run, forcing the choice. The alternatives are in-boundary
+  a live protected run, forcing the choice. The alternatives are in-boundary
   inference (the sovereign-cloud answer) or redacting before the tool result
   returns. `authz_test.rego` pins the list at exactly one host so it cannot
   grow unnoticed, and asserts every other allowlisted host still refuses PII.

@@ -804,8 +804,8 @@ def test_agent_loop_can_be_capped():
 def test_a_recorded_scenario_drives_both_profiles_from_one_transcript():
     """The point of recording a complying run.
 
-    Two live runs sample independently, so the unguarded side can follow an
-    injected instruction while the guarded side never attempts it — and then
+    Two live runs sample independently, so the unprotected side can follow an
+    injected instruction while the protected side never attempts it — and then
     "0 bytes with the broker" is not the broker's doing. Observed exactly that
     before cli.record existed. A scenario with its own cassette must replay it
     in both profiles, or the comparison is not controlled.
@@ -844,7 +844,7 @@ def test_a_recording_is_accompanied_by_its_compliance_rate():
         if meta.get("criterion", "").startswith("caused"):
             # An injection recording exists to show the model complying, so a
             # run that did nothing would be recording the wrong thing.
-            assert any(meta["damage_unguarded"].values()), (
+            assert any(meta["damage_unprotected"].values()), (
                 f"{meta_path} claims compliance but records no damage"
             )
 
@@ -852,11 +852,11 @@ def test_a_recording_is_accompanied_by_its_compliance_rate():
 def test_the_live_matrix_replays_one_sample_through_both_profiles():
     """A model cannot be sampled twice and asked to behave the same way.
 
-    So the live matrix runs it once unguarded and replays that exact transcript
+    So the live matrix runs it once unprotected and replays that exact transcript
     through the broker. Sampling a second time would let the model take a
     different path, and the comparison would silently stop being about the
     broker — which is not hypothetical: inject-vendor once leaked 119 bytes
-    unguarded and recorded zero refusals guarded, in one command.
+    unprotected and recorded zero refusals protected, in one command.
     """
     from demo.agent.llm import Cassette
 
@@ -872,7 +872,7 @@ def test_the_live_matrix_replays_one_sample_through_both_profiles():
     a, b = Cassette.from_steps(steps), Cassette.from_steps(steps)
     assert a.next_step([]) == b.next_step([]) == steps[0]
     # The captured list is copied, not aliased: mutating the source afterwards
-    # must not change what the guarded side replays.
+    # must not change what the protected side replays.
     source = list(steps)
     held = Cassette.from_steps(source)
     source.clear()
@@ -885,7 +885,7 @@ def test_matrix_header_says_which_model_produced_it():
     from demo.cli.explain import render_matrix
 
     rows = [{"scenario": "export", "rule": "egress.allowlist",
-             "harm": "155 bytes out", "guarded": "1 refused, 0 bytes out"}]
+             "harm": "155 bytes out", "protected": "1 refused, 0 bytes out"}]
     assert "recorded model" in render_matrix(rows, live=False)
     assert "live model, replayed through the broker" in render_matrix(rows, live=True)
 
@@ -985,3 +985,47 @@ def test_an_unterminated_progress_line_is_not_forwarded_twice():
     captured.write("[llm] waiting 5s\n")
     captured.write("[llm] waiting 5s\n")
     assert terminal.getvalue().count("waiting 5s") == 2
+
+
+# --- retired vocabulary -----------------------------------------------------
+#
+# "guarded" became "protected" as a clean break, with no aliases. explain
+# parses its own argv by hand and ignores anything it does not recognise, so
+# without these the retired spelling would silently run the OPPOSITE profile:
+# `explain --unguarded` matched no branch, fell through to the default, and
+# printed a protected run while the operator believed they were watching an
+# unprotected one. A rename that changes what a command does, quietly, is
+# worse than one that breaks it.
+
+
+def test_the_retired_unguarded_flag_is_rejected():
+    from demo.cli.explain import main
+
+    assert main(["--unguarded", "--no-log"]) == 2
+
+
+def test_the_rejection_names_the_replacement(capsys):
+    from demo.cli.explain import main
+
+    main(["--unguarded", "--no-log"])
+    assert "--unprotected" in capsys.readouterr().err
+
+
+def test_the_retired_flag_runs_nothing():
+    """It must fail before any scenario executes, not after."""
+    import time
+
+    from demo.cli.explain import main
+
+    started = time.monotonic()
+    assert main(["--unguarded", "--no-log"]) == 2
+    assert time.monotonic() - started < 0.5
+
+
+def test_the_retired_profile_name_is_rejected_by_up():
+    import pytest as _pytest
+
+    from demo.cli.main import build_parser
+
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args(["up", "--profile", "guarded"])

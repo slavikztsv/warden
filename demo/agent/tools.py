@@ -1,7 +1,7 @@
 """Two ways to reach a tool. The agent loop cannot tell them apart.
 
 DirectDispatcher is the unprotected profile: the agent holds credentials and
-talks to backends itself. BrokeredDispatcher is the guarded profile: it holds
+talks to backends itself. BrokeredDispatcher is the protected profile: it holds
 a task token and asks the broker to act for it.
 """
 
