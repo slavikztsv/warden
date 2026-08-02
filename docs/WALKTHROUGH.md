@@ -34,8 +34,8 @@ one terminal and `&`.
 ## Part 0 — Setup
 
 ```bash
-git clone https://github.com/slavikztsv/agent-security-broker.git
-cd agent-security-broker
+git clone https://github.com/slavikztsv/warden.git
+cd warden
 python3 -m venv .venv
 .venv/bin/pip install -e ./warden -e ./demo -e ./tools
 .venv/bin/pip install pytest==9.1.1 pytest-asyncio==1.4.0

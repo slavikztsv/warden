@@ -623,7 +623,7 @@ class OpenRouterClient:
                     "Content-Type": "application/json",
                     # OpenRouter attributes traffic with these. Harmless, and
                     # it keeps the request identifiable in the dashboard.
-                    "HTTP-Referer": "https://github.com/slavikztsv/agent-security-broker",
+                    "HTTP-Referer": "https://github.com/slavikztsv/warden",
                     "X-Title": "warden agent security broker",
                 },
                 json=body,

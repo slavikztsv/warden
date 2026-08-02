@@ -13,7 +13,7 @@
 [Threat model](THREAT_MODEL.md) ·
 [Limitations](#known-limitations)
 
-[![CI](https://github.com/slavikztsv/agent-security-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/slavikztsv/agent-security-broker/actions/workflows/ci.yml)
+[![CI](https://github.com/slavikztsv/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/slavikztsv/warden/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![OPA 1.19.0](https://img.shields.io/badge/OPA-1.19.0-7C3AED)](https://www.openpolicyagent.org/)
 [![License Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
@@ -74,8 +74,8 @@ unbrokered runs left no record at all.
 Python only — no Docker needed for the policy, audit, replay and scenario paths:
 
 ```bash
-git clone https://github.com/slavikztsv/agent-security-broker.git
-cd agent-security-broker
+git clone https://github.com/slavikztsv/warden.git
+cd warden
 python3.11 -m venv .venv
 .venv/bin/pip install -e ./warden -e ./demo -e ./tools
 .venv/bin/warden-demo
