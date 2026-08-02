@@ -520,6 +520,155 @@ def export_png(svg_path, scale=3):
     return png
 
 
+# --------------------------------------------------------------------------
+# Scenario strips — one per row of the README's "What it stops" table.
+#
+# Four beats, always the same shape, so the three read as a set: who is
+# asking, what they asked for, the rule that answered, what they actually
+# got. Deliberately iconographic rather than architectural -- this is the
+# picture for someone who has not read anything else yet.
+# --------------------------------------------------------------------------
+
+ICON = 44
+
+
+def _icon(kind, x, y, colour):
+    """A 44x44 glyph, drawn from primitives so there is nothing to embed."""
+    cx, cy = x + ICON / 2, y + ICON / 2
+    st = f'fill="none" stroke="{colour}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"'
+    if kind == "agent":
+        return (f'<rect x="{x+7}" y="{y+12}" width="{ICON-14}" height="22" rx="6" {st}/>'
+                f'<path d="M{cx},{y+6} L{cx},{y+12}" {st}/>'
+                f'<circle cx="{cx}" cy="{y+5}" r="2.6" fill="{colour}"/>'
+                f'<circle cx="{cx-6}" cy="{y+22}" r="2.4" fill="{colour}"/>'
+                f'<circle cx="{cx+6}" cy="{y+22}" r="2.4" fill="{colour}"/>'
+                f'<path d="M{cx-5},{y+29} L{cx+5},{y+29}" {st}/>')
+    if kind == "records":
+        top, bot, r = y + 8, y + 34, 14
+        return (f'<ellipse cx="{cx}" cy="{top}" rx="{r}" ry="4.6" {st}/>'
+                f'<path d="M{cx-r},{top} V{bot}" {st}/>'
+                f'<path d="M{cx+r},{top} V{bot}" {st}/>'
+                f'<path d="M{cx-r},{bot} a{r},4.6 0 0 0 {2*r},0" {st}/>'
+                f'<path d="M{cx-r},{top+9} a{r},4.6 0 0 0 {2*r},0" {st}/>'
+                f'<path d="M{cx-r},{top+18} a{r},4.6 0 0 0 {2*r},0" {st}/>')
+    if kind == "person":
+        return (f'<circle cx="{cx}" cy="{y+14}" r="6.5" {st}/>'
+                f'<path d="M{cx-11},{y+34} a11,11 0 0 1 22,0" {st}/>')
+    if kind == "server":
+        return (f'<rect x="{x+6}" y="{y+9}" width="{ICON-12}" height="12" rx="3" {st}/>'
+                f'<rect x="{x+6}" y="{y+25}" width="{ICON-12}" height="12" rx="3" {st}/>'
+                f'<circle cx="{x+13}" cy="{y+15}" r="1.9" fill="{colour}"/>'
+                f'<circle cx="{x+13}" cy="{y+31}" r="1.9" fill="{colour}"/>')
+    if kind == "shield":
+        return (f'<path d="M{cx},{y+5} L{x+35},{y+12} V{y+24} '
+                f'C{x+35},{y+32} {cx+5},{y+37} {cx},{y+39} '
+                f'C{cx-5},{y+37} {x+9},{y+32} {x+9},{y+24} V{y+12} Z" {st}/>')
+    if kind == "blocked":
+        return (f'<circle cx="{cx}" cy="{cy}" r="15" {st}/>'
+                f'<path d="M{cx-10},{cy+10} L{cx+10},{cy-10}" {st}/>')
+    raise KeyError(kind)
+
+
+CARD_TEXT_X = 14 + ICON + 13     # icon inset + icon + gap
+CARD_PAD_R = 14
+
+
+def _card(x, y, w, h, kind, icon, head, sub, tone):
+    """One beat: an icon on the left, two lines of text beside it.
+
+    Refuses to draw text it would clip. The first version of these strips
+    silently cut "a subject the token never declared" off the right edge of
+    its card -- the same class of bug the box diagrams have a check for, so
+    it gets the same treatment here.
+    """
+    room = w - CARD_TEXT_X - CARD_PAD_R
+    for text, size in ((head, 15), (sub, 12.5)):
+        need = text_width(text, size)
+        if need > room:
+            raise ValueError(
+                f"{text!r} needs {need:.0f}px, card gives {room:.0f}px")
+    fill, stroke, colour = (ZONE[tone] if tone in ZONE else (None, None, None))
+    body = [f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" fill="{fill}" '
+            f'stroke="{stroke}"/>']
+    ix = x + 14
+    body.append(_icon(icon, ix, y + (h - ICON) / 2, colour))
+    tx = ix + ICON + 13
+    body.append(f'<text x="{tx}" y="{y + h/2 - 8}" fill="{colour}" font-family="{MONO}" '
+                f'font-size="15" font-weight="600">{esc(head)}</text>')
+    body.append(f'<text x="{tx}" y="{y + h/2 + 12}" fill="{colour}" font-family="{MONO}" '
+                f'font-size="12.5">{esc(sub)}</text>')
+    return "".join(body)
+
+
+def _strip(rule, ask_icon, ask_head, ask_sub, got_head, got_sub, note):
+    W, H, cy = 1080, 158, 46
+    ch = 88
+    body = []
+    body.append(_card(0, cy - ch / 2 + 20, 250, ch, None, "agent", "the agent", "one task token", "untrusted"))
+    body.append(_card(310, cy - ch / 2 + 20, 340, ch, None, ask_icon, ask_head, ask_sub, "untrusted"))
+    body.append(_card(800, cy - ch / 2 + 20, 280, ch, None, "shield", got_head, got_sub, "target"))
+
+    gy = cy + 20
+    gate_x = 706
+    fill, stroke, colour = PALETTE["enforce"]
+    body.append(f'<rect x="{gate_x}" y="{gy - 34}" width="14" height="88" rx="5" '
+                f'fill="{fill}" stroke="{stroke}"/>')
+    body.append(f'<text x="{gate_x + 7}" y="{gy - 44}" fill="{colour if False else ZONE["enforce"][2]}" '
+                f'font-family="{MONO}" font-size="12.5" font-weight="600" '
+                f'text-anchor="middle">{esc(rule)}</text>')
+
+    for x1, x2 in ((250, 310), (650, gate_x)):
+        body.append(f'<path d="M{x1+8},{gy+10} L{x2-6},{gy+10}" fill="none" stroke="{LINE}" '
+                    f'stroke-width="2" marker-end="url(#arrow)"/>')
+    body.append(f'<path d="M{gate_x+14+6},{gy+10} L{794},{gy+10}" fill="none" stroke="{LINE}" '
+                f'stroke-width="2" marker-end="url(#arrow)"/>')
+    # A chip, not bare text: this line sits outside every card, on whatever
+    # colour the page happens to be, and no single ink reads on both.
+    nf, ns, nc = ZONE["enforce"]
+    nw = text_width(note, 12) + 22
+    body.append(f'<rect x="{W/2 - nw/2:.1f}" y="{gy + 58}" width="{nw:.1f}" height="22" rx="11" '
+                f'fill="{nf}" stroke="{ns}" stroke-width="0.8"/>'
+                f'<text x="{W/2:.1f}" y="{gy + 69}" fill="{nc}" font-family="{MONO}" '
+                f'font-size="12" text-anchor="middle" dominant-baseline="central">'
+                f'{esc(note)}</text>')
+
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
+            f'height="{H}" role="img" aria-label="{esc(ask_head + " " + ask_sub + ", refused by " + rule + "; " + got_head + " " + got_sub)}">'
+            f'<title>{esc(rule)}</title><defs>'
+            f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
+            f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{LINE}"/></marker>'
+            f'</defs>' + "".join(body) + '</svg>\n')
+
+
+SCENARIOS = {
+    "stop-report": dict(
+        rule="rows.bounded",
+        ask_icon="records", ask_head="read the whole table", ask_sub="20,651 customer records",
+        got_head="1 record", got_sub="the one the task named",
+        note="splitting the read into thirds changed nothing"),
+    "stop-crosscheck": dict(
+        rule="rows.scope",
+        ask_icon="person", ask_head="read another customer", ask_sub="one row, inside the budget",
+        got_head="refused", got_sub="an undeclared subject",
+        note="wrong subject, not too many rows"),
+    "stop-share": dict(
+        rule="egress.pii_sink",
+        ask_icon="server", ask_head="POST to an internal host", ask_sub="docstore.internal, allowlisted",
+        got_head="0 bytes", got_sub="the task was holding PII",
+        note="refused for what it carried, not where it went"),
+}
+
+
+def illustrations():
+    written = []
+    for name, spec in SCENARIOS.items():
+        path = OUT / f"{name}.svg"
+        path.write_text(_strip(**spec), encoding="utf-8")
+        png = export_png(path)
+        written.append(f"{name}.svg" + (f" +{png.name}" if png else ""))
+    return written
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     failed = False
@@ -540,6 +689,8 @@ def main():
         if png:
             note += f", +{png.name}"
         print(f"wrote {path.relative_to(OUT.parent.parent)}  ({note})")
+    for line in illustrations():
+        print(f"wrote docs/assets/{line}")
     if not failed and export_png(OUT / "architecture.svg") is None:
         print("note: cairosvg not installed, so no PNGs were written")
     return 1 if failed else 0
