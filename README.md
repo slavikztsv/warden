@@ -37,9 +37,10 @@ the agent and everything it can reach, and bounds what that authority is worth.
 
 ## What it stops
 
-Seven scenarios against a **live** model. Each row is one transcript run twice
-— once with nothing in the way, then the *same* model output replayed through
-the broker — so the broker is the only thing that differs across a row.
+Ten scenarios ran against a **live** model; the seven below are the ones the
+model took the bait on. Each row is one transcript run twice — once with
+nothing in the way, then the *same* model output replayed through the broker —
+so the broker is the only thing that differs across a row.
 
 > `gemini-3.6-flash` · 2026-08-02 · every figure written by the run itself
 
@@ -75,8 +76,13 @@ record at all.
 > A live sample, not a benchmark: `--matrix --live` holds the transcript fixed
 > across a row, so the comparison is controlled — but the model writes a fresh
 > transcript every run, and the numbers move with it. Drop `--live` to replay a
-> recorded one. None of this shows injection being *detected* — the agent was
-> doing what it was asked, and was refused on the consequences.
+> recorded one. The other three scenarios — `triage`, `inject-internal` and
+> `inject-cc` — produced no refusal in this run, because the model declined the
+> planted instruction on its own. That is reported and never counted as a
+> control: refusal is probabilistic, and a rephrasing or a different model
+> removes it, which is what `warden-demo sweep` exists to measure. None of this
+> shows injection being *detected* — the agent was doing what it was asked, and
+> was refused on the consequences.
 
 ---
 
