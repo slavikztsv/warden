@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="warden logo: a request meeting a policy gate inside a shield">
+  <title>warden</title>
+  <!--
+    A request (left) reaching a gate inside a boundary. No gradients and no
+    fills, so it reads on light and dark backgrounds alike; violet holds
+    contrast against both white and #0d1117.
+  -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Trust boundary -->
+    <path d="M256 44 L444 110 V266 C444 372 362 442 256 468 C150 442 68 372 68 266 V110 Z"
+          stroke="#8B5CF6" stroke-width="26"/>
+    <!-- The inbound request, stopping at the gate -->
+    <path d="M104 256 H196" stroke="#94A3B8" stroke-width="20"/>
+    <path d="M172 230 L200 256 L172 282" stroke="#94A3B8" stroke-width="20"/>
+    <!-- The policy gate -->
+    <path d="M256 168 V344" stroke="#8B5CF6" stroke-width="28"/>
+    <!-- Beyond the gate: the protected side -->
+    <path d="M318 214 H372" stroke="#94A3B8" stroke-width="20"/>
+    <path d="M318 298 H372" stroke="#94A3B8" stroke-width="20"/>
+  </g>
+</svg>
