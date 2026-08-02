@@ -580,6 +580,76 @@ def test_the_gemini_client_is_built_with_a_bounded_request_timeout(monkeypatch):
     assert seen["http_options"].timeout == GEMINI_TIMEOUT_MS
 
 
+def _raising_gemini_stub(exc):
+    """A client whose every generate_content call raises `exc`."""
+    calls = []
+
+    class Models:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            raise exc
+
+    return SimpleNamespace(models=Models()), calls
+
+
+def test_a_stalled_request_is_retried_once_and_then_abandoned(monkeypatch, capsys):
+    """A stall gets a smaller budget than a rate limit, and says which it was.
+
+    A 429 is the expected case on a free tier, the server states how long to
+    wait, and waiting works. A stalled socket says nothing, costs the full
+    120s to discover, and a connection that died once usually dies again —
+    five attempts would spend ten minutes proving it.
+    """
+    import time
+
+    import httpx
+
+    from demo.agent.llm import GeminiClient
+
+    waits = []
+    monkeypatch.setattr(time, "sleep", waits.append)
+    stub, calls = _raising_gemini_stub(httpx.ReadTimeout("timed out"))
+
+    with pytest.raises(RuntimeError, match="stopped responding"):
+        GeminiClient("key", client=stub)._generate(config=None)
+
+    assert len(calls) == 2, "two attempts total, not the rate-limit budget of five"
+    assert waits == [5.0], "one backoff, between the two attempts"
+    out = capsys.readouterr().out
+    assert "[llm] request timed out after 120s, retrying" in out
+    # A stall must not be announced as a rate limit -- they call for different
+    # operator responses, and the wait line is the only thing on screen.
+    assert "transient provider error" not in out
+
+
+def test_a_rate_limit_still_gets_its_five_attempts(monkeypatch, capsys):
+    """Regression: the timeout budget must not shrink the existing one."""
+    import time
+
+    from demo.agent.llm import GeminiClient
+
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    stub, calls = _raising_gemini_stub(Exception("429 RESOURCE_EXHAUSTED"))
+
+    with pytest.raises(RuntimeError, match="still rate limited"):
+        GeminiClient("key", client=stub)._generate(config=None)
+
+    assert len(calls) == 5
+    assert "[llm] transient provider error" in capsys.readouterr().out
+
+
+def test_a_non_transient_error_is_not_retried_at_all(monkeypatch):
+    """Regression: only transient failures are worth a second attempt."""
+    from demo.agent.llm import GeminiClient
+
+    stub, calls = _raising_gemini_stub(ValueError("malformed request"))
+
+    with pytest.raises(ValueError, match="malformed request"):
+        GeminiClient("key", client=stub)._generate(config=None)
+
+    assert len(calls) == 1
+
+
 # ---------------------------------------------------------------------------
 # OpenRouter.
 #

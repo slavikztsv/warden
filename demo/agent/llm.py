@@ -32,6 +32,13 @@ GEMINI_MAX_TOKENS = 16384
 # than each carrying its own number.
 GEMINI_TIMEOUT_MS = 120_000
 
+# A stall gets a smaller budget than a rate limit, on purpose. A 429 is the
+# expected case on a free tier, the server says how long to wait, and waiting
+# works. A stalled socket carries no information, costs the full timeout to
+# discover, and a connection that died once will usually die again.
+GEMINI_TIMEOUT_ATTEMPTS = 2
+GEMINI_TIMEOUT_BACKOFF = 5.0
+
 # Kept for the Anthropic client, whose call site predates the second provider.
 MODEL = ANTHROPIC_MODEL
 
@@ -340,16 +347,46 @@ class GeminiClient:
         backends. That rule exists because retrying an authorized read
         amplifies it against a row bound. Nothing is authorized here: this is
         the agent talking to its own model, before any tool call exists.
+
+        That bound covered error RESPONSES, not absent ones. A request that
+        never returns never raises, so until the client was given a deadline
+        this loop could not see the failure it claimed to bound — a live matrix
+        run hung on one socket for 24 minutes. A stall now lands in its own
+        branch with its own, smaller budget.
         """
         import re
         import time as _time
 
+        import httpx
+
         last = None
-        for attempt in range(5):
+        attempt = 0   # transient provider errors: 429/500/503
+        timeouts = 0  # stalled requests, budgeted separately
+        while attempt < 5:
             try:
                 return self._client.models.generate_content(
                     model=self._model, contents=self._history, config=config
                 )
+            except httpx.TimeoutException as exc:
+                # Deliberately NOT httpx.ConnectError: that fails fast and says
+                # something specific, where this is the silent case the whole
+                # deadline exists for.
+                timeouts += 1
+                if timeouts >= GEMINI_TIMEOUT_ATTEMPTS:
+                    raise RuntimeError(
+                        f"model stopped responding after {timeouts} attempts "
+                        f"of {GEMINI_TIMEOUT_MS // 1000}s each. The request was "
+                        "accepted and no response came back."
+                    ) from exc
+                print(
+                    f"[llm] request timed out after {GEMINI_TIMEOUT_MS // 1000}s,"
+                    " retrying",
+                    flush=True,
+                )
+                _time.sleep(GEMINI_TIMEOUT_BACKOFF)
+                # A stall does not spend a rate-limit attempt: the two budgets
+                # count different failures.
+                continue
             except Exception as exc:  # noqa: BLE001 - vendor error types vary
                 text = str(exc)
                 transient = (
@@ -373,7 +410,8 @@ class GeminiClient:
                 delay = min(float(asked.group(1)) + 1 if asked else 2 ** attempt * 5, 65)
                 print(f"[llm] transient provider error, waiting {delay:.0f}s", flush=True)
                 _time.sleep(delay)
-        raise RuntimeError(f"model still rate limited after 5 attempts: {last}")
+                attempt += 1
+        raise RuntimeError(f"model still rate limited after {attempt} attempts: {last}")
 
     def _serve_queued(self) -> dict:
         """Hand the loop the next call the model asked for, oldest first."""
