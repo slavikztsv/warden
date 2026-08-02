@@ -1,6 +1,6 @@
 # Pinned exactly. Verified on these versions: 606 python tests, 53 rego tests,
 # and both demo profiles end to end. NOT re-run under Docker on this machine
-# (no daemon access) -- the compose profiles and tests/test_isolation.sh are
+# (no daemon access) -- the compose profiles and tests/demo/test_isolation.sh are
 # the one thing still to confirm after this bump.
 #
 # httpx stays on 0.28.x deliberately. Starlette's TestClient now warns that it
