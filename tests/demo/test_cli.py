@@ -1133,3 +1133,46 @@ def test_sweep_still_reports_a_genuinely_absent_key(monkeypatch):
 
     monkeypatch.setattr(preflight, "merged_env", lambda: {})
     assert sweep._api_key() is None
+
+
+def test_an_aborted_matrix_keeps_the_scenarios_that_finished(monkeypatch):
+    """Run 2026-08-02T12-27-53Z hung on scenario 10 and its manifest recorded
+    results: {} and model: "" — 45 minutes of live model calls, nine finished
+    scenarios, and a sealed record of nothing."""
+    from types import SimpleNamespace
+
+    import pytest
+
+    from demo.cli import explain
+
+    tasks = {
+        "triage": dict(explain.TASKS["triage"]),
+        "export": dict(explain.TASKS["export"]),
+    }
+    monkeypatch.setattr(explain, "TASKS", tasks)
+
+    stats = {
+        "tool calls made": 4, "tool calls refused": 2,
+        "customer records read": 1, "outbound sends attempted": 1,
+        "bytes that left": 0, "PII into internal systems": 0,
+        "mail to undeclared recipients": 0, "emails delivered": 1,
+    }
+
+    def unprotected(db, llm, live, pair, capture=None):
+        if pair[0] == "export":
+            raise KeyboardInterrupt
+        return dict(stats, **{"tool calls refused": 0, "bytes that left": 155})
+
+    monkeypatch.setattr(explain, "_run_unprotected", unprotected)
+    monkeypatch.setattr(explain, "_run_protected", lambda *a, **k: dict(stats))
+
+    run = SimpleNamespace(results={}, model="")
+    with pytest.raises(KeyboardInterrupt):
+        explain._main(["--matrix"], run)
+
+    # The scenario that finished is saved; the one that was interrupted is not
+    # claimed as a result.
+    assert list(run.results) == ["triage"]
+    assert run.results["triage"]["scenario"] == "triage"
+    # And the model is known, so the saved rows say what produced them.
+    assert run.model

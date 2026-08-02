@@ -1394,6 +1394,12 @@ def _main(argv: list[str], run=None) -> int:
             print("\n  running every scenario against a LIVE model.")
             print("  Each row: the model runs once unprotected, then the SAME run is")
             print("  replayed through the broker — so the broker is the only variable.\n")
+        # Before the loop, not after it. Set afterwards, an interrupted run
+        # recorded model: "" — and it also built a throwaway client purely to
+        # read a name. Doing it here also fails fast on a missing API key,
+        # rather than ten scenarios later.
+        if run is not None:
+            run.model = _model_name(_fresh_llm(live, ("triage", TASKS["triage"])))
         for name, spec in TASKS.items():
             if not live and name != "triage" and not Path(
                 f"demo/agent/cassettes/{name}.json"
@@ -1425,10 +1431,13 @@ def _main(argv: list[str], run=None) -> int:
                     "note": spec["damage"],
                 }
             rows.append(row)
+            # Per scenario, not once at the end. A run that dies on scenario
+            # ten used to save nothing at all, and RunLog.__exit__ runs on the
+            # way out of an exception — so this is what makes an interrupted
+            # run still worth having.
+            if run is not None:
+                run.results[name] = row
         print(render_matrix(rows, live))
-        if run is not None:
-            run.results = {r["scenario"]: r for r in rows}
-            run.model = _model_name(_fresh_llm(live, ("triage", TASKS["triage"])))
         return 0
 
     # The unprotected profile starts no OPA and builds no broker. Not to save
