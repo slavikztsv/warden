@@ -469,6 +469,24 @@ def integration():
     return d
 
 
+def export_png(svg_path, scale=2):
+    """Optional PNG beside the SVG, for readers whose viewer will not render
+    SVG. Transparent background on purpose: the diagrams put nothing behind
+    their zones, so the page's own colour shows through and one file serves
+    light and dark alike. Needs cairosvg (`pip install cairosvg`); skipped
+    with a note when it is absent, because the SVGs are the source of truth
+    and generating them must not require it.
+    """
+    try:
+        import cairosvg
+    except ImportError:
+        return None
+    png = svg_path.with_suffix(".png")
+    cairosvg.svg2png(url=str(svg_path), write_to=str(png), scale=scale,
+                     background_color=None)
+    return png
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     failed = False
@@ -484,8 +502,13 @@ def main():
             continue
         path = OUT / f"{name}.svg"
         path.write_text(d.svg(), encoding="utf-8")
-        print(f"wrote {path.relative_to(OUT.parent.parent)}  "
-              f"({len(d.boxes)} boxes, {len(d.edges)} edges, layout clean)")
+        note = f"{len(d.boxes)} boxes, {len(d.edges)} edges, layout clean"
+        png = export_png(path)
+        if png:
+            note += f", +{png.name}"
+        print(f"wrote {path.relative_to(OUT.parent.parent)}  ({note})")
+    if not failed and export_png(OUT / "architecture.svg") is None:
+        print("note: cairosvg not installed, so no PNGs were written")
     return 1 if failed else 0
 
 

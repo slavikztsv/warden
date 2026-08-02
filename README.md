@@ -246,7 +246,7 @@ both are standard enough that a third-party SDK you cannot patch is covered
 too.
 
 <p align="center">
-  <img src="docs/assets/integration.svg" alt="Your agent talks to warden's tool API and egress proxy; warden decides, then reaches your systems" width="100%">
+  <img src="docs/assets/integration.png" alt="Your agent talks to warden's tool API and egress proxy; warden decides, then reaches your systems" width="100%">
 </p>
 
 ### The two surfaces
@@ -423,7 +423,7 @@ does not fire. Adversarial `opa eval`, not `opa test`, is what found them.
 ## Trust boundaries
 
 <p align="center">
-  <img src="docs/assets/trust-boundaries.svg" alt="Untrusted agent-net, the warden enforcement boundary, the control plane on backend-net only, and the protected systems" width="100%">
+  <img src="docs/assets/trust-boundaries.png" alt="Untrusted agent-net, the warden enforcement boundary, the control plane on backend-net only, and the protected systems" width="100%">
 </p>
 
 The two dotted edges are the paths that **must not exist**. Both are enforced
@@ -450,7 +450,7 @@ against a fully compromised broker.
 ## System architecture
 
 <p align="center">
-  <img src="docs/assets/architecture.svg" alt="The request pipeline: verify token, snapshot task state, validate, decide against OPA, record, then execute through an adapter" width="100%">
+  <img src="docs/assets/architecture.png" alt="The request pipeline: verify token, snapshot task state, validate, decide against OPA, record, then execute through an adapter" width="100%">
 </p>
 
 | Component | Responsibility | Trust level | Failure impact |
