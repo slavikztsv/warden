@@ -30,6 +30,7 @@ replayed, and `--live` removes even that.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import socket
@@ -1106,6 +1107,43 @@ def _target_label(target: dict) -> str:
     return str(kind)
 
 
+class ProgressFilter(io.StringIO):
+    """Captures a scenario's narration, but lets its progress through.
+
+    The live matrix runs each scenario under `redirect_stdout` so seven
+    narrated runs do not bury the table that is the whole point. That
+    redirect used to be a bare StringIO which nothing ever read -- so it
+    swallowed the model client's retry messages too, and those are the only
+    evidence a live run is still alive. A Gemini 429 sleeps up to 65 seconds,
+    five times, per turn (demo/agent/llm.py's _generate), and the `report`
+    task takes many turns: a rate-limited matrix run sat silent for eleven
+    minutes and was indistinguishable from a hang. It was not hung; it was
+    waiting, and saying so costs one line.
+
+    Matching is on whole lines, not on each write: print() emits the text and
+    the newline as separate writes, and a client may build a line in pieces,
+    so a per-write prefix test would miss the newline and drop the tail.
+    """
+
+    FORWARD = ("[llm]",)
+
+    def __init__(self, passthrough) -> None:
+        super().__init__()
+        self._out = passthrough
+        self._pending = ""
+
+    def write(self, text: str) -> int:
+        self._pending += text
+        while "\n" in self._pending:
+            line, _, self._pending = self._pending.partition("\n")
+            if line.strip().startswith(self.FORWARD):
+                # Indented under the scenario line `  [2] report` above it, so
+                # the wait reads as belonging to that scenario.
+                self._out.write(f"      {line.strip()}\n")
+                self._out.flush()
+        return super().write(text)
+
+
 def render_matrix(rows: list[dict], live: bool = False) -> str:
     """Every recorded scenario's A/B on one screen.
 
@@ -1228,7 +1266,10 @@ def _main(argv: list[str], run=None) -> int:
             ).exists():
                 continue
             pair = (name, spec)
-            quiet = io.StringIO()
+            # Not a bare StringIO: that swallowed the model client's retry
+            # messages along with the narration, and on a rate-limited free
+            # tier those are the only sign the run is alive. See ProgressFilter.
+            quiet = ProgressFilter(sys.stdout)
             # A fresh audit directory per scenario. Reusing one makes every
             # guarded run append to the previous scenario's chain, and the
             # refusal counts come out cumulative -- 3, 4, 5, 6 -- which reads

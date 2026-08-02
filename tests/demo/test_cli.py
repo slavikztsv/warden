@@ -913,3 +913,75 @@ def test_the_matrix_records_each_decision_not_only_the_totals():
     # printable rather than raising inside a run that is being logged.
     assert _target_label({"kind": "future"}) == "future"
     assert _target_label({}) == "None"
+
+
+# --- live-matrix progress ---------------------------------------------------
+#
+# The live matrix redirects each scenario's stdout so seven narrated runs do
+# not bury the table. That redirect swallowed the model client's retry
+# messages too, and on a rate-limited free tier those are the only evidence
+# the run is alive: a Gemini 429 sleeps up to 65s, five times, per turn. A
+# matrix run therefore sat silent for eleven minutes looking exactly like a
+# hang. Progress must survive the redirect; narration must not.
+
+
+def test_progress_lines_reach_the_real_stdout_through_the_redirect():
+    import io
+
+    from demo.cli.explain import ProgressFilter
+
+    terminal = io.StringIO()
+    captured = ProgressFilter(terminal)
+    print("[llm] transient provider error, waiting 65s", file=captured)
+    assert "[llm] transient provider error, waiting 65s" in terminal.getvalue()
+
+
+def test_narration_does_not_reach_the_real_stdout():
+    import io
+
+    from demo.cli.explain import ProgressFilter
+
+    terminal = io.StringIO()
+    captured = ProgressFilter(terminal)
+    print("  step 3  read_document(ticket-4711)  allow", file=captured)
+    assert terminal.getvalue() == ""
+
+
+def test_everything_is_still_captured_for_the_caller():
+    import io
+
+    from demo.cli.explain import ProgressFilter
+
+    captured = ProgressFilter(io.StringIO())
+    print("[llm] waiting", file=captured)
+    print("narration", file=captured)
+    assert "[llm] waiting" in captured.getvalue()
+    assert "narration" in captured.getvalue()
+
+
+def test_a_progress_line_split_across_writes_is_still_forwarded():
+    """print() writes the text and the newline separately, and a client may
+    build a line in pieces. Matching on whole lines rather than on each write
+    is what makes that reliable."""
+    import io
+
+    from demo.cli.explain import ProgressFilter
+
+    terminal = io.StringIO()
+    captured = ProgressFilter(terminal)
+    captured.write("[llm] ")
+    captured.write("openrouter 429, ")
+    captured.write("waiting 20s\n")
+    assert "openrouter 429, waiting 20s" in terminal.getvalue()
+
+
+def test_an_unterminated_progress_line_is_not_forwarded_twice():
+    import io
+
+    from demo.cli.explain import ProgressFilter
+
+    terminal = io.StringIO()
+    captured = ProgressFilter(terminal)
+    captured.write("[llm] waiting 5s\n")
+    captured.write("[llm] waiting 5s\n")
+    assert terminal.getvalue().count("waiting 5s") == 2
