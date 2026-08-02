@@ -245,52 +245,9 @@ not change** — you point it at two endpoints with environment variables, and
 both are standard enough that a third-party SDK you cannot patch is covered
 too.
 
-```mermaid
-%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 55, "rankSpacing": 70, "padding": 12}} }%%
-flowchart LR
-    subgraph YOURS["YOUR AGENT — code unchanged"]
-        direction TB
-        Loop(["Agent loop"])
-        SDK(["Model SDK · HTTP client · curl"])
-    end
-
-    subgraph WARDEN["WARDEN"]
-        direction TB
-        API["Tool API<br/>:8080"]
-        Proxy["Egress proxy<br/>:3128"]
-        Gate{{"Policy · taint · audit"}}
-    end
-
-    subgraph OUT["YOUR SYSTEMS"]
-        direction TB
-        Sys["Databases · internal APIs · mail"]
-        Net["Allowlisted external hosts"]
-    end
-
-    Refused["403 + X-Warden-Rule<br/>· audit record written"]
-
-    Loop -- "BROKER_URL + Bearer token" --> API
-    SDK -- "HTTP_PROXY, token in the URL" --> Proxy
-    API --> Gate
-    Proxy --> Gate
-    Gate -- "allow" --> Sys
-    Gate -- "allow" --> Net
-    Gate -- "deny" --> Refused
-
-    classDef caller fill:#B23A34,stroke:#8B2A25,color:#FFFFFF
-    classDef enforce fill:#6D4FD6,stroke:#5340AE,color:#FFFFFF
-    classDef core fill:#4527A0,stroke:#341E7A,color:#FFFFFF
-    classDef target fill:#2E7D5B,stroke:#226046,color:#FFFFFF
-    class Loop,SDK caller
-    class API,Proxy,Refused enforce
-    class Gate core
-    class Sys,Net target
-    style YOURS fill:#FBEAE8,stroke:#B23A34,color:#7A241F
-    style WARDEN fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
-    style OUT fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
-    linkStyle 4,5 stroke:#2E7D5B,stroke-width:2px
-    linkStyle 6 stroke:#6D4FD6,stroke-width:2px
-```
+<p align="center">
+  <img src="docs/assets/integration.svg" alt="Your agent talks to warden's tool API and egress proxy; warden decides, then reaches your systems" width="100%">
+</p>
 
 ### The two surfaces
 
@@ -465,72 +422,9 @@ does not fire. Adversarial `opa eval`, not `opa test`, is what found them.
 
 ## Trust boundaries
 
-```mermaid
-%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 55, "rankSpacing": 70, "padding": 12}} }%%
-flowchart LR
-    subgraph UNTRUSTED["UNTRUSTED — agent-net, internal: true"]
-        direction TB
-        Poison["Poisoned<br/>document content"]
-        Reply["Model provider<br/>response"]
-        Agent(["Agent runtime"])
-    end
-
-    subgraph ENFORCE["TRUSTED ENFORCEMENT — warden broker"]
-        direction TB
-        API["Tool API"]
-        Proxy["Egress proxy"]
-        PDP{{"Policy decision point"}}
-        Audit[("Hash-chained<br/>audit log")]
-    end
-
-    subgraph CONTROL["CONTROL PLANE — backend-net only"]
-        Mint["broker-control<br/>holds the private key"]
-    end
-
-    subgraph PROTECTED["PROTECTED SYSTEMS"]
-        direction TB
-        DB[("customers.db")]
-        Internal["docstore.internal<br/>mailer.internal"]
-        Ext["Allowlisted<br/>external hosts"]
-    end
-
-    Poison --> Agent
-    Reply --> Agent
-    Mint -- "scoped 5-minute task token" --> Agent
-
-    Agent -- "Bearer token" --> API
-    Agent -- "CONNECT + Proxy-Authorization" --> Proxy
-
-    API --> PDP
-    Proxy --> PDP
-    API --> Audit
-    Proxy --> Audit
-
-    API --> DB
-    API --> Internal
-    Proxy --> Ext
-
-    Agent -. "no route exists" .-> Mint
-    Agent -. "no gateway exists" .-> Ext
-
-    classDef untrusted fill:#B23A34,stroke:#8B2A25,color:#FFFFFF
-    classDef enforce fill:#6D4FD6,stroke:#5340AE,color:#FFFFFF
-    classDef core fill:#4527A0,stroke:#341E7A,color:#FFFFFF
-    classDef control fill:#976D19,stroke:#795714,color:#FFFFFF
-    classDef target fill:#2E7D5B,stroke:#226046,color:#FFFFFF
-    classDef store fill:#37474F,stroke:#263238,color:#FFFFFF
-    class Poison,Reply,Agent untrusted
-    class API,Proxy enforce
-    class PDP core
-    class Audit store
-    class Mint control
-    class DB,Internal,Ext target
-    style UNTRUSTED fill:#FBEAE8,stroke:#B23A34,color:#7A241F
-    style ENFORCE fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
-    style CONTROL fill:#FAF1DF,stroke:#A8791C,color:#6B4C0F
-    style PROTECTED fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
-    linkStyle 12,13 stroke:#B23A34,stroke-width:2px,stroke-dasharray:6 4
-```
+<p align="center">
+  <img src="docs/assets/trust-boundaries.svg" alt="Untrusted agent-net, the warden enforcement boundary, the control plane on backend-net only, and the protected systems" width="100%">
+</p>
 
 The two dotted edges are the paths that **must not exist**. Both are enforced
 by network topology rather than by a check in code, which is why they hold even
@@ -555,77 +449,9 @@ against a fully compromised broker.
 
 ## System architecture
 
-```mermaid
-%%{init: {"flowchart": {"curve": "step", "nodeSpacing": 55, "rankSpacing": 70, "padding": 12}} }%%
-flowchart TB
-    Ctl["broker-control<br/>control_main.py"]
-    Client(["Agent runtime · untrusted"])
-
-    subgraph BROKER["WARDEN BROKER — one process, one worker"]
-        direction TB
-        API["Tool API :8080<br/>app.py"]
-        Proxy["Egress proxy :3128<br/>proxy.py"]
-        Ident["1 · Verify token<br/>identity.py"]
-        Taint["2 · Snapshot task state<br/>taint.py"]
-        Cat["3 · Validate + describe<br/>config/catalog.py"]
-        PDPc["4 · Decide<br/>pdp.py"]
-        Aud[("5 · Record<br/>audit.py")]
-    end
-
-    OPA{{"OPA 1.19.0 :8181<br/>authz.rego + data.json"}}
-
-    subgraph ADAPT["6 · EXECUTE — broker/adapters/"]
-        direction LR
-        Doc["docstore"]
-        Sql["sql"]
-        Http["http"]
-        Mail["mail"]
-    end
-
-    subgraph PROT["PROTECTED SYSTEMS"]
-        direction LR
-        DS["docstore.internal"]
-        DB[("customers.db")]
-        Ext["Allowlisted hosts"]
-        MS["mailer.internal"]
-    end
-
-    Ctl -- "Ed25519 task token" --> Client
-    Client -- "Bearer" --> API
-    Client -- "CONNECT" --> Proxy
-
-    API --> Ident --> Taint --> Cat --> PDPc
-    Proxy --> PDPc
-    PDPc <-- "input · allow + deny_reasons" --> OPA
-    PDPc -- "allow" --> Aud
-    Aud -- "written before execution" --> ADAPT
-
-    Doc --> DS
-    Sql --> DB
-    Http --> Ext
-    Mail --> MS
-    Proxy --> Ext
-
-    classDef untrusted fill:#B23A34,stroke:#8B2A25,color:#FFFFFF
-    classDef enforce fill:#6D4FD6,stroke:#5340AE,color:#FFFFFF
-    classDef core fill:#4527A0,stroke:#341E7A,color:#FFFFFF
-    classDef control fill:#976D19,stroke:#795714,color:#FFFFFF
-    classDef target fill:#2E7D5B,stroke:#226046,color:#FFFFFF
-    classDef store fill:#37474F,stroke:#263238,color:#FFFFFF
-    classDef plumbing fill:#7760DB,stroke:#5D41D4,color:#FFFFFF
-    class Client untrusted
-    class Ctl control
-    class API,Proxy enforce
-    class Ident,Taint,Cat,PDPc plumbing
-    class Aud store
-    class OPA core
-    class Doc,Sql,Http,Mail plumbing
-    class DS,DB,Ext,MS target
-    style BROKER fill:#EEE9FC,stroke:#6D4FD6,color:#3F2E8C
-    style ADAPT fill:#F4F1FD,stroke:#7760DB,color:#3F2E8C
-    style PROT fill:#E3F2EB,stroke:#2E7D5B,color:#1D4E39
-    linkStyle 9,10 stroke:#37474F,stroke-width:2px
-```
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="The request pipeline: verify token, snapshot task state, validate, decide against OPA, record, then execute through an adapter" width="100%">
+</p>
 
 | Component | Responsibility | Trust level | Failure impact |
 |---|---|---|---|
