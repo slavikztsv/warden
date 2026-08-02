@@ -4,19 +4,29 @@
 
 ## 1. Context and goal
 
-An interview artifact for the Lenovo *Advisory Researcher, Hybrid Cloud Security* role (Digital Trust Lab, Tel Aviv, req WD00101994). The posting asks for security solutions for **cloud AI agents** — securing agents, inference pipelines, and the data flowing through them — and lists hands-on agent building as a plus.
+Agents act on text they did not author. A document, a ticket, a tool result —
+any of it can carry an instruction, and an agent that follows one is not
+exploited in the memory-safety sense. It acts with its own valid credentials,
+entirely inside its granted permissions. This is a confused-deputy problem.
 
-Two readings of that are possible, and they are not equally valuable. "AI agents *for* security" (threat-modeling bots, policy generators) is the crowded lane every candidate brings. "**Security *for* AI agents**" — agent identity, egress control, tool-call authorization, blast-radius containment — is the actual job description and almost nobody builds it. This project takes the second reading.
+Two readings of "AI and security" are possible, and they are not equally
+useful. "AI agents *for* security" — threat-modelling bots, policy generators —
+is the well-populated one. "**Security *for* AI agents**" — agent identity,
+egress control, tool-call authorization, blast-radius containment — is the one
+with almost nothing built for it. This project takes the second reading.
 
-The builder's background is backend/platform engineering. The design therefore leans on shipping a real service, and locates the security depth in the threat model and the design choices rather than in claimed operational security experience.
+The author's background is backend and platform engineering. The design
+therefore leans on shipping a real service, and locates the security depth in
+the threat model and the design choices rather than in claimed operational
+security experience.
 
 **Build budget: one weekend, ~10–15 hours.** Section 12 holds the breakdown.
 
 **Success criteria:**
 
 - A working `docker compose up` demo that runs the same agent code twice and produces two different outcomes.
-- An artifact the interviewer can read across the table: the Rego policy files and a replayed attack path.
-- The design survives adversarial questioning — specifically the bypass question, the blocklist question, and the "is this canned" question.
+- A readable artifact: the Rego policy files and a replayed attack path.
+- The design survives adversarial review — specifically the bypass question, the blocklist question, and whether the result is canned.
 
 ## 2. Thesis
 
@@ -342,7 +352,7 @@ Two things to say over this screen. First, it is the JD's "reconstruct the attac
 
 **Layer 3 — the exploit as a regression test.** `test_injection_contained` runs the full guarded scenario against the cassette and asserts four things: the sinkhole received zero bytes; the fallback POST to the allowlisted `docstore.internal/feedback` was denied under `egress.pii_sink`; the audit log contains exactly the expected deny records in order; and the legitimate `send_email` still succeeded, so the containment does not simply break the task. **The exploit is a regression test**, so the security property is continuously verified rather than demonstrated once.
 
-**CI:** GitHub Actions runs all three layers. The badge does real work when the interviewer opens the repo.
+**CI:** GitHub Actions runs all three layers, so the badge reflects the full suite rather than a subset.
 
 ## 11. Failure behavior
 

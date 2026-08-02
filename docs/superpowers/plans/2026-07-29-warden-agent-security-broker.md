@@ -4026,7 +4026,7 @@ git commit -m "test: the injection exploit as a permanent regression test"
 
 **Interfaces:**
 - Consumes: everything.
-- Produces: the repo as the interviewer first sees it.
+- Produces: the repo as a first-time reader encounters it.
 
 - [ ] **Step 1: Write the CI workflow**
 
