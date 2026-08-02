@@ -71,6 +71,44 @@ def test_fetch_opa_derives_the_pinned_version():
     assert derived == OPA_VERSION
 
 
+def test_the_version_report_survives_a_reader_that_stops_early(tmp_path):
+    """`"$DEST" version | head -1` under `set -o pipefail` is exit 141, sometimes.
+
+    head exits after the first line and closes the pipe; opa, still writing its
+    remaining seven lines, takes SIGPIPE. `set -o pipefail` promotes that to the
+    pipeline's status and `set -e` aborts the script. So CI failed at "Install
+    OPA" -- before a single test ran -- on commits that touched neither CI nor
+    this script. It is a race, decided by whether the producer finished writing
+    first, which is why it failed roughly one push in five rather than every
+    time; locally the same construct failed 4 runs in 30.
+
+    This runs the script's OWN reporting line with $DEST bound to a stand-in
+    that writes far more than a pipe buffer, so the race always resolves the
+    losing way. It therefore fails for ANY construct that stops reading early,
+    not only for `head`.
+    """
+    script = (REPO_ROOT / "scripts" / "fetch-opa.sh").read_text()
+    match = re.search(r'^"\$DEST" version.*$', script, re.MULTILINE)
+    assert match, "fetch-opa.sh must report the resolved binary's version"
+
+    producer = tmp_path / "fake-opa"
+    producer.write_text(
+        "#!/usr/bin/env bash\nfor i in $(seq 20000); do echo \"line $i\"; done\n"
+    )
+    producer.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "-c", f'set -euo pipefail\nDEST="{producer}"\n{match.group(0)}'],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"the version report died with exit {result.returncode} "
+        f"(141 = SIGPIPE) — a reader that stops early must not fail the script"
+    )
+    assert result.stdout.strip() == "line 1", "it must still report one line"
+
+
 def test_no_module_resolves_opa_off_bare_path():
     """shutil.which("opa") anywhere means an unpinned resolution came back."""
     offenders = []

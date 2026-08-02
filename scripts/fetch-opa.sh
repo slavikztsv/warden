@@ -13,7 +13,13 @@ else
     "https://openpolicyagent.org/downloads/v$VERSION/opa_linux_amd64_static"
   chmod +x "$DEST"
 fi
-"$DEST" version | head -1
+# sed, NOT `head -1`: head exits after the first line and closes the pipe, opa
+# takes SIGPIPE while writing its other seven lines, and the `set -o pipefail`
+# above turns that into exit 141 -- failing CI at this step, before a single
+# test ran, on commits that touched nothing near it. It is a race decided by
+# whether opa finished writing first, so it struck about one push in five and
+# looked like flakiness. sed reads to EOF, so the producer is never signalled.
+"$DEST" version | sed -n '1p'
 
 # CI consumes $OPA_BIN rather than restating the version or the path itself --
 # that restatement is exactly the duplication this task exists to remove.
