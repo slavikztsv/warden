@@ -331,26 +331,32 @@ layer, so the working assumption is that some will land and the job is to bound
 what a landed one can do. Four families of tool exist, and they mostly **compose
 rather than compete**.
 
-| | Detectors | LLM gateways | Guardrail layers | Sandboxes | `warden` |
-|---|---|---|---|---|---|
-| Assumes injection succeeds | no | n/a | partly | yes | yes |
-| Authorises each tool call before it runs | no | no | yes | no | yes |
-| **Volume accumulates across a task** | no | no | rarely | no | **yes** |
-| **Refuses an approved host for what the task holds** | no | no | some | no | **yes** |
-| Egress is the only route out | no | no | no | yes | yes |
-| Decision recorded before the action | no | logs after | varies | no | yes |
-| Production ready | yes | yes | yes | yes | **no** |
+| Product | Sits at | Blocks a call before it runs | Budget accumulates over a task | Refuses an *approved* host for what the task holds | Egress control | Licence |
+|---|---|---|---|---|---|---|
+| [Lakera Guard](https://www.lakera.ai/) | prompt and response | on a classifier verdict | no | no | no | commercial |
+| [Portkey](https://portkey.ai/features/ai-gateway) | model gateway | no | no | no | no | commercial |
+| [LiteLLM](https://www.litellm.ai/) | model gateway | no | no | no | no | MIT |
+| [Invariant Guardrails](https://github.com/invariantlabs-ai/invariant) | LLM and MCP proxy | yes | loop detection | **yes**, cross-call dataflow | not stated | Apache 2.0 |
+| [MS Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/) | before execution | yes | stateless engine | not stated | not stated | open source |
+| [Delinea Platform](https://www.globenewswire.com/news-release/2026/07/29/3335183/0/en/Delinea-Delivers-Runtime-Authorization-for-AI-Agents-the-Only-Platform-to-Enforce-Policy-on-Actions-Before-They-Execute.html) | inside the session | yes | not stated | not stated | not stated | commercial |
+| [E2B](https://e2b.dev/docs/sandbox/internet-access) and Firecracker | the network | no | no | no | **yes**, deny all then allowlist | commercial and OSS |
+| **`warden`** | tool API **and** egress | yes | **yes**, rows accumulate | **yes**, `egress.pii_sink` | **yes**, sole route out | Apache 2.0 |
 
-Representative of each: [Lakera](https://www.lakera.ai/) and Rebuff detect;
-LiteLLM and Portkey proxy the model; [Invariant
-Guardrails](https://invariantlabs.ai/blog/guardrails) enforces contextual rules
-including data flow; E2B and Firecracker microVMs isolate.
+Read from each product's own public material. "Not stated" means their docs did
+not say, which is not the same as no, and any of this can move in a month.
 
-**Two honest notes.** Invariant already does cross-call data-flow rules, and
-every serious sandbox already does default-deny egress, so neither is new on its
-own. What is uncommon here is that tool authorisation, egress and the audit
-record are **one decision against one piece of task state**, rather than three
-products that each see a slice.
+**Two honest notes.** Invariant already does cross-call dataflow, and E2B
+already does deny-all egress with an allowlist, so neither is new on its own.
+And Delinea's pitch, *"the only platform to enforce policy on what agents do
+inside a session before they act"*, is the same sentence this README opens with.
+The idea is not the differentiator.
+
+What is uncommon is the **combination**: tool authorisation, egress and the
+audit record as one decision against one piece of task state, rather than three
+products each seeing a slice. `share` is what that buys. The host was
+allowlisted, so a sandbox passes it; nothing in the request is malformed, so a
+detector passes it; it is refused for what the *task* is carrying, which no
+single call contains.
 
 **One thing worth checking.** [*Before the Tool Call: Deterministic Pre-Action
 Authorization*](https://arxiv.org/html/2603.20953v1) (2026) reaches the same
