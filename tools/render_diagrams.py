@@ -419,9 +419,9 @@ def architecture():
     aud = d.box(CX - bw / 2, y, bw, 62,
                 ["5 · Record", "before anything runs", "audit.py"], "store", "store")
 
-    opa = d.box(790, pdp.cy - 31, 250, 62,
+    opa = d.box(790, pdp.cy - 31, 290, 62,
                 ["OPA 1.19.0 :8181", "authz.rego · the rules",
-                 "data.json · your facts"], "core", "hex")
+                 "data.json · your hosts and limits"], "core", "hex")
 
     d.zone("WARDEN · ONE PROCESS, ONE WORKER", "enforce", [api, proxy, *pipe, aud])
 
