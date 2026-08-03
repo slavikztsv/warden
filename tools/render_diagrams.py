@@ -1056,6 +1056,45 @@ AUTHORITY_STEPS = [
 ]
 
 
+# What a deployment actually writes, and what warden does with it. Every value
+# here is read out of demo/scenario/tools.toml and warden/broker/adapters/,
+# not invented for the figure: the four adapter kinds are registry.py's
+# TARGET_KIND_BY_ADAPTER, and describe() really does run a COUNT before policy
+# is asked, which is the point of card 4.
+ADAPTER_STEPS = [
+    ("YOU name the tool and pick an adapter", "store",
+     'kind = "sql"   ·   warden ships docstore, sql, http and mail',
+     "One line decides which of the four does the work. You never write an adapter."),
+    ("YOU say how to reach your own system", "store",
+     "[binding]   db, table, columns, subject_column, data_class",
+     "${VAR} is read from the environment at load time, so no credential sits in the file"),
+    ("YOU declare what the agent is allowed to pass", "store",
+     '[args]   filter = { type = "string", required = true }',
+     "warden shape-checks every call against this before any of your code sees it"),
+    ("WARDEN works out what the call would touch", "plumbing",
+     "describe(args)  →  kind=db · subjects=customer:8812 · rows=1",
+     "It runs a COUNT first, so the agent cannot understate how much it is asking for"),
+    ("WARDEN performs it, only if policy allowed", "plumbing",
+     "execute(args)  →  the SELECT against your database",
+     "Both halves read the same arguments, so what was judged and what ran cannot differ"),
+]
+
+
+def adapters():
+    return _step_cards(
+        "one tool, from the three lines you write to the query that runs",
+        ADAPTER_STEPS,
+        "Five steps. You name the tool and pick one of warden's four adapters "
+        "with kind = sql; you give the binding that reaches your own system, "
+        "with ${VAR} read from the environment so no credential is in the "
+        "file; you declare the arguments the agent may pass, which warden "
+        "shape-checks on every call. Then warden's adapter describes what the "
+        "call would touch, running a COUNT first so the agent cannot "
+        "understate the ask, and executes it only if policy allowed, from the "
+        "same arguments that were judged.",
+        "One tool, from your config to your database")
+
+
 def authority():
     return _step_cards(
         "where an agent's authority comes from, and who owns each step",
@@ -1093,6 +1132,10 @@ def main():
     fp.write_text(demo_flow(), encoding="utf-8")
     fpng = export_png(fp)
     print("wrote docs/assets/demo-flow.svg" + (f" +{fpng.name}" if fpng else ""))
+    dp = OUT / "adapters.svg"
+    dp.write_text(adapters(), encoding="utf-8")
+    dpng = export_png(dp)
+    print("wrote docs/assets/adapters.svg" + (f" +{dpng.name}" if dpng else ""))
     ap = OUT / "authority.svg"
     ap.write_text(authority(), encoding="utf-8")
     apng = export_png(ap)

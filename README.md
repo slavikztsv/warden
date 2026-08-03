@@ -302,6 +302,21 @@ code. Fronting the broker with an MCP server, so an off-the-shelf agent gets
 brokered tools without changing, is the obvious next step and is
 [not built](#known-limitations).
 
+### What you declare, per tool
+
+**`warden` ships four adapters: `docstore`, `sql`, `http` and `mail`.** You do
+not write one. For each tool you expose, you say which adapter runs it, how to
+reach your system, and what the agent may pass.
+
+<p align="center">
+  <img src="docs/assets/adapters.png" width="100%" alt="Five steps. You name the tool and pick an adapter with kind = sql, one of the four warden ships, and you never write an adapter yourself. You give the binding that reaches your own system: db, table, columns, subject_column, data_class, with dollar-brace variables read from the environment at load time so no credential sits in the file. You declare the arguments the agent may pass, and warden shape-checks every call against that schema before any of your code sees it. Then warden's adapter calls describe(args), working out that the call targets kind=db, subject customer:8812, one row, running a COUNT first so the agent cannot understate how much it is asking for. Finally warden calls execute(args) to run the SELECT against your database, only if policy allowed, from the same arguments that were judged.">
+</p>
+
+**The two halves are the point.** `describe()` works out what a call *would*
+touch, so policy judges a real target rather than a string. `execute()` performs
+it. Both read the same arguments, so a check cannot pass on one reading of a
+request while your database acts on another.
+
 Config files, the keypair split and minting a task token:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** ·
 **[warden/reference/README.md](warden/reference/README.md)**
