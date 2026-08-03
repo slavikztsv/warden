@@ -306,8 +306,22 @@ brokered tools without changing, is the obvious next step and is
 
 **`warden` ships four adapters: `docstore`, `sql`, `http` and `mail`.** For each
 tool you expose, you say which adapter runs it, how to reach your system, and
-what the agent may pass. If your backends are those four kinds, that is the
-whole job; if one is not, see the [limitations](#known-limitations).
+what the agent may pass.
+
+An adapter has real code in it, so "the product ships no scenario" deserves the
+obvious challenge: `sql.py` is 169 lines, in what sense is that not a tool? Because
+none of those lines name a table, a column, a prefix or a tool. Every one of
+those arrives in the binding.
+
+<p align="center">
+  <img src="docs/assets/adapter-split.png" width="100%" alt="Two boxes side by side. Warden ships sql.py, 169 lines, which builds a parameterised WHERE, quotes identifiers, COUNTs the rows before the read and resolves a filter into subjects: it knows SQL. You supply the binding, ten values, all yours: db, table, columns, subject_column, subject_prefix, subject_type, default_column, unfiltered, filter_arg and data_class: it knows your schema. The transport and the specifics combine into query_customers, the tool your agent may call. Below, two outcomes: swap the binding and the same 169 lines serve another table; a backend that is not SQL needs a new adapter inside warden.">
+</p>
+
+**`sql` is a transport. `query_customers` is a tool.** Same relationship a
+database driver has to your data model. Swap the binding and those 169 lines
+serve a different table; that is the config change the seam buys you. A backend
+that is *not* one of the four kinds is where it stops, and that is a
+[stated limitation](#known-limitations) rather than a config change.
 
 <p align="center">
   <img src="docs/assets/adapters.png" width="100%" alt="Five steps. You name the tool and pick an adapter with kind = sql, one of the four warden ships, and you never write an adapter yourself. You give the binding that reaches your own system: db, table, columns, subject_column, data_class, with dollar-brace variables read from the environment at load time so no credential sits in the file. You declare the arguments the agent may pass, and warden shape-checks every call against that schema before any of your code sees it. Then warden's adapter calls describe(args), working out that the call targets kind=db, subject customer:8812, one row, running a COUNT first so the agent cannot understate how much it is asking for. Finally warden calls execute(args) to run the SELECT against your database, only if policy allowed, from the same arguments that were judged.">

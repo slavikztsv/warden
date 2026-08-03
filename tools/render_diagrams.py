@@ -1080,6 +1080,54 @@ ADAPTER_STEPS = [
 ]
 
 
+def adapter_split():
+    """Why "warden ships no tools" and "sql.py has logic" are both true.
+
+    The question this answers is a fair one and the slogan does not survive it
+    on its own: sql.py is 169 lines of real behaviour, so in what sense does
+    warden ship no tools? Because none of those lines know a table, a column,
+    a prefix or a tool name. Every one of those arrives in the binding. The
+    figure puts the two halves side by side and lets the reader count.
+
+    The two boxes at the bottom are the honest boundary. Config buys you a
+    different table; it does not buy you a different kind of backend.
+    """
+    d = Diagram(1020, 560, "what sql.py knows, and what you supply")
+
+    ships = d.box(40, 96, 420, 128, [
+        "sql.py  ·  169 lines",
+        "builds a parameterised WHERE",
+        "quotes identifiers",
+        "COUNTs the rows before the read",
+        "resolves a filter into subjects",
+    ], "enforce")
+    d.zone("WARDEN SHIPS THIS  ·  it knows SQL", "enforce", [ships])
+
+    yours = d.box(560, 96, 420, 128, [
+        "[binding]  ·  10 values, all yours",
+        "db · table · columns",
+        "subject_column · subject_prefix",
+        "subject_type · default_column",
+        "unfiltered · filter_arg · data_class",
+    ], "control")
+    d.zone("YOU SUPPLY THIS  ·  it knows your schema", "control", [yours])
+
+    tool = d.box(350, 330, 320, 62,
+                 ["query_customers", "the tool your agent may call"], "plumbing")
+
+    d.route([ships.at("bottom"), (ships.cx, 282), (tool.cx - 70, 282),
+             (tool.cx - 70, tool.y)], src=ships, dst=tool, label="the transport")
+    d.route([yours.at("bottom"), (yours.cx, 282), (tool.cx + 70, 282),
+             (tool.cx + 70, tool.y)], src=yours, dst=tool, label="the specifics")
+
+    d.box(40, 452, 420, 68,
+          ["Swap the binding", "the same 169 lines serve another table"], "target")
+    d.box(560, 452, 420, 68,
+          ["Not a SQL backend?", "needs a new adapter inside warden"], "untrusted")
+    d.fit()
+    return d
+
+
 def adapters():
     return _step_cards(
         "one tool, from the three lines you write to the query that runs",
@@ -1112,7 +1160,8 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     failed = False
     for name, fn in (("overview", overview), ("architecture", architecture),
-                     ("trust-boundaries", trust), ("integration", integration)):
+                     ("trust-boundaries", trust), ("integration", integration),
+                     ("adapter-split", adapter_split)):
         d = fn()
         problems = d.check()
         if problems:
