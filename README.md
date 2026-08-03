@@ -11,7 +11,7 @@
 [![How it works](https://img.shields.io/badge/How_it_works-6D4FD6?style=for-the-badge)](#how-it-works)
 [![The token](https://img.shields.io/badge/The_token-976D19?style=for-the-badge)](#where-the-token-comes-from)
 [![Compared](https://img.shields.io/badge/Compared-4527A0?style=for-the-badge)](#how-this-compares)
-[![Threat model](https://img.shields.io/badge/Threat_model-37474F?style=for-the-badge)](THREAT_MODEL.md)
+[![Threat model](https://img.shields.io/badge/Threat_model-37474F?style=for-the-badge)](docs/THREAT_MODEL.md)
 
 [![CI](https://github.com/slavikztsv/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/slavikztsv/warden/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
@@ -44,7 +44,7 @@ property of the deployment, not a library the agent chooses to call.**
 > **There is no injection detector here, by design.** No classifier, no
 > heuristic. `warden` assumes injection succeeds and limits what a subverted
 > agent can reach. It is a reference implementation with a published
-> [threat model](THREAT_MODEL.md) and [stated limits](#known-limitations).
+> [threat model](docs/THREAT_MODEL.md) and [stated limits](#known-limitations).
 
 ---
 
@@ -377,7 +377,7 @@ and any of it can move in a month.
 ## Known limitations
 
 Real properties of the system as shipped, found while building and stated rather
-than quietly fixed. [THREAT_MODEL.md](THREAT_MODEL.md) has the full account.
+than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account.
 
 - **The row budget is only safe with one worker.** Nothing locks it. Two workers
   could both read the budget before either records its own read, and both would
@@ -435,7 +435,7 @@ reviewing the system, not from writing it:
 - **A control plane the agent could reach**, and mint itself any token it wanted
   from, which defeated every other control at once.
 
-[THREAT_MODEL.md](THREAT_MODEL.md) has all of them, with the reasoning that found
+[THREAT_MODEL.md](docs/THREAT_MODEL.md) has all of them, with the reasoning that found
 each one.
 
 ---
@@ -444,7 +444,7 @@ each one.
 
 | | |
 |---|---|
-| [THREAT_MODEL.md](THREAT_MODEL.md) | What is defended against, what is not, and every limitation found while building |
+| [THREAT_MODEL.md](docs/THREAT_MODEL.md) | What is defended against, what is not, and every limitation found while building |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Trust boundaries, components, decision lifecycle, per-task state, policy |
 | [docs/DEMO.md](docs/DEMO.md) | Every way to run the scenario, live or recorded |
 | [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | Drive each component by hand with `curl`, no AI involved |

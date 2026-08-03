@@ -10,7 +10,7 @@ all. That is the design's actual claim ("the agent can never mint itself a
 broader token"), and it is worth more than an auth check on the route, because
 it cannot be defeated by stealing a credential the agent might be able to
 read. The endpoint still has no caller authentication; that is a stated
-out-of-scope boundary in THREAT_MODEL.md, and it is precisely why the route
+out-of-scope boundary in docs/THREAT_MODEL.md, and it is precisely why the route
 must not be co-hosted with anything the agent can reach.
 """
 

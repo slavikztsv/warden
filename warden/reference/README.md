@@ -22,7 +22,7 @@ file under `warden/` ever contains one of this repo's own demo strings
 
 1. **Write `warden.toml`.** Five sections: where the broker listens, the
    public half of your keypair (never the private half — see
-   `THREAT_MODEL.md`), where OPA lives and which policy bundle it evaluates,
+   `docs/THREAT_MODEL.md`), where OPA lives and which policy bundle it evaluates,
    where the audit log goes, and the path to your tool catalog.
    `demo/scenario/warden.toml` is a complete, working example of the shape:
 

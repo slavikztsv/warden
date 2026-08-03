@@ -214,7 +214,7 @@ makes an agent try another way.
 
 Live runs have produced both outcomes worth knowing about: a model that refused
 the injection on its own, and a policy rule that caught a benign mistake it made
-anyway. Neither is a control. [../THREAT_MODEL.md](../THREAT_MODEL.md) explains
+anyway. Neither is a control. [THREAT_MODEL.md](THREAT_MODEL.md) explains
 why model refusal is recorded and then excluded.
 
 ## Measuring injection susceptibility
@@ -267,7 +267,7 @@ agent holds no credentials and has exactly one reachable host — the broker:
 ```
 
 This requires Docker. It is not run by CI — see the limitations in
-[../THREAT_MODEL.md](../THREAT_MODEL.md).
+[THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Driving it by hand
 

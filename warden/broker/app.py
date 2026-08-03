@@ -282,7 +282,7 @@ def _refuse_unauthenticated(
         # logged, it is reported as unavailable rather than quietly refused.
         # (broker/proxy.py deliberately differs -- it swallows the failure and
         # still refuses -- because a tunnel refusal must happen even when it
-        # cannot be recorded. The asymmetry is documented in THREAT_MODEL.md.)
+        # cannot be recorded. The asymmetry is documented in docs/THREAT_MODEL.md.)
         failure = JSONResponse(
             {"error": "audit_unavailable", "message": str(exc)}, status_code=503
         )

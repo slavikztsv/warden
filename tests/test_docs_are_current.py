@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCS = [REPO_ROOT / "README.md", REPO_ROOT / "THREAT_MODEL.md",
-        *(REPO_ROOT / "docs").glob("*.md")]
+DOCS = [REPO_ROOT / "README.md", *(REPO_ROOT / "docs").glob("*.md")]
 
 # Every doc is in scope for the stale-invocation scan below, with nothing
 # skipped by name. Two dated live-run write-ups used to be exempt, on the

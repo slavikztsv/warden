@@ -5,7 +5,7 @@ How `warden` is put together and how one request travels through it. The
 level below that.
 
 The authoritative statement of what is and is not defended against lives in
-[../THREAT_MODEL.md](../THREAT_MODEL.md).
+[THREAT_MODEL.md](THREAT_MODEL.md).
 
 
 ---
@@ -49,7 +49,7 @@ things that per-call permission checks do not have:
 **Out of scope**, deliberately: malicious code inside the agent runtime,
 covert channels within an approved destination (there is no TLS interception),
 multi-agent delegation chains, and authenticating the control plane itself.
-[THREAT_MODEL.md](../THREAT_MODEL.md) is the authoritative statement of all of it.
+[THREAT_MODEL.md](THREAT_MODEL.md) is the authoritative statement of all of it.
 
 ---
 
@@ -352,10 +352,9 @@ usable token was presented). Both deny, and both are recorded.
 │   ├── warden/                 # broker, policy, identity, audit
 │   ├── demo/                   # the exploit, isolation, cassettes
 │   └── golden/                 # frozen audit log + expected replay output
-├── docs/                       # DEMO.md, WALKTHROUGH.md, dated live-run write-ups
+├── docs/                       # THREAT_MODEL.md, ARCHITECTURE.md, DEMO.md, WALKTHROUGH.md
 ├── compose.yml                 # product base: opa, broker, broker-control, networks
-├── demo/compose.demo.yml       # demo overlay: backends and the agent runtime
-└── THREAT_MODEL.md             # the design
+└── demo/compose.demo.yml       # demo overlay: backends and the agent runtime
 ```
 
 The split is structural, not conventional: `warden` cannot import `demo`, and

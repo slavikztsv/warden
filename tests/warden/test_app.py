@@ -750,7 +750,7 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
 
 
 # --- Concurrency: the TOCTOU this branch's review pass found while writing
-# THREAT_MODEL.md. broker/app.py's only await must run BEFORE the taint
+# docs/THREAT_MODEL.md. broker/app.py's only await must run BEFORE the taint
 # snapshot, or two concurrent calls for the same task can both read a stale
 # rows_returned_so_far and both be approved even though their combined total
 # breaks the bound. TestClient makes one request run to completion before the
@@ -946,7 +946,7 @@ def test_an_unrecordable_unauthenticated_refusal_is_reported_not_hidden(tmp_path
     """Same rule as every other refusal on this surface: if it cannot be
     logged, the caller is told the audit log is unavailable rather than
     getting a clean 401 that leaves no trace. (The proxy deliberately differs
-    -- see THREAT_MODEL.md.)"""
+    -- see docs/THREAT_MODEL.md.)"""
     client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
 
     def explode(**kwargs):

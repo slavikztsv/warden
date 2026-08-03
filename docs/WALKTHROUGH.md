@@ -1142,18 +1142,16 @@ against the same policy, and is recorded. There is no privileged channel.
 ## Where to go next
 
 - [`README.md`](../README.md) — the short version
-- [`THREAT_MODEL.md`](../THREAT_MODEL.md) — what it does *not* protect against.
+- [`THREAT_MODEL.md`](THREAT_MODEL.md) — what it does *not* protect against.
   Read this one. Every limitation found during development is in it, including
-  a race that is safe only because of how the process is deployed.
+  a race that is safe only because of how the process is deployed, and why the
+  model provider is unavoidably a processor of everything the agent reads.
 - [`warden/policies/authz.rego`](../warden/policies/authz.rego) — all the
   rules, plus the fail-closed shape-validation guards (R0/R1/R1b/R1c) and the
   comments explaining why each one exists; most of the file's ~390 lines is
   that reasoning, not the seven rules themselves
 - [`warden/reference/README.md`](../warden/reference/README.md) — what a
   customer actually does to point this at their own tools instead of the demo
-- [`../THREAT_MODEL.md`](../THREAT_MODEL.md) — every limitation found while
-  building, including why the model provider is unavoidably a processor of
-  everything the agent reads
 
 ### Things worth breaking on purpose
 
