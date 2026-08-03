@@ -911,16 +911,22 @@ FLOW_STEPS = [
 ]
 
 
-def demo_flow():
+def _step_cards(title, steps, aria, doc_title):
+    """A numbered vertical stack of cards: head, what, why, one tone each.
+
+    Shared by the two figures that are a sequence rather than a topology.
+    Kept as one function because the second one wanted every pixel of the
+    first: same width, same badge, same connector, so a reader crossing from
+    one figure to the other is not relearning the form.
+    """
     W = 1120
     cx0, cw, chh, gap = 74, 1020, 84, 20
     top = 62
     body = []
 
-    body.append(_chip(0, 6, "who starts a task in the demo, and from which file",
-                      13.5, TITLE_CHIP, anchor_left=True))
+    body.append(_chip(0, 6, title, 13.5, TITLE_CHIP, anchor_left=True))
 
-    for i, (path, tone, what, why) in enumerate(FLOW_STEPS):
+    for i, (path, tone, what, why) in enumerate(steps):
         y = top + i * (chh + gap)
         fill, stroke, colour = ZONE[tone]
         room = cw - 32
@@ -944,18 +950,62 @@ def demo_flow():
         body.append(f'<text x="{bx}" y="{by}" fill="{pc}" font-family="{MONO}" '
                     f'font-size="15" font-weight="700" text-anchor="middle" '
                     f'dominant-baseline="central">{i+1}</text>')
-        if i < len(FLOW_STEPS) - 1:
+        if i < len(steps) - 1:
             body.append(f'<path d="M{bx},{y+chh+2} L{bx},{y+chh+gap-4}" fill="none" '
                         f'stroke="{LINE}" stroke-width="2" marker-end="url(#arrow)"/>')
 
-    H = top + len(FLOW_STEPS) * (chh + gap) + 6
+    H = top + len(steps) * (chh + gap) + 6
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
-            f'height="{H}" role="img" aria-label="Eight steps from demo/scenario/task.toml '
-            f'to the audit log, naming the file responsible for each">'
-            f'<title>Who starts a task in the demo</title><defs>'
+            f'height="{H}" role="img" aria-label="{esc(aria)}">'
+            f'<title>{esc(doc_title)}</title><defs>'
             f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
             f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{LINE}"/></marker>'
             f'</defs>' + "".join(body) + '</svg>\n')
+
+
+def demo_flow():
+    return _step_cards(
+        "who starts a task in the demo, and from which file", FLOW_STEPS,
+        "Eight steps from demo/scenario/task.toml to the audit log, naming the "
+        "file responsible for each",
+        "Who starts a task in the demo")
+
+
+# Answering, in order: is this warden's or mine, who makes the keys, who asks
+# for a token, and what the token actually buys. Every card is a fact checked
+# against the code, not the docs -- warden ships no key generation at all, and
+# `warden control` really is a shipped subcommand rather than something a
+# deployment writes.
+AUTHORITY_STEPS = [
+    ("YOU generate one Ed25519 keypair", "store",
+     "openssl genpkey -algorithm ed25519 · once, outside every container",
+     "warden ships no key generation on purpose: the thing that enforces must never hold a signing key"),
+    ("WARDEN runs broker-control with the private half", "control",
+     "warden control --config control.toml · on a network the agent cannot reach",
+     "Ships with warden, you do not write it. It is the only process that can sign a token."),
+    ("WARDEN runs the broker with the public half", "enforce",
+     "warden serve --config warden.toml",
+     "It can check a token and never issue one, so compromising it still mints nothing"),
+    ("YOUR orchestrator asks for a token, per task", "store",
+     "POST /v1/tokens · task_id, purpose, allowed_tools, counterparties",
+     "Whatever starts the work: a helpdesk, a queue, a cron. Never the agent itself."),
+    ("The agent gets one token and spends it", "untrusted",
+     "Bearer on the tool API, Basic on the proxy · five minutes by default",
+     "It cannot widen its own scope or reset its budget, because it cannot mint"),
+]
+
+
+def authority():
+    return _step_cards(
+        "where an agent's authority comes from, and who owns each step",
+        AUTHORITY_STEPS,
+        "Five steps: you generate an Ed25519 keypair outside every container; "
+        "warden's broker-control holds the private half and is the only thing "
+        "that can sign a token; warden's broker holds the public half and can "
+        "only verify; your orchestrator asks broker-control for a token naming "
+        "the task, its purpose, its tools and its counterparties; the agent "
+        "receives that one token and cannot mint another",
+        "Where an agent's authority comes from")
 
 
 def main():
@@ -982,6 +1032,10 @@ def main():
     fp.write_text(demo_flow(), encoding="utf-8")
     fpng = export_png(fp)
     print("wrote docs/assets/demo-flow.svg" + (f" +{fpng.name}" if fpng else ""))
+    ap = OUT / "authority.svg"
+    ap.write_text(authority(), encoding="utf-8")
+    apng = export_png(ap)
+    print("wrote docs/assets/authority.svg" + (f" +{apng.name}" if apng else ""))
     rp = OUT / "repo-map.svg"
     rp.write_text(repo_map(), encoding="utf-8")
     rpng = export_png(rp)

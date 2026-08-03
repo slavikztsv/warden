@@ -201,6 +201,57 @@ Trust boundaries, components, the full lifecycle and policy precedence:
 
 ---
 
+## Where the token comes from
+
+**`broker-control` ships with `warden`.** You do not write it, you run it:
+`warden control` is a subcommand, next to `warden serve`. What you supply is one
+Ed25519 keypair and a call from whatever already starts the work.
+
+<p align="center">
+  <img src="docs/assets/authority.png" width="100%" alt="Five steps. One: you generate an Ed25519 keypair with openssl, once, outside every container, because warden ships no key generation and the enforcement point must never hold a signing key. Two: warden runs broker-control with the private half, on a network the agent cannot reach; it is the only process that can sign a token. Three: warden runs the broker with the public half, so it can check a token but never issue one. Four: your orchestrator asks broker-control for a token per task, naming task_id, purpose, allowed_tools and counterparties. Five: the agent gets that one token and cannot mint another.">
+</p>
+
+**`warden` does not work without it.** The broker only verifies. With no minter
+there are no tokens, so every call is refused as `unauthenticated`. That is the
+right way to fail, but nothing gets done.
+
+**The keypair is yours to make, and deliberately so.** `warden` ships no key
+generation at all. Generating it outside every container is what lets the broker
+hold the public half alone, so compromising the one service the agent can reach
+still mints nothing.
+
+### The token is the scope, not just a clock
+
+Five minutes is the least interesting thing about it. Every token names:
+
+| Claim | What reads it |
+|---|---|
+| `task_id` | The row budget and the data classes held, which accumulate under this id |
+| `purpose` | Which hosts this task may reach, and which may receive customer data |
+| `allowed_tools` | `tools.allowed` |
+| `counterparties` | `mail.counterparty` and `rows.scope` |
+| `exp` | Five minutes by default, and it is a number in `control.toml` |
+
+**Five of the seven rules read a claim from the token directly.** The sixth,
+`rows.bounded`, counts against a budget kept under the token's `task_id`. Take
+the token away and there is almost nothing left to judge against.
+
+### What if a task legitimately runs longer than the TTL?
+
+The TTL is a number you choose, so the first answer is to choose a bigger one.
+
+The better answer: **the orchestrator can mint a fresh token with the same
+`task_id`.** The row budget and the data classes held live in the broker, keyed
+by `task_id`, so renewing does not reset them. A long task keeps one budget
+across as many tokens as it needs.
+
+Minting a **new** `task_id` does reset them. That is the whole reason the agent
+must never reach the minter: it would not need to defeat the row budget, only to
+ask for a fresh task. Renewal works by construction, but nothing in this repo
+calls it on a timer, so treat it as designed-for rather than demonstrated.
+
+---
+
 ## Integration
 
 `warden` goes in front of an agent you already have. **Your agent's code does not
