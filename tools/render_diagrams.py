@@ -374,31 +374,53 @@ class Diagram:
 
 
 def architecture():
-    d = Diagram(1040, 780, "warden architecture: the request pipeline")
-    CX, bw, bh = 500, 250, 46
+    """Who, what and where, with no step left to be guessed at.
 
-    ctl = d.box(30, 44, 190, 46, ["broker-control", "control_main.py"], "control")
-    client = d.box(CX - bw / 2, 44, bw, 46, ["Agent runtime · untrusted"], "untrusted", "stadium")
+    The earlier version drew the egress proxy outside the broker's zone with
+    its own arrow to OPA, which invited the obvious wrong question: does the
+    proxy have a second policy? It does not. `broker/__main__.py` starts both
+    surfaces in one process and hands the proxy the same verifier, the same
+    PolicyDecisionPoint, the same TaintTracker and the same AuditLog. So both
+    now sit inside one zone and both feed the same spine.
+
+    What is genuinely asymmetric stays labelled rather than smoothed over:
+    step 3 is tool calls only, because the proxy builds its target inline from
+    the CONNECT authority instead of going through an adapter's describe().
+    """
+    d = Diagram(1040, 780, "warden architecture: the request pipeline")
+    CX, bw, bh = 500, 250, 58
+
+    ctl = d.box(20, 80, 240, bh,
+                ["broker-control", "signs an Ed25519 token", "control_main.py"], "control")
+    d.zone("CONTROL PLANE · OWN NETWORK", "control", [ctl])
+    client = d.box(CX - bw / 2, 80, bw, bh,
+                   ["Agent runtime", "proposes, never decides"], "untrusted", "stadium")
+    d.zone("UNTRUSTED", "untrusted", [client])
+
+    # The two surfaces are peers, side by side, and they meet at step 1.
+    api = d.box(CX - 215, 216, 200, bh, ["Tool API :8080", "declared tools", "app.py"],
+                "enforce")
+    proxy = d.box(CX + 15, 216, 200, bh,
+                  ["Egress proxy :3128", "all other HTTP", "proxy.py"], "enforce")
 
     stages = [
-        (["Tool API  :8080", "app.py"], "enforce"),
-        (["1 · Verify token", "identity.py"], "plumbing"),
-        (["2 · Snapshot task state", "taint.py"], "plumbing"),
-        (["3 · Validate + describe", "config/catalog.py"], "plumbing"),
-        (["4 · Decide", "pdp.py"], "plumbing"),
+        (["1 · Verify", "signature and expiry", "identity.py"]),
+        (["2 · Snapshot", "rows read, data held", "taint.py"]),
+        (["3 · Validate", "tool calls only", "config/catalog.py"]),
+        (["4 · Decide", "ask the policy", "pdp.py"]),
     ]
-    pipe, y = [], 170
-    for lines, kind in stages:
-        pipe.append(d.box(CX - bw / 2, y, bw, bh, lines, kind))
-        y += bh + 32
-    aud = d.box(CX - bw / 2, y, bw, 52, ["5 · Record", "audit.py"], "store", "store")
-    api, ident, taint, cat, pdp = pipe
+    pipe, y = [], 316
+    for lines in stages:
+        pipe.append(d.box(CX - bw / 2, y, bw, bh, lines, "plumbing"))
+        y += bh + 30
+    ident, taint, cat, pdp = pipe
+    aud = d.box(CX - bw / 2, y, bw, 62,
+                ["5 · Record", "before anything runs", "audit.py"], "store", "store")
 
-    proxy = d.box(770, 170, 230, bh, ["Egress proxy  :3128", "proxy.py"], "enforce")
-    opa = d.box(770, pdp.cy - 27, 230, 54, ["OPA 1.19.0  :8181", "authz.rego + data.json"],
-                "core", "hex")
+    opa = d.box(790, pdp.cy - 31, 230, 62,
+                ["OPA 1.19.0 :8181", "authz.rego", "+ data.json"], "core", "hex")
 
-    d.zone("WARDEN BROKER · ONE WORKER", "enforce", [*pipe, aud])
+    d.zone("WARDEN · ONE PROCESS, ONE WORKER", "enforce", [api, proxy, *pipe, aud])
 
     ay = aud.bottom + 74
     names = ["docstore", "sql", "mail", "http"]
@@ -413,23 +435,33 @@ def architecture():
     d.zone("6 · EXECUTE · broker/adapters/", "plumbing", ad)
     d.zone("PROTECTED SYSTEMS", "target", tg)
 
-    d.edge(ctl.at("right"), client.at("left"), src=ctl, dst=client, label="Ed25519 task token")
-    d.edge(client.at("bottom"), api.at("top"), src=client, dst=api, label="Bearer",
-           label_t=0.28)
+    d.edge(ctl.at("right"), client.at("left"), src=ctl, dst=client, label="task token")
+
+    # Both surfaces drop straight down into step 1: same verifier, same taint
+    # tracker, same policy, same log. Drawn as two parallel feeds rather than
+    # one shared line, because they are two listeners.
+    # 0.04 and 0.96 are not arbitrary: they put the anchor exactly under each
+    # surface's centre line, so all four feeds are single straight drops. Any
+    # other fraction makes edge() insert a midline jog, and four little jogs
+    # right under the zone title is the first thing the eye lands on.
+    LEFT, RIGHT = (api.cx - client.x) / client.w, (proxy.cx - client.x) / client.w
+    d.edge(client.at("bottom", LEFT), api.at("top"), src=client, dst=api,
+           label="Bearer", label_t=0.28)
+    d.edge(client.at("bottom", RIGHT), proxy.at("top"), src=client, dst=proxy,
+           label="CONNECT", label_t=0.28)
+    d.edge(api.at("bottom"), ident.at("top", (api.cx - ident.x) / ident.w),
+           src=api, dst=ident)
+    d.edge(proxy.at("bottom"), ident.at("top", (proxy.cx - ident.x) / ident.w),
+           src=proxy, dst=ident)
+
     for a, b in zip(pipe, pipe[1:]):
         d.edge(a.at("bottom"), b.at("top"), src=a, dst=b)
     d.edge(pdp.at("bottom"), aud.at("top"), src=pdp, dst=aud, label="allow")
-    d.edge(client.at("right"), proxy.at("left"), src=client, dst=proxy,
-           bend="h", label="CONNECT", label_t=0.25)
-    d.edge(proxy.at("bottom"), opa.at("top"), src=proxy, dst=opa)
     d.edge(pdp.at("right"), opa.at("left"), src=pdp, dst=opa, label="input · decision")
     d.edge(aud.at("bottom"), (CX, ad[0].y - ZONE_PAD), src=aud,
            label="written before execution")
     for a, t in zip(ad, tg):
         d.edge(a.at("bottom"), t.at("top"), src=a, dst=t)
-    ext = tg[3]
-    d.route([proxy.at("right"), (1020, proxy.cy), (1020, ext.cy), (ext.right, ext.cy)],
-            src=proxy, dst=ext)
     d.fit()
     return d
 
