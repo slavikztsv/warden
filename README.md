@@ -324,6 +324,51 @@ imports `demo`, if the product ever ships a `tools.toml`, or if any file under
 
 ---
 
+## How this compares
+
+The 2026 consensus moved to containment: injection is unsolved at the model
+layer, so the working assumption is that some will land and the job is to bound
+what a landed one can do. Four families of tool exist, and they mostly **compose
+rather than compete**.
+
+| | Detectors | LLM gateways | Guardrail layers | Sandboxes | `warden` |
+|---|---|---|---|---|---|
+| Assumes injection succeeds | no | n/a | partly | yes | yes |
+| Authorises each tool call before it runs | no | no | yes | no | yes |
+| **Volume accumulates across a task** | no | no | rarely | no | **yes** |
+| **Refuses an approved host for what the task holds** | no | no | some | no | **yes** |
+| Egress is the only route out | no | no | no | yes | yes |
+| Decision recorded before the action | no | logs after | varies | no | yes |
+| Production ready | yes | yes | yes | yes | **no** |
+
+Representative of each: [Lakera](https://www.lakera.ai/) and Rebuff detect;
+LiteLLM and Portkey proxy the model; [Invariant
+Guardrails](https://invariantlabs.ai/blog/guardrails) enforces contextual rules
+including data flow; E2B and Firecracker microVMs isolate.
+
+**Two honest notes.** Invariant already does cross-call data-flow rules, and
+every serious sandbox already does default-deny egress, so neither is new on its
+own. What is uncommon here is that tool authorisation, egress and the audit
+record are **one decision against one piece of task state**, rather than three
+products that each see a slice.
+
+**One thing worth checking.** [*Before the Tool Call: Deterministic Pre-Action
+Authorization*](https://arxiv.org/html/2603.20953v1) (2026) reaches the same
+design: intercept before execution, deterministic policy, Ed25519-signed audit.
+It names its own gap plainly, that it evaluates each call independently, so a
+run of individually-permitted calls can still add up to an unauthorised outcome,
+and defers aggregate limits to a later version. That gap is what `rows.bounded`
+closes, and the `report` scenario above is a live model doing exactly that
+decomposition: refused the bulk read, retried with narrower filters, then went
+row by row, and still stopped at the budget.
+
+**And where it loses.** No MCP front end, single worker only, in-memory state
+that does not survive a restart or scale out, no managed service, no UI. It is a
+reference implementation, and the [limitations](#known-limitations) below are
+the honest version of that.
+
+---
+
 ## Known limitations
 
 Real properties of the system as shipped, found while building and stated rather
