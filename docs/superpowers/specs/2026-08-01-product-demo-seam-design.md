@@ -1,12 +1,10 @@
 # Separating the product from the demo
 
 **Status:** approved design, not yet implemented
-**Supersedes:** the Global Constraints in
-[`docs/superpowers/plans/2026-07-29-warden-agent-security-broker.md`](../plans/2026-07-29-warden-agent-security-broker.md)
-that fix the repo layout and the tool names — specifically "there is no
-`warden/` subdirectory" and "tool names are exactly: read_document,
-query_customers, http_fetch, send_email". Both were correct for the original
-build and are the subject of this change. Everything else in that plan and in
+**Supersedes:** the original build's constraints on the repo layout and the
+tool names — specifically "there is no `warden/` subdirectory" and "tool names
+are exactly: read_document, query_customers, http_fetch, send_email". Both were
+correct for that build and are the subject of this change. Everything else in
 [`2026-07-29-agent-security-broker-design.md`](2026-07-29-agent-security-broker-design.md)
 still holds.
 

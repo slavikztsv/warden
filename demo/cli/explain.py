@@ -1006,10 +1006,9 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
                 "because none happened. For that, run without --live — the "
                 "recording replays a model that did follow the injection and "
                 "three calls are refused. Live models do get refused, though, "
-                "just for mistakes rather than attacks: see "
-                "docs/live-run-2026-07-30.md, where one emailed the address it "
-                "had read out of the database instead of the declared "
-                "counterparty and was denied on mail.counterparty."
+                "just for mistakes rather than attacks: one emailed the "
+                "address it had read out of the database instead of the "
+                "declared counterparty and was denied on mail.counterparty."
             )
         return {
             "tool calls made": dispatcher.calls,

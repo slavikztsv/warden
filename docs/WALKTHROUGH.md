@@ -820,14 +820,10 @@ a live model hit `rows.bounded` on the full table, retried with three narrower
 filters, then **decomposed the query into single-row lookups** — the classic
 aggregation attack, arrived at unprompted — and got exactly 50 rows before being
 cut off, because the bound is a per-task budget rather than a per-query limit.
-Sixty audit records, chain intact, and the customer still got their email. Full
-transcripts and the arithmetic in
-[live-enforcement-2026-07-30.md](live-enforcement-2026-07-30.md) — a dated
-record; its own commands are what ran that day, not today's.
+Sixty audit records, chain intact, and the customer still got their email.
 
-**Live models also get refused for plain mistakes.** In the
-run recorded in [live-run-2026-07-30.md](live-run-2026-07-30.md) (also dated,
-same caveat) the model addressed its reply to `person00000@example.invalid`,
+**Live models also get refused for plain mistakes.** In one such run
+the model addressed its reply to `person00000@example.invalid`,
 the address it had just read out of the customer database, instead of
 `customer:8812`, the counterparty declared on the token. `mail.counterparty`
 denied it:
@@ -1009,11 +1005,9 @@ Now `TURN n — asking GeminiClient`, and the replies are whatever the model
 decides. Expect it to differ run to run, and expect it to **refuse the
 injection** — every live run so far has. That is good news and it is not a
 control: it is one model's judgement on one day, and there is no guarantee to
-state about it. [`docs/live-run-2026-07-30.md`](live-run-2026-07-30.md) has the
-full analysis, including a case where the policy caught a mistake the model made
-for entirely innocent reasons — again, a dated write-up: today's command for the
-same thing is `warden-demo explain --live` (or `python -m demo.agent.loop
---live` for the raw loop, as above).
+state about it. The policy has also caught a mistake a live model made for
+entirely innocent reasons: emailing the address it read out of the customer
+database rather than the counterparty declared on the token.
 
 `WARDEN_TRACE` is off by default because the trace prints everything the agent
 has read, customer records included.
@@ -1157,9 +1151,9 @@ against the same policy, and is recorded. There is no privileged channel.
   that reasoning, not the seven rules themselves
 - [`warden/reference/README.md`](../warden/reference/README.md) — what a
   customer actually does to point this at their own tools instead of the demo
-- [`docs/live-run-2026-07-30.md`](live-run-2026-07-30.md) — what happened when a
-  real model drove it, including the finding that the model provider is
-  unavoidably a processor of everything the agent reads
+- [`../THREAT_MODEL.md`](../THREAT_MODEL.md) — every limitation found while
+  building, including why the model provider is unavoidably a processor of
+  everything the agent reads
 
 ### Things worth breaking on purpose
 

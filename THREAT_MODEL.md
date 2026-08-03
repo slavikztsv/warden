@@ -185,8 +185,8 @@ quietly fixed. Each is a real property of the system as shipped.
   The recorded cassette is therefore treated as a *fixed adversarial model* —
   holding the attacker constant is how a boundary gets tested. In the same run
   the policy denied a benign mistake the model made on its own, emailing the
-  address it read from the database rather than the declared counterparty. See
-  `docs/live-run-2026-07-30.md`. A turn returning multiple parallel tool calls
+  address it read from the database rather than the declared counterparty.
+  A turn returning multiple parallel tool calls
   is no longer unexercised — it turned out to be the common case on Gemini, and
   the adapter's handling of it is the bug described above.
 

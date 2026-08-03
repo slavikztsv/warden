@@ -11,21 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCS = [REPO_ROOT / "README.md", REPO_ROOT / "THREAT_MODEL.md",
         *(REPO_ROOT / "docs").glob("*.md")]
 
-# docs/live-run-2026-07-30.md and docs/live-enforcement-2026-07-30.md are
-# dated write-ups of runs that actually happened: every command line in them
-# is what was run AT THAT DATE, against that day's tree layout. Rewriting
-# those commands to today's invocations would misrepresent the historical
-# record -- the same reason the hash-chained files under runs/ are never
-# edited after the fact once written. Each of the two carries its own note
-# near the top giving today's equivalents, so a reader lands on the current
-# command without the historical transcript being falsified. The
-# stale-invocation scan below is therefore scoped to skip only these two
-# documents, by name -- not loosened for everyone, and both stay fully
-# in scope for the link-existence check right after it, since a link is a
-# promise about a file that exists today regardless of when the prose
-# around it was written.
-DATED_WRITE_UPS = {"live-run-2026-07-30.md", "live-enforcement-2026-07-30.md"}
-CURRENT_DOCS = [doc for doc in DOCS if doc.name not in DATED_WRITE_UPS]
+# Every doc is in scope for the stale-invocation scan below, with nothing
+# skipped by name. Two dated live-run write-ups used to be exempt, on the
+# argument that their commands were true on the day they were written and
+# that rewriting them would falsify a historical record. That exemption is
+# exactly what let `warden-demo up --profile guarded` survive inside one of
+# those files' own "today's equivalent" notes long after the profile was
+# renamed to `protected` -- a command that errors, in the sentence telling
+# the reader what to run instead. Both files have since been removed, and
+# the lesson is kept: a document nothing checks is a document that rots.
+CURRENT_DOCS = DOCS
 
 STALE = ("python -m cli.", "python -m agent.", "python -m broker",
          "./scripts/demo.sh", "broker/backends.py")
@@ -102,17 +97,6 @@ def test_the_readme_replay_block_matches_the_golden():
                       re.S).group(1)
     mask = lambda s: re.sub(r"head sha256:[0-9a-f…]*", "head sha256:…", s)
     assert mask(block).splitlines() == mask(golden.rstrip("\n")).splitlines()
-
-
-@pytest.mark.parametrize("doc", sorted(DATED_WRITE_UPS), ids=lambda n: n)
-def test_the_dated_write_up_says_it_is_dated(doc):
-    """The exclusion above is a scoping decision, not a silent hole: each
-    dated write-up must actually carry a note, near the top, explaining that
-    its commands are historical and giving today's equivalents -- or the
-    exclusion has nothing backing it."""
-    head = (REPO_ROOT / "docs" / doc).read_text()[:1000].lower()
-    assert "2026-07-30" in head
-    assert "today" in head
 
 
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: p.name)

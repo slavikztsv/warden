@@ -212,12 +212,10 @@ customer table twice with no broker; with one it got its full 50-row budget and
 five refusals — using *more* tool calls to get far less, because a refusal
 makes an agent try another way.
 
-Two verified live runs are written up in
-[live-run-2026-07-30.md](live-run-2026-07-30.md) and
-[live-enforcement-2026-07-30.md](live-enforcement-2026-07-30.md), including a
-model that refused the injection on its own and a policy rule that caught a
-benign mistake it made anyway. Both are dated records: their commands are what
-ran that day, not today's.
+Live runs have produced both outcomes worth knowing about: a model that refused
+the injection on its own, and a policy rule that caught a benign mistake it made
+anyway. Neither is a control. [../THREAT_MODEL.md](../THREAT_MODEL.md) explains
+why model refusal is recorded and then excluded.
 
 ## Measuring injection susceptibility
 

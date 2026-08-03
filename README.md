@@ -38,8 +38,8 @@ inside its granted permissions. Every single action it takes is authorized.
 
 ## What it stops
 
-**Ten scenarios against a live `gemini-3.6-flash`, 2026-08-02.** Seven tripped a
-rule. The other three, the model refused on its own.
+**Ten scenarios against a live `gemini-3.6-flash`.** Seven tripped a rule. The
+other three, the model refused on its own.
 
 Each row is one transcript run **twice**: once with nothing in the way, then the
 same model output replayed through the broker. **The broker is the only thing
@@ -269,9 +269,9 @@ than quietly fixed. [THREAT_MODEL.md](THREAT_MODEL.md) has the full account.
 ## How this was built
 
 Implementation was AI-accelerated under a spec → plan → execute loop.
-`docs/superpowers/` holds those artifacts, and `git log docs/superpowers/` shows
-every later edit to them. **The threat model, the trust boundaries and the
-limitations above are mine.**
+[`docs/superpowers/specs/`](docs/superpowers/specs/) holds the designs that
+drove it. **The threat model, the trust boundaries and the limitations above
+are mine.**
 
 **The findings are the part worth reading.** Each came from attacking and
 reviewing the system, not from writing it:

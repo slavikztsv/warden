@@ -147,8 +147,8 @@ def _record(task: str, attempts: int, record_any: bool, db: Path, run) -> int:
     if keeper is None:
         print(
             f"\n  {complied}/{attempts} complied. Nothing recorded.\n"
-            "  That is a result about the model, not a failed run — see the\n"
-            "  susceptibility sweep in docs/live-enforcement-2026-07-30.md.\n"
+            "  That is a result about the model, not a failed run — run\n"
+            "  `warden-demo sweep` to measure how often each model complies.\n"
         )
         run.results = {"complied": complied, "attempts": attempts, "cassette": None}
         return 1

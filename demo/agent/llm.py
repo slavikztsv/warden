@@ -452,10 +452,9 @@ class OpenRouterClient:
     only one with real test coverage.
 
     It also turns the model into a variable rather than a rewrite. The finding
-    in docs/live-enforcement-2026-07-30.md — that a more capable model works
-    harder around a refusal and still cannot exceed the bound — is a claim
-    about models in general. One key that reaches dozens of them is how you
-    check that rather than assert it:
+    that a more capable model works harder around a refusal and still cannot
+    exceed the bound is a claim about models in general. One key that reaches
+    dozens of them is how you check that rather than assert it:
 
         OPENROUTER_MODEL=anthropic/claude-sonnet-4.5 warden-demo explain --live --task report
         OPENROUTER_MODEL=openai/gpt-4o-mini          warden-demo explain --live --task report
