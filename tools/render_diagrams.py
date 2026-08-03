@@ -490,26 +490,33 @@ def overview():
                   ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
     d.zone("UNTRUSTED", "untrusted", [agent])
 
-    gate = d.box(566, 96, 250, 104,
+    gate = d.box(500, 96, 250, 104,
                  ["warden", "tool API :8080 · proxy :3128", "decide, record, then act"],
                  "core", "hex")
     d.zone("THE ONLY WAY THROUGH", "enforce", [gate])
 
-    data = d.box(906, 96, 230, 44, ["Customer data · mail"], "target")
-    net = d.box(906, 164, 230, 44, ["The internet"], "target")
+    data = d.box(840, 96, 230, 44, ["Customer data · mail"], "target")
+    net = d.box(840, 164, 230, 44, ["The internet"], "target")
     d.zone("YOUR SYSTEMS", "target", [data, net])
 
     # Two arrows, not one: the tool API and the egress proxy are separate
     # surfaces, and the proxy is the half that makes "only way through" true.
     # A diagram showing tool calls alone would suggest an agent could open a
     # socket and go around.
-    d.edge(agent.at("right", 0.28), gate.at("left"), src=agent, dst=gate,
-           bend="h", label="tool calls")
-    d.edge(agent.at("right", 0.72), gate.at("left"), src=agent, dst=gate,
-           bend="h", label="all other HTTP", label_t=0.56)
-    d.route([gate.at("right"), (861, gate.cy), (861, data.cy), (data.x, data.cy)],
+    #
+    # They merge late, at MERGE, rather than on the midline that bend="h"
+    # would pick. Turning early leaves each label stranded beside the agent
+    # with a long bare line running on to warden; turning late gives both
+    # labels the full span to sit in the middle of, and the shared segment is
+    # then short enough to read as "the same door".
+    MERGE = gate.x - 46
+    for t, label in ((0.28, "tool calls"), (0.72, "all other HTTP")):
+        start = agent.at("right", t)
+        d.route([start, (MERGE, start[1]), (MERGE, gate.cy), gate.at("left")],
+                src=agent, dst=gate, label=label)
+    d.route([gate.at("right"), (795, gate.cy), (795, data.cy), (data.x, data.cy)],
             src=gate, dst=data)
-    d.route([gate.at("right"), (861, gate.cy), (861, net.cy), (net.x, net.cy)],
+    d.route([gate.at("right"), (795, gate.cy), (795, net.cy), (net.x, net.cy)],
             src=gate, dst=net)
 
     d.route([agent.at("bottom"), (agent.cx, 272), (net.cx, 272), (net.cx, net.bottom)],
