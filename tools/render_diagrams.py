@@ -501,30 +501,30 @@ def overview():
     # something the agent will later read, and the agent carries the
     # instruction across the boundary on their behalf. Putting them inside the
     # agent's box, as a first version did, said the opposite.
-    bait = d.box(40, 96, 280, 56,
-                 ["An attacker", "poisons a document the agent reads"], "untrusted")
+    bait = d.box(40, 96, 250, 56,
+                 ["An attacker", "plants text the agent reads"], "untrusted")
     d.zone("OUTSIDE YOUR CONTROL", "untrusted", [bait])
 
-    agent = d.box(40, 260, 280, 76,
+    agent = d.box(40, 260, 250, 76,
                   ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
     d.zone("UNTRUSTED", "untrusted", [agent])
 
     # Everything from here shares one centre line, y = 298: the agent, the
     # hexagon, and the midpoint between the two destinations.
-    gate = d.box(510, 246, 250, 104,
+    gate = d.box(440, 246, 240, 104,
                  ["warden", "tool API :8080 · proxy :3128", "decide, record, then act"],
                  "core", "hex")
     d.zone("THE ONLY WAY THROUGH", "enforce", [gate])
 
-    data = d.box(940, 246, 250, 44, ["Customer data · mail"], "target")
-    net = d.box(940, 306, 250, 44, ["The internet"], "target")
+    data = d.box(800, 246, 240, 44, ["Customer data · mail"], "target")
+    net = d.box(800, 306, 240, 44, ["The internet"], "target")
     d.zone("YOUR SYSTEMS", "target", [data, net])
 
     # Where the planted instruction wanted the data to go. Named for what it
     # is rather than by hostname: "attacker.example" means nothing to a reader
     # who has not read the scenario. Both routes to it are closed, and for
     # different reasons, so both arrows say which.
-    sink = d.box(940, 410, 250, 56,
+    sink = d.box(800, 410, 240, 56,
                  ["The attacker's server", "where the instruction pointed"], "untrusted")
 
     # Two arrows, not one: the tool API and the egress proxy are separate
@@ -538,22 +538,22 @@ def overview():
     # labels the full span to sit in the middle of, and the shared segment is
     # then short enough to read as "the same door".
     d.edge(bait.at("bottom"), agent.at("top"), src=bait, dst=agent,
-           label="arrives as text the agent reads")
+           label="the agent reads it")
 
     MERGE = gate.x - 46
-    for t, label in ((0.28, "tool calls"), (0.72, "all other HTTP")):
+    for t, label in ((0.28, "tool calls"), (0.72, "other HTTP")):
         start = agent.at("right", t)
         d.route([start, (MERGE, start[1]), (MERGE, gate.cy), gate.at("left")],
                 src=agent, dst=gate, label=label)
-    d.route([gate.at("right"), (840, gate.cy), (840, data.cy), (data.x, data.cy)],
+    d.route([gate.at("right"), (725, gate.cy), (725, data.cy), (data.x, data.cy)],
             src=gate, dst=data, label="allowed")
-    d.route([gate.at("right"), (840, gate.cy), (840, net.cy), (net.x, net.cy)],
+    d.route([gate.at("right"), (725, gate.cy), (725, net.cy), (net.x, net.cy)],
             src=gate, dst=net, label="allowed")
 
     # Both refusals say WHY on the line. A red arrow already reads as "no";
     # what a reader cannot guess is which control said so, and they are not
     # the same control: one is a policy rule, the other is the network.
-    d.route([gate.at("bottom", 0.2), (gate.x + gate.w * 0.2, sink.cy), (sink.x, sink.cy)],
+    d.route([gate.at("bottom"), (gate.cx, sink.cy), (sink.x, sink.cy)],
             src=gate, dst=sink, kind="forbidden", label="refused · not an approved host")
     d.route([agent.at("bottom"), (agent.cx, 530), (sink.cx, 530), (sink.cx, sink.bottom)],
             src=agent, dst=sink, kind="forbidden",
@@ -594,7 +594,7 @@ def integration():
     return d
 
 
-def export_png(svg_path, scale=3):
+def export_png(svg_path, scale=4):
     """Optional PNG beside the SVG, for readers whose viewer will not render
     SVG. Transparent background on purpose: the diagrams put nothing behind
     their zones, so the page's own colour shows through and one file serves

@@ -37,7 +37,7 @@ is asking. It is the only route off the agent's network, so **containment is a
 property of the deployment, not a library the agent chooses to call.**
 
 <p align="center">
-  <img src="docs/assets/overview.png" width="100%" alt="Outside your control, an attacker poisons a document the agent reads; it arrives as text the agent reads. The untrusted AI agent reaches warden two ways, tool calls to the tool API on port 8080 and all other HTTP through the egress proxy on port 3128. warden decides, records and only then acts, and allowed calls reach your systems: customer data, mail and the internet. Two dashed red arrows point at the attacker's server, where the planted instruction pointed. One leaves warden, refused because it is not an approved host. The other leaves the agent directly and is blocked because there is no route off the network.">
+  <img src="docs/assets/overview.png" width="100%" alt="Outside your control, an attacker plants text the agent reads. The untrusted AI agent reads it, then reaches warden two ways: tool calls to the tool API on port 8080, and other HTTP through the egress proxy on port 3128. warden decides, records and only then acts, and allowed calls reach your systems, customer data, mail and the internet. Two dashed red arrows point at the attacker's server, where the instruction pointed. One leaves warden and is refused because the host is not approved. The other leaves the agent directly and is blocked because there is no route off the network.">
 </p>
 
 > [!NOTE]
