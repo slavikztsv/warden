@@ -258,6 +258,15 @@ class Diagram:
             label_box = (z.x + 7, z.y + 4,
                          z.x + 23 + text_width(z.label, FS_ZONE) + len(z.label) * 0.9,
                          z.y + 26)
+            # A zone title is drawn last and on an opaque chip, so when it is
+            # wider than its own zone it does not clip -- it simply hangs off
+            # the right edge and paints over whatever is beyond. Nothing else
+            # here catches that, and "WARDEN BROKER · ONE PROCESS, ONE WORKER"
+            # overhung its box by 45px in a shipped diagram for exactly this
+            # reason: every other check passed.
+            if label_box[2] > z.right:
+                bad.append(f"zone title {z.label!r} is "
+                           f"{label_box[2] - z.right:.0f}px wider than its zone")
             for e in self.edges:
                 chip = self._chip(e)
                 if chip and self._overlap(chip, label_box, 1.0):
@@ -389,7 +398,7 @@ def architecture():
     opa = d.box(770, pdp.cy - 27, 230, 54, ["OPA 1.19.0  :8181", "authz.rego + data.json"],
                 "core", "hex")
 
-    d.zone("WARDEN BROKER · ONE PROCESS, ONE WORKER", "enforce", [*pipe, aud])
+    d.zone("WARDEN BROKER · ONE WORKER", "enforce", [*pipe, aud])
 
     ay = aud.bottom + 74
     names = ["docstore", "sql", "mail", "http"]
@@ -456,14 +465,15 @@ def trust():
 
     d.route([agent.at("right"), (390, agent.cy), (390, broker.cy), (broker.x, broker.cy)],
             src=agent, dst=broker, label="Bearer · CONNECT")
-    # Three straight exits, each from its own share of the broker's right edge.
-    for i, target in enumerate((db, intern, ext)):
-        t = 0.25 + i * 0.25
-        # 18px apart, not 6 -- three corridors that close together read as
-        # one frayed line rather than three routes.
-        corridor = 826 + i * 18
-        d.route([broker.at("right", t), (corridor, broker.y + broker.h * t),
-                 (corridor, target.cy), (target.x, target.cy)],
+    # One trunk, three branches -- not three separate exits. Fanning out of
+    # the box itself put all three departures inside 23px of each other,
+    # because the broker is only 46px tall, and three lines leaving that close
+    # together and turning at once read as one frayed cable. Sharing a single
+    # stub and splitting at one corridor is the same shape the integration and
+    # overview diagrams use, and it survives being scaled down.
+    for target in (db, intern, ext):
+        d.route([broker.at("right"), (832, broker.cy),
+                 (832, target.cy), (target.x, target.cy)],
                 src=broker, dst=target)
     d.route([mint.at("left"), (420, mint.cy), (420, agent.bottom + 46),
              (agent.cx, agent.bottom + 46), (agent.cx, agent.bottom)],
@@ -534,22 +544,25 @@ def integration():
     sdk = d.box(40, 156, 252, 44, ["Model SDK · client · curl"], "untrusted", "stadium")
     d.zone("YOUR AGENT, CODE UNCHANGED", "untrusted", [loop, sdk])
 
-    api = d.box(390, 78, 150, 44, ["Tool API", ":8080"], "enforce")
-    px = d.box(390, 156, 150, 44, ["Egress proxy", ":3128"], "enforce")
-    gate = d.box(576, 100, 132, 78, ["policy", "taint", "audit"], "core", "hex")
+    # 138px of clear air between the agent zone and this one, not 98: the
+    # BROKER_URL / HTTP_PROXY chips are the widest labels in the diagram and
+    # at 98 they overhung both zone borders by 9px each.
+    api = d.box(430, 78, 150, 44, ["Tool API", ":8080"], "enforce")
+    px = d.box(430, 156, 150, 44, ["Egress proxy", ":3128"], "enforce")
+    gate = d.box(616, 100, 132, 78, ["policy", "taint", "audit"], "core", "hex")
     d.zone("WARDEN", "enforce", [api, px, gate])
 
-    sysb = d.box(790, 78, 178, 44, ["Databases · APIs", "mail"], "target")
-    net = d.box(790, 156, 178, 44, ["Allowlisted hosts"], "target")
+    sysb = d.box(870, 78, 178, 44, ["Databases · APIs", "mail"], "target")
+    net = d.box(870, 156, 178, 44, ["Allowlisted hosts"], "target")
     d.zone("YOUR SYSTEMS", "target", [sysb, net])
 
     d.edge(loop.at("right"), api.at("left"), src=loop, dst=api, label="BROKER_URL")
     d.edge(sdk.at("right"), px.at("left"), src=sdk, dst=px, label="HTTP_PROXY")
     d.edge(api.at("right"), gate.at("left"), src=api, dst=gate, bend="h")
     d.edge(px.at("right"), gate.at("left"), src=px, dst=gate, bend="h")
-    d.route([gate.at("right"), (740, gate.cy), (740, sysb.cy), (sysb.x, sysb.cy)],
+    d.route([gate.at("right"), (780, gate.cy), (780, sysb.cy), (sysb.x, sysb.cy)],
             src=gate, dst=sysb, label="allow")
-    d.route([gate.at("right"), (740, gate.cy), (740, net.cy), (net.x, net.cy)],
+    d.route([gate.at("right"), (780, gate.cy), (780, net.cy), (net.x, net.cy)],
             src=gate, dst=net, label="allow")
     d.note(500, 262, "deny → 403 + X-Warden-Rule, and the decision is recorded either way",
            FORBIDDEN)
