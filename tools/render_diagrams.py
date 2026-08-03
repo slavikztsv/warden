@@ -1064,7 +1064,7 @@ AUTHORITY_STEPS = [
 ADAPTER_STEPS = [
     ("YOU name the tool and pick an adapter", "store",
      'kind = "sql"   ·   warden ships docstore, sql, http and mail',
-     "One line decides which of the four does the work. You never write an adapter."),
+     "One line decides which of the four does the work. A backend that is none of those four needs a new adapter inside warden."),
     ("YOU say how to reach your own system", "store",
      "[binding]   db, table, columns, subject_column, data_class",
      "${VAR} is read from the environment at load time, so no credential sits in the file"),

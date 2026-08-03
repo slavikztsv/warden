@@ -304,9 +304,10 @@ brokered tools without changing, is the obvious next step and is
 
 ### What you declare, per tool
 
-**`warden` ships four adapters: `docstore`, `sql`, `http` and `mail`.** You do
-not write one. For each tool you expose, you say which adapter runs it, how to
-reach your system, and what the agent may pass.
+**`warden` ships four adapters: `docstore`, `sql`, `http` and `mail`.** For each
+tool you expose, you say which adapter runs it, how to reach your system, and
+what the agent may pass. If your backends are those four kinds, that is the
+whole job; if one is not, see the [limitations](#known-limitations).
 
 <p align="center">
   <img src="docs/assets/adapters.png" width="100%" alt="Five steps. You name the tool and pick an adapter with kind = sql, one of the four warden ships, and you never write an adapter yourself. You give the binding that reaches your own system: db, table, columns, subject_column, data_class, with dollar-brace variables read from the environment at load time so no credential sits in the file. You declare the arguments the agent may pass, and warden shape-checks every call against that schema before any of your code sees it. Then warden's adapter calls describe(args), working out that the call targets kind=db, subject customer:8812, one row, running a COUNT first so the agent cannot understate how much it is asking for. Finally warden calls execute(args) to run the SELECT against your database, only if policy allowed, from the same arguments that were judged.">
@@ -434,6 +435,12 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   brokered tools without changing.
   The adapter design already separates what a tool *is* from how it is *reached*,
   so that is a new front door rather than a rebuild. Not built, and not claimed.
+- **There are four adapter kinds, and adding a fifth is not a config change.**
+  `docstore`, `sql`, `http` and `mail` cover the demo's backends. A gRPC
+  service, an S3 bucket or a GraphQL API has no adapter, and writing one means
+  editing `broker/adapters/registry.py` inside `warden` *and* teaching the
+  policy a new target kind, which a test pins to that registry so the two
+  cannot drift. Tools are configuration; the kinds of tool are not.
 - **Audit records are tamper-evident, not tamper-proof.** An edit becomes
   detectable. It does not become impossible, and neither does the action.
 - **Model refusal does not count as a control.** When a model refuses on its own
