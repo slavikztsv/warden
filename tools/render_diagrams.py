@@ -496,29 +496,36 @@ def overview():
     """
     d = Diagram(1000, 320, "warden sits between an AI agent and everything it can reach")
 
-    # The attacker never touches warden. They write into something the agent
-    # will read, and the agent carries the instruction across the boundary on
-    # their behalf. Drawing them here is the difference between "a broker" and
-    # "a broker, and this is the attack it is for".
-    bait = d.box(40, 96, 260, 56,
-                 ["Poisoned document", "ticket · web page · tool result"], "untrusted")
-    agent = d.box(40, 200, 260, 76,
-                  ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
-    d.zone("WHAT AN ATTACKER CAN REACH", "untrusted", [bait, agent])
+    # The attacker gets their own zone, outside everything else. They never
+    # touch warden and never reach the agent's network: they write into
+    # something the agent will later read, and the agent carries the
+    # instruction across the boundary on their behalf. Putting them inside the
+    # agent's box, as a first version did, said the opposite.
+    bait = d.box(40, 96, 280, 56,
+                 ["An attacker", "poisons a document the agent reads"], "untrusted")
+    d.zone("OUTSIDE YOUR CONTROL", "untrusted", [bait])
 
-    gate = d.box(510, 186, 250, 104,
+    agent = d.box(40, 260, 280, 76,
+                  ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
+    d.zone("UNTRUSTED", "untrusted", [agent])
+
+    # Everything from here shares one centre line, y = 298: the agent, the
+    # hexagon, and the midpoint between the two destinations.
+    gate = d.box(510, 246, 250, 104,
                  ["warden", "tool API :8080 · proxy :3128", "decide, record, then act"],
                  "core", "hex")
     d.zone("THE ONLY WAY THROUGH", "enforce", [gate])
 
-    data = d.box(850, 186, 230, 44, ["Customer data · mail"], "target")
-    net = d.box(850, 254, 230, 44, ["The internet"], "target")
+    data = d.box(940, 246, 250, 44, ["Customer data · mail"], "target")
+    net = d.box(940, 306, 250, 44, ["The internet"], "target")
     d.zone("YOUR SYSTEMS", "target", [data, net])
 
-    # Where the planted instruction wanted the data to go. Both routes to it
-    # are closed, and for different reasons: through warden it is refused by
-    # policy, around warden there is no path at all.
-    sink = d.box(850, 340, 230, 44, ["attacker.example"], "untrusted")
+    # Where the planted instruction wanted the data to go. Named for what it
+    # is rather than by hostname: "attacker.example" means nothing to a reader
+    # who has not read the scenario. Both routes to it are closed, and for
+    # different reasons, so both arrows say which.
+    sink = d.box(940, 410, 250, 56,
+                 ["The attacker's server", "where the instruction pointed"], "untrusted")
 
     # Two arrows, not one: the tool API and the egress proxy are separate
     # surfaces, and the proxy is the half that makes "only way through" true.
@@ -531,25 +538,26 @@ def overview():
     # labels the full span to sit in the middle of, and the shared segment is
     # then short enough to read as "the same door".
     d.edge(bait.at("bottom"), agent.at("top"), src=bait, dst=agent,
-           label="planted instruction")
+           label="arrives as text the agent reads")
 
     MERGE = gate.x - 46
     for t, label in ((0.28, "tool calls"), (0.72, "all other HTTP")):
         start = agent.at("right", t)
         d.route([start, (MERGE, start[1]), (MERGE, gate.cy), gate.at("left")],
                 src=agent, dst=gate, label=label)
-    d.route([gate.at("right"), (805, gate.cy), (805, data.cy), (data.x, data.cy)],
-            src=gate, dst=data)
-    d.route([gate.at("right"), (805, gate.cy), (805, net.cy), (net.x, net.cy)],
-            src=gate, dst=net)
+    d.route([gate.at("right"), (840, gate.cy), (840, data.cy), (data.x, data.cy)],
+            src=gate, dst=data, label="allowed")
+    d.route([gate.at("right"), (840, gate.cy), (840, net.cy), (net.x, net.cy)],
+            src=gate, dst=net, label="allowed")
 
-    d.route([gate.at("bottom"), (gate.cx, sink.cy), (sink.x, sink.cy)],
-            src=gate, dst=sink, kind="forbidden", label="refused")
-    d.route([agent.at("bottom"), (agent.cx, 440), (sink.cx, 440), (sink.cx, sink.bottom)],
-            src=agent, dst=sink, kind="forbidden", label="no way round")
-    d.note(610, 472,
-           "the agent holds no credential for anything on the right, and no second route",
-           FORBIDDEN)
+    # Both refusals say WHY on the line. A red arrow already reads as "no";
+    # what a reader cannot guess is which control said so, and they are not
+    # the same control: one is a policy rule, the other is the network.
+    d.route([gate.at("bottom", 0.2), (gate.x + gate.w * 0.2, sink.cy), (sink.x, sink.cy)],
+            src=gate, dst=sink, kind="forbidden", label="refused · not an approved host")
+    d.route([agent.at("bottom"), (agent.cx, 530), (sink.cx, 530), (sink.cx, sink.bottom)],
+            src=agent, dst=sink, kind="forbidden",
+            label="blocked · no route off the network")
     d.fit()
     return d
 
