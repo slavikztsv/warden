@@ -41,7 +41,17 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi.testclient import TestClient
+
+# starlette's TestClient import warns about its httpx pin the moment the
+# module loads, which would make this deprecation notice the first line of
+# every demo run. The in-process clients here are the demo's transport, not
+# the product's, so the warning is noise to a viewer: silence exactly it.
+import warnings
+
+warnings.filterwarnings(
+    "ignore", message=r"Using `httpx` with `starlette\.testclient`"
+)
+from fastapi.testclient import TestClient  # noqa: E402
 
 from demo.agent.llm import Cassette, live_client_from_env
 from demo.agent.loop import STOPPED_MARKER, SYSTEM_TASK, run_task

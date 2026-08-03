@@ -41,6 +41,9 @@ subject_type   = "integer"
 # A bare token means plan = <token>.
 default_column = "plan"
 unfiltered     = ["", "all", "*"]
+# Which arg carries the filter expression.  "filter" is also the adapter's
+# default; named here so the binding states every key it is read for.
+filter_arg     = "filter"
 data_class     = "pii"
 
 [tools.query_customers.args]
