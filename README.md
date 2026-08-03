@@ -20,13 +20,21 @@
 
 </div>
 
-**AI agents act on text they did not write.** Documents, tickets, tool results:
-any of it can carry an instruction an attacker planted.
+**Enterprises are handing AI agents real credentials** to read customer records,
+send mail and call internal APIs. Those agents decide what to do next by reading
+text, and that text arrives from documents, tickets and tool results an attacker
+can influence.
 
-**Following one is not an exploit.** The agent uses its own valid credentials,
-inside its granted permissions. Every single action it takes is authorized.
+**A planted instruction that gets followed is not an exploit.** The agent acts
+with its own valid credentials, inside its granted permissions. Every call is
+individually authorized, which is exactly why per-call authorization cannot stop
+it. This is a **confused deputy**: the damage is in the aggregate, and in the
+direction data flows.
 
-**`warden` bounds what that authority is worth.**
+**`warden` bounds what that authority is worth.** A scoped identity per task, a
+row budget that accumulates across calls, and data-flow rules that hold whoever
+is asking. It is the only route off the agent's network, so **containment is a
+property of the deployment, not a library the agent chooses to call.**
 
 > [!NOTE]
 > **There is no injection detector here, by design.** No classifier, no
@@ -131,18 +139,27 @@ Everything the demo can do: **[docs/DEMO.md](docs/DEMO.md)**.
 
 > ### `verify → snapshot → validate → decide → record → execute`
 
-A deny is recorded and returns 403. An allow is recorded **first**: if that write
-fails, the request returns 503 and nothing runs.
+| Step | What happens | If it fails |
+|---|---|---|
+| **verify** | Ed25519 signature and expiry checked against the public key | `401`, recorded as `unauthenticated` |
+| **snapshot** | Freeze this task's row count and the data classes it already holds, after the last `await` so nothing can interleave | n/a, it is an in-memory read |
+| **validate** | Shape-check arguments against the catalog's declared schema, then resolve them into a target: kind, host, subjects, recipients | denies `input.malformed` |
+| **decide** | Hand principal, action, target and task state to OPA, and map `deny_reasons` to the one rule reported | denies `pdp.unavailable` |
+| **record** | Append the decision to the hash-chained audit log, **before** anything happens | `503`, and nothing executes |
+| **execute** | The adapter performs the call against the real backend | `502`; the recorded allow still stands |
+
+**Recording before executing is the point.** A deny returns 403 naming the rule.
+An allow is written first, so the log is what actually happened rather than what
+was reported afterwards.
 
 **Every failure denies.** An unreachable OPA, an incoherent decision, an
 unrecognised input, an unwritable log.
 
-**Your orchestrator mints the token, never the agent.** Whatever starts a unit of
-work POSTs to `broker-control`, which holds the only private key and sits on
-`backend-net` with no route from the agent.
-
-That is why a subverted agent cannot widen its own capabilities, or reset its row
-budget by claiming a fresh `task_id`.
+**Your orchestrator mints the token, never the agent.** Whatever starts the work
+POSTs to `broker-control`, which holds the only private key and sits on
+`backend-net` with no route from the agent. That is why a subverted agent cannot
+widen its own capabilities, or reset its row budget by claiming a fresh
+`task_id`.
 
 **The agent gets one token, valid five minutes, for two surfaces.** It holds no
 credential for anything behind the broker.
@@ -202,6 +219,13 @@ owns its own HTTP client and will not set a custom header. A refused call gets
 > the network**: put the agent where the broker is the only route out. Here that
 > is `agent-net`, declared `internal: true` so Docker attaches no gateway.
 
+**The two halves have different reach.** Egress works with anything that honours
+proxy variables, including a third-party agent you cannot modify. The tool API
+does not: something has to call `BROKER_URL`, which today means your own agent
+code. Fronting the broker with an MCP server, so an off-the-shelf agent gets
+brokered tools without changing, is the obvious next step and is
+[not built](#known-limitations).
+
 Config files, the keypair split and minting a task token:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** ·
 **[warden/reference/README.md](warden/reference/README.md)**
@@ -259,6 +283,14 @@ than quietly fixed. [THREAT_MODEL.md](THREAT_MODEL.md) has the full account.
   The alternatives are in-boundary inference (the sovereign-cloud answer) or
   redacting before the tool result returns. This was not designed in: the taint
   rule denied the agent's own model call during a live run, forcing the choice.
+- **The tool API assumes an agent you can point at it.** Calling `:8080` means
+  the agent targets `BROKER_URL`, so today that is an agent whose code or config
+  you control. Egress containment has no such limit: it works for any client
+  that honours proxy variables, and holds regardless because the network is the
+  boundary. Closing the gap means fronting the broker with an **MCP server** so
+  an off-the-shelf agent gets brokered tools with no change to it. The adapter
+  seam already separates *what a tool is* from *how it is reached*, so this is a
+  new front end rather than a redesign. Not built, and not claimed.
 - **Audit records are tamper-evident, not tamper-proof.** They make an edit
   detectable. They do not prevent it, or the action.
 - **Model refusal is not counted as a control.** It is welcome, recorded, and
