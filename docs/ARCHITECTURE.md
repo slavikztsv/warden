@@ -56,7 +56,7 @@ multi-agent delegation chains, and authenticating the control plane itself.
 ## Trust boundaries
 
 <p align="center">
-  <img src="../docs/assets/trust-boundaries.png" alt="Untrusted agent-net, the warden enforcement boundary, the control plane on backend-net only, and the protected systems" width="100%">
+  <img src="../docs/assets/trust-boundaries.png" alt="Untrusted agent-net, the warden enforcement boundary, the control plane with no route from agent-net, and the protected systems" width="100%">
 </p>
 
 The two dotted edges are the paths that **must not exist**. Both are enforced
@@ -97,7 +97,7 @@ against a fully compromised broker.
 | `broker/audit.py` | Append-only hash-chained decision log at `/data/audit.jsonl` | Trusted record | Tool API returns 503 and **nothing executes** |
 | `broker/adapters/` | Two jobs per tool: `describe()` turns args into a policy target; `execute()` acts. Both read the same validated args | Transport, not decision | The individual tool fails (502); the recorded allow stands |
 | `broker/config/` | Loads `warden.toml` and the deployment's `tools.toml`; cross-checks catalog against policy data | Trusted config | Boot fails loudly before a socket is opened |
-| `broker-control` | The only process holding the private key, and the only one that can mint. `backend-net` only | TCB for identity | No new tasks can start; running tasks are unaffected |
+| `broker-control` | The only process holding the private key, and the only one that can mint. Never on `agent-net`: it sits on `backend-net`, plus a host-published port for the orchestrator | TCB for identity | No new tasks can start; running tasks are unaffected |
 | Agent runtime | Reads text, proposes tool calls. Holds a model key in the demo, never a backend credential | **Untrusted** | None — it has no authority the broker does not grant per call |
 
 **Secrets.** The private key is `/data/agent.key`, loaded by `broker-control`
