@@ -290,7 +290,7 @@ deny_reasons contains "input.malformed" if {
 # fail-closed defaults. An absent or wrong-typed allowlist becomes the empty
 # set, so nothing is allowlisted and the existing rule denies under its own
 # correct reason. The type guard matters as much as the default — Rego compares
-# across types by total ordering, so a string "50" limit would make
+# across types by total ordering, so a string-typed limit would make
 # `total > limit` false and fail open just as silently.
 default safe_egress_allow := []
 

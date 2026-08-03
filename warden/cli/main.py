@@ -110,7 +110,7 @@ def _cmd_config_check(args: argparse.Namespace) -> int:
     for problem in problems:
         print(f"✗ {problem}", file=sys.stderr)
     # Findings are advisory -- printed either way, never a reason to exit 1.
-    # A tool declaring no data_class is legitimate for a write (send_email),
+    # A tool declaring no data_class is legitimate for a write (a mail send),
     # so this must stay visible without becoming a hard failure the way an
     # actual inconsistency does.
     for finding in findings:

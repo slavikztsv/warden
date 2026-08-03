@@ -151,8 +151,12 @@ class Diagram:
         self.zones.append(z)
         return z
 
-    def note(self, x, y, text, colour, anchor="middle", size=10.5):
-        self.notes.append((x, y, text, colour, anchor, size))
+    def note(self, x, y, text, colour, anchor="middle", size=10.5, pill=None):
+        """`pill` names a ZONE tone: the note is then drawn on an opaque pill
+        (y becomes the pill's top edge) instead of as bare text, which no
+        single ink can make readable on both white and GitHub's dark page —
+        see _chip's docstring for the arithmetic."""
+        self.notes.append((x, y, text, colour, anchor, size, pill))
 
     def fit(self, margin=20):
         """Size the canvas to its contents.
@@ -163,7 +167,8 @@ class Diagram:
         """
         xs = [b.right for b in self.boxes] + [z.right for z in self.zones]
         ys = [b.bottom for b in self.boxes] + [z.bottom for z in self.zones]
-        ys += [y + 6 for _, y, *_ in self.notes]
+        ys += [y + (size + 11 if pill else 6)
+               for _, y, _, _, _, size, pill in self.notes]
         for e in self.edges:
             xs += [p[0] for p in e["pts"]]
             ys += [p[1] for p in e["pts"]]
@@ -356,9 +361,13 @@ class Diagram:
         body += [self._draw_edge(e) for e in self.edges]
         body += [self._draw_box(b) for b in self.boxes]
         body += [self._draw_zone_label(z) for z in self.zones]
-        for x, y, text, colour, anchor, size in self.notes:
-            body.append(f'<text x="{x}" y="{y}" fill="{colour}" font-family="{MONO}" '
-                        f'font-size="{size}" text-anchor="{anchor}">{esc(text)}</text>')
+        for x, y, text, colour, anchor, size, pill in self.notes:
+            if pill:
+                body.append(_chip(x, y, text, size, ZONE[pill],
+                                  anchor_left=(anchor == "start")))
+            else:
+                body.append(f'<text x="{x}" y="{y}" fill="{colour}" font-family="{MONO}" '
+                            f'font-size="{size}" text-anchor="{anchor}">{esc(text)}</text>')
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {self.w} {self.h}" '
             f'width="{self.w}" height="{self.h}" role="img" aria-label="{esc(self.title)}">'
@@ -487,7 +496,7 @@ def trust():
     d.zone("TRUSTED ENFORCEMENT · warden broker", "enforce", [broker, pdp, aud])
 
     mint = d.box(468, 400, 332, 44, ["broker-control · private key"], "control")
-    d.zone("CONTROL PLANE · backend-net only", "control", [mint])
+    d.zone("CONTROL PLANE · no route from agent-net", "control", [mint])
 
     db = d.box(880, 76, 142, 44, ["customers.db"], "target", "store")
     intern = d.box(880, 146, 142, 44, ["docstore", "mailer"], "target")
@@ -517,7 +526,8 @@ def trust():
             src=mint, dst=agent, label="5-minute task token", label_t=0.85)
     d.route([(agent.right - 46, agent.bottom), (agent.right - 46, 350), (mint.x - 30, 350)],
             src=agent, kind="forbidden")
-    d.note(agent.right - 38, 338, "no route to the minter", FORBIDDEN, anchor="start")
+    d.note(agent.right - 38, 320, "no route to the minter", FORBIDDEN,
+           anchor="start", size=10.5, pill="untrusted")
     d.fit()
     return d
 
@@ -625,8 +635,8 @@ def integration():
             src=gate, dst=sysb, label="allow")
     d.route([gate.at("right"), (780, gate.cy), (780, net.cy), (net.x, net.cy)],
             src=gate, dst=net, label="allow")
-    d.note(500, 262, "deny → 403 + X-Warden-Rule, and the decision is recorded either way",
-           FORBIDDEN)
+    d.note(500, 252, "deny → 403 + X-Warden-Rule, and the decision is recorded either way",
+           FORBIDDEN, size=11, pill="untrusted")
     d.fit()
     return d
 
@@ -777,7 +787,11 @@ def _strip(title, rule, ask_icon, ask_head, ask_sub, got_head, got_sub, note):
     # above the gate where it was unreadable on a dark page.
     body.append(_chip(W / 2, top + ch + 14, f"{rule} · {note}", 12, ZONE["enforce"]))
 
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
+    # The viewBox starts left of 0 so the outermost card borders and the
+    # title pill's rounded cap render whole instead of being halved by the
+    # canvas edge — the content itself is laid out from x=0.
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 0 {W + 20} {H}" '
+            f'width="{W + 20}" '
             f'height="{H}" role="img" aria-label="{esc(title)}: {esc(ask_head)}, '
             f'{esc(ask_sub)}; {esc(rule)} gives {esc(got_head)}, {esc(got_sub)}">'
             f'<title>{esc(title)}</title><defs>'
@@ -912,19 +926,22 @@ def repo_map():
     # The seam, drawn in the gap between the first two columns.
     mid = x1 + cw + gap / 2
     y_dep, y_no = top + 96, top + 168
-    body.append(f'<path d="M{x2-6},{y_dep} L{x1+cw+8},{y_dep}" fill="none" stroke="{LINE}" '
+    # Both arrows span the gutter symmetrically: tail and arrowhead each stop
+    # 3px from a column border, so neither end reads as detached.
+    body.append(f'<path d="M{x2-3},{y_dep} L{x1+cw+3},{y_dep}" fill="none" stroke="{LINE}" '
                 f'stroke-width="2" marker-end="url(#arrow)"/>')
-    body.append(f'<path d="M{x1+cw+8},{y_no} L{x2-8},{y_no}" fill="none" stroke="{FORBIDDEN}" '
+    body.append(f'<path d="M{x1+cw+3},{y_no} L{x2-3},{y_no}" fill="none" stroke="{FORBIDDEN}" '
                 f'stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrowbad)"/>')
     body.append(_chip(mid, y_dep - 46, "depends on", 11, ZONE["enforce"]))
     body.append(_chip(mid, y_no + 14, "cannot import", 11, ZONE["untrusted"]))
 
     h = max(ha, hb, hc) + top
     body.append(_chip(W / 2, h + 12,
-                      "tests/test_seam.py enforces both directions: no product file may "
-                      "even contain a scenario string", 11.5, TITLE_CHIP))
+                      "tests/test_seam.py enforces both directions: no product source or "
+                      "config file may contain a scenario string", 11.5, TITLE_CHIP))
     H = h + 56
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 0 {W + 20} {H}" '
+            f'width="{W + 20}" '
             f'height="{H}" role="img" aria-label="Repository map: warden is the product, '
             f'demo is one deployment that depends on it, and the product cannot import the '
             f'demo, enforced by tests/test_seam.py">'
@@ -1016,7 +1033,10 @@ def _step_cards(title, steps, aria, doc_title):
                         f'stroke="{LINE}" stroke-width="2" marker-end="url(#arrow)"/>')
 
     H = top + len(steps) * (chh + gap) + 6
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
+    # viewBox starts left of 0 for the same reason _strip's does: the title
+    # pill is laid out flush at x=0 and its rounded cap needs room to render.
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 0 {W + 20} {H}" '
+            f'width="{W + 20}" '
             f'height="{H}" role="img" aria-label="{esc(aria)}">'
             f'<title>{esc(doc_title)}</title><defs>'
             f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
@@ -1106,7 +1126,7 @@ def deployment():
             ["warden.toml · control.toml", "where things listen and live"],
             ["tools.toml · data.json", "one block per tool", "your hosts and limits"],
         ]),
-        ("YOU RUN THESE · 3 processes", "target", 740, [
+        ("YOU RUN THESE · 4 processes", "target", 740, [
             ["OPA", "evaluates the rules"],
             ["warden serve", "warden control"],
             ["your agent, unchanged", "BROKER_URL + HTTP_PROXY"],
@@ -1179,7 +1199,7 @@ def adapter_split():
 
 def adapters():
     return _step_cards(
-        "one tool, from the three lines you write to the query that runs",
+        "one tool, from the three stanzas you write to the query that runs",
         ADAPTER_STEPS,
         "Five steps. You name the tool and pick one of warden's four adapters "
         "with kind = sql; you give the binding that reaches your own system, "

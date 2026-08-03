@@ -87,10 +87,10 @@ services:
     profiles: [protected]
 
   # The control plane: the only process holding the private key, and the only
-  # one that can mint a token. Attached to backend-net ONLY — never agent-net.
-  # That is the whole control: the endpoint has no caller authentication, so
-  # the property "the agent cannot mint itself a token" rests on there being no
-  # route from agent-net to this listener.
+  # one that can mint a token. Attached to backend-net and host-net — NEVER
+  # agent-net. That is the whole control: the endpoint has no caller
+  # authentication, so the property "the agent cannot mint itself a token"
+  # rests on there being no route from agent-net to this listener.
   #
   # `ports:` publishes to the HOST so the demo's orchestrator can request a
   # token. It does NOT restrict container-to-container reach, which is why

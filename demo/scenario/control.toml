@@ -8,8 +8,6 @@
 # broker verifies against its own configured issuer, and a mismatch fails
 # every token, loudly. ttl_seconds is control-plane-only: the broker never
 # mints, so it has no use for a TTL.
-#
-# Phase 3 moves this file under demo/scenario/.
 
 [control]
 listen = "0.0.0.0:8081"

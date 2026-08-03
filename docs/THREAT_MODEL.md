@@ -12,9 +12,9 @@ confused-deputy problem, not a content problem.
 | Prompt injection as confused deputy | Containment. Authority scoped below the damage threshold. |
 | Credential theft from the agent | Nothing to steal — the runtime holds no long-lived credentials. |
 | Out-of-band network bypass | No route exists. `agent-net` is `internal: true`, so Docker attaches no gateway. |
-| Agent minting itself a broader token | The minting endpoint runs as its own service (`broker-control`) on `backend-net` only. The broker — the one service the agent *can* reach — loads only the public key and cannot sign. |
+| Agent minting itself a broader token | The minting endpoint runs as its own service (`broker-control`) with no route from `agent-net` — it sits on `backend-net`, plus a host-published port for the demo's orchestrator. The broker — the one service the agent *can* reach — loads only the public key and cannot sign. |
 | Bulk exfiltration | 50 rows per task, accumulated across calls; 5-minute token; purpose-scoped egress. |
-| Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. No HTTP destination is an approved PII sink, so **PII never leaves over HTTP at all** — it leaves only through the mail tool, to counterparties the task declared up front (`mail.counterparty`). |
+| Data reaching an unapproved sink | Task-level taint (`egress.pii_sink`), independent of destination reputation. The model provider is the **only** approved HTTP PII sink — a deliberate boundary decision, argued below — so PII otherwise leaves only through the mail tool, to counterparties the task declared up front (`mail.counterparty`). |
 | Log tampering to hide an attempt | Hash-chained audit records; any edit breaks the chain. |
 
 - **Reads were bounded by volume, not by subject — now closed by `rows.scope`
@@ -28,7 +28,8 @@ confused-deputy problem, not a content problem.
   model asked to "check a few other customers" read three records with zero
   refusals. `warden/broker/adapters/sql.py`'s `describe` now resolves a query
   into the subjects it names, and R7 denies any that the token did not
-  declare. The same scenario now reads one record and refuses two.
+  declare. The same scenario now reads one record and refuses the other four
+  calls.
 
   Two design notes worth stating. A read reaching an unbounded set (`plan=pro`,
   or no filter) reports the subject `"*"`, which can never appear in a
@@ -56,7 +57,7 @@ confused-deputy problem, not a content problem.
   authentication and lets its caller choose `task_id`, `purpose`,
   `allowed_tools` and `counterparties`. Anything that can reach it holds
   unlimited authority here. What keeps that acceptable is topology, not a
-  check: it runs as its own service on `backend-net` only, published to the
+  check: it runs as its own service on `backend-net`, published to the
   host for the demo's orchestrator, with no route from `agent-net`. Adding
   mTLS or an operator credential is the next trust boundary out.
 
@@ -93,8 +94,9 @@ quietly fixed. Each is a real property of the system as shipped.
   `http_fetch("http://mailer.internal/send", body=<the customer rows>)` was
   `kind == "http"`: allowlisted, PII-approved, and governed by no counterparty
   rule. It evaluated to allow with an empty `deny_reasons`, i.e. a clean
-  record in the audit log. Closed by approving no HTTP sink for PII at all,
-  which is also the version of the rule that fits in one sentence. No test
+  record in the audit log. Closed by emptying `pii_approved_sinks` of every
+  host you can *send* data to — its single remaining entry is the model
+  provider, a separate decision argued below. No test
   could have caught it: every case in `authz_test.rego` mocked `data`, so the
   shipped `data.json` was never evaluated. The tests that close it deliberately
   do not mock it.
@@ -188,7 +190,12 @@ quietly fixed. Each is a real property of the system as shipped.
   address it read from the database rather than the declared counterparty.
   A turn returning multiple parallel tool calls
   is no longer unexercised — it turned out to be the common case on Gemini, and
-  the adapter's handling of it is the bug described above.
+  the adapter's handling of it is the bug described above. On 2026-08-02 the
+  full ten-scenario matrix ran against a live `gemini-3.6-flash`: seven
+  scenarios tripped a rule and three (`triage`, `inject-internal`,
+  `inject-cc`) were declined by the model itself — recorded, then set aside,
+  for the reason above. The frozen log and manifest of that run are in
+  `docs/evidence/`.
 
 - **The model provider is treated as inside the data boundary, deliberately.**
   `generativelanguage.googleapis.com` is the single entry in
@@ -204,8 +211,8 @@ quietly fixed. Each is a real property of the system as shipped.
 - **The model endpoint is an allowlisted destination, not a privileged one.**
   `generativelanguage.googleapis.com` is in `egress_allow` for the
   `support-triage` purpose so a live agent can reach its provider through the
-  proxy, and it is deliberately absent from `pii_approved_sinks`: an agent
-  holding customer data cannot post it to the model either. Changing vendors is
+  proxy, and its place in `pii_approved_sinks` (the single entry, above) is
+  ordinary policy data — nothing in the rules names it. Changing vendors is
   a policy edit. The task token reaches the proxy as Basic credentials embedded
   in the proxy URL, because a third-party SDK owns its own HTTP client and will
   not set a Bearer header — `proxy_token()` accepts both forms and anything
