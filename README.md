@@ -302,35 +302,54 @@ code. Fronting the broker with an MCP server, so an off-the-shelf agent gets
 brokered tools without changing, is the obvious next step and is
 [not built](#known-limitations).
 
-### What you declare, per tool
+### Using it with your own tools
 
-**`warden` ships four adapters: `docstore`, `sql`, `http` and `mail`.** For each
-tool you expose, you say which adapter runs it, how to reach your system, and
-what the agent may pass.
+<p align="center">
+  <img src="docs/assets/deployment.png" width="100%" alt="Three columns. Comes with warden, from pip install: the warden command with serve, control, replay, verify-chain and config; four adapters plus authz.rego, being docstore, sql, http and mail and the seven rules; and no config at all, with no tool, host or limit anywhere. You write these, four files and one key: one Ed25519 keypair made with openssl once; warden.toml and control.toml saying where things listen and live; tools.toml and data.json holding one block per tool and your hosts and limits. You run these, three processes: OPA to evaluate the rules, warden serve and warden control, and your own agent unchanged with BROKER_URL and HTTP_PROXY set. Underneath: per tool you write three things, kind for which adapter, binding for how to reach your system, args for what the agent may pass. And a warning: a backend that is not a document store, SQL database, HTTP API or mailer needs Python inside warden, which is a stated limitation.">
+</p>
 
-An adapter has real code in it, so "the product ships no scenario" deserves the
-obvious challenge: `sql.py` is 169 lines, in what sense is that not a tool? Because
-none of those lines name a table, a column, a prefix or a tool. Every one of
-those arrives in the binding.
+**You never write Python.** For each tool, three lines of TOML:
+
+```toml
+[tools.query_customers]
+kind = "sql"                                       # 1. which of the four adapters
+
+[tools.query_customers.binding]                    # 2. how to reach YOUR system
+db    = "${DB_PATH}"
+table = "customers"
+
+[tools.query_customers.args]                       # 3. what the agent may pass
+filter = { type = "string", required = true }
+```
+
+Your orchestrator makes one `POST /v1/tokens` call before the agent runs. Your
+agent's code does not change.
+
+<details>
+<summary><b>Why an adapter is not a tool</b>, if you want to check that claim</summary>
+
+`sql.py` is 169 lines of real code, so "the product ships no scenario" deserves
+the obvious challenge. None of those lines name a table, a column, a prefix or a
+tool. All ten of those arrive in the binding.
 
 <p align="center">
   <img src="docs/assets/adapter-split.png" width="100%" alt="Two boxes side by side. Warden ships sql.py, 169 lines, which builds a parameterised WHERE, quotes identifiers, COUNTs the rows before the read and resolves a filter into subjects: it knows SQL. You supply the binding, ten values, all yours: db, table, columns, subject_column, subject_prefix, subject_type, default_column, unfiltered, filter_arg and data_class: it knows your schema. The transport and the specifics combine into query_customers, the tool your agent may call. Below, two outcomes: swap the binding and the same 169 lines serve another table; a backend that is not SQL needs a new adapter inside warden.">
 </p>
 
-**`sql` is a transport. `query_customers` is a tool.** Same relationship a
-database driver has to your data model. Swap the binding and those 169 lines
-serve a different table; that is the config change the seam buys you. A backend
-that is *not* one of the four kinds is where it stops, and that is a
-[stated limitation](#known-limitations) rather than a config change.
+**`sql` is a transport. `query_customers` is a tool.** The relationship a
+database driver has to your data model.
+
+And what warden does with your three lines, on every call:
 
 <p align="center">
-  <img src="docs/assets/adapters.png" width="100%" alt="Five steps. You name the tool and pick an adapter with kind = sql, one of the four warden ships, and you never write an adapter yourself. You give the binding that reaches your own system: db, table, columns, subject_column, data_class, with dollar-brace variables read from the environment at load time so no credential sits in the file. You declare the arguments the agent may pass, and warden shape-checks every call against that schema before any of your code sees it. Then warden's adapter calls describe(args), working out that the call targets kind=db, subject customer:8812, one row, running a COUNT first so the agent cannot understate how much it is asking for. Finally warden calls execute(args) to run the SELECT against your database, only if policy allowed, from the same arguments that were judged.">
+  <img src="docs/assets/adapters.png" width="100%" alt="Five steps. You name the tool and pick an adapter with kind = sql, one of the four warden ships. You give the binding that reaches your own system: db, table, columns, subject_column, data_class, with dollar-brace variables read from the environment at load time so no credential sits in the file. You declare the arguments the agent may pass, and warden shape-checks every call against that schema before any of your code sees it. Then warden's adapter calls describe(args), working out that the call targets kind=db, subject customer:8812, one row, running a COUNT first so the agent cannot understate how much it is asking for. Finally warden calls execute(args) to run the SELECT against your database, only if policy allowed, from the same arguments that were judged.">
 </p>
 
-**The two halves are the point.** `describe()` works out what a call *would*
-touch, so policy judges a real target rather than a string. `execute()` performs
-it. Both read the same arguments, so a check cannot pass on one reading of a
-request while your database acts on another.
+`describe()` works out what a call *would* touch, so policy judges a real target
+rather than a string. `execute()` performs it. Both read the same arguments, so a
+check cannot pass on one reading of a request while your database acts on another.
+
+</details>
 
 Config files, the keypair split and minting a task token:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** ·

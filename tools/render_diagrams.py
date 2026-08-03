@@ -1080,6 +1080,55 @@ ADAPTER_STEPS = [
 ]
 
 
+def deployment():
+    """The inventory: what arrives, what you author, what you start.
+
+    Written after a reader who had both other figures in front of them still
+    could not answer "so what do I actually do". Those two explain why the
+    seam holds; this one just lists things. No arrows, because these are
+    three piles rather than three stages.
+
+    Every item is checked: the subcommands are cli/main.py's, the four
+    adapters are registry.py's, and "no config at all" is the literal state
+    of the package -- git ls-files warden/ has no .toml or .json but its own
+    pyproject.
+    """
+    d = Diagram(1060, 620, "what ships, what you write, what you run")
+
+    COLS = [
+        ("COMES WITH WARDEN · pip install", "enforce", 40, [
+            ["warden", "serve · control · replay", "verify-chain · config"],
+            ["4 adapters + authz.rego", "docstore · sql · http · mail", "the seven rules"],
+            ["NO config at all", "no tool, host or limit anywhere"],
+        ]),
+        ("YOU WRITE THESE · 4 files + 1 key", "control", 390, [
+            ["one Ed25519 keypair", "openssl, run once"],
+            ["warden.toml · control.toml", "where things listen and live"],
+            ["tools.toml · data.json", "one block per tool", "your hosts and limits"],
+        ]),
+        ("YOU RUN THESE · 3 processes", "target", 740, [
+            ["OPA", "evaluates the rules"],
+            ["warden serve", "warden control"],
+            ["your agent, unchanged", "BROKER_URL + HTTP_PROXY"],
+        ]),
+    ]
+    for label, tone, x, rows in COLS:
+        boxes = [d.box(x, 96 + i * 94, 290, 62, lines, tone)
+                 for i, lines in enumerate(rows)]
+        d.zone(label, tone, boxes)
+
+    d.box(40, 410, 990, 62, [
+        "Per tool you write three things",
+        "kind = which adapter  ·  binding = how to reach your system  ·  args = what the agent may pass",
+    ], "plumbing")
+    d.box(40, 502, 990, 62, [
+        "Not a document store, SQL database, HTTP API or mailer?",
+        "that one needs Python inside warden, and is a stated limitation",
+    ], "untrusted")
+    d.fit()
+    return d
+
+
 def adapter_split():
     """Why "warden ships no tools" and "sql.py has logic" are both true.
 
@@ -1161,7 +1210,7 @@ def main():
     failed = False
     for name, fn in (("overview", overview), ("architecture", architecture),
                      ("trust-boundaries", trust), ("integration", integration),
-                     ("adapter-split", adapter_split)):
+                     ("adapter-split", adapter_split), ("deployment", deployment)):
         d = fn()
         problems = d.check()
         if problems:
