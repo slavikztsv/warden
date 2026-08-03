@@ -6,12 +6,12 @@
 
 **A policy-enforcing broker for AI agent tool calls and network egress.**
 
-[What it stops](#what-it-stops) ·
-[Quick start](#quick-start) ·
-[How it works](#how-it-works) ·
-[Integration](#integration) ·
-[Threat model](THREAT_MODEL.md) ·
-[Limitations](#known-limitations)
+[![What it stops](https://img.shields.io/badge/What_it_stops-B23A34?style=for-the-badge)](#what-it-stops)
+[![Quick start](https://img.shields.io/badge/Quick_start-2E7D5B?style=for-the-badge)](#quick-start)
+[![How it works](https://img.shields.io/badge/How_it_works-6D4FD6?style=for-the-badge)](#how-it-works)
+[![The token](https://img.shields.io/badge/The_token-976D19?style=for-the-badge)](#where-the-token-comes-from)
+[![Compared](https://img.shields.io/badge/Compared-4527A0?style=for-the-badge)](#how-this-compares)
+[![Threat model](https://img.shields.io/badge/Threat_model-37474F?style=for-the-badge)](THREAT_MODEL.md)
 
 [![CI](https://github.com/slavikztsv/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/slavikztsv/warden/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
@@ -331,19 +331,30 @@ layer, so the working assumption is that some will land and the job is to bound
 what a landed one can do. Four families of tool exist, and they mostly **compose
 rather than compete**.
 
-| Product | Sits at | Blocks a call before it runs | Budget accumulates over a task | Refuses an *approved* host for what the task holds | Egress control | Licence |
-|---|---|---|---|---|---|---|
-| [Lakera Guard](https://www.lakera.ai/) | prompt and response | on a classifier verdict | no | no | no | commercial |
-| [Portkey](https://portkey.ai/features/ai-gateway) | model gateway | no | no | no | no | commercial |
-| [LiteLLM](https://www.litellm.ai/) | model gateway | no | no | no | no | MIT |
-| [Invariant Guardrails](https://github.com/invariantlabs-ai/invariant) | LLM and MCP proxy | yes | loop detection | **yes**, cross-call dataflow | not stated | Apache 2.0 |
-| [MS Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/) | before execution | yes | stateless engine | not stated | not stated | open source |
-| [Delinea Platform](https://www.globenewswire.com/news-release/2026/07/29/3335183/0/en/Delinea-Delivers-Runtime-Authorization-for-AI-Agents-the-Only-Platform-to-Enforce-Policy-on-Actions-Before-They-Execute.html) | inside the session | yes | not stated | not stated | not stated | commercial |
-| [E2B](https://e2b.dev/docs/sandbox/internet-access) and Firecracker | the network | no | no | no | **yes**, deny all then allowlist | commercial and OSS |
-| **`warden`** | tool API **and** egress | yes | **yes**, rows accumulate | **yes**, `egress.pii_sink` | **yes**, sole route out | Apache 2.0 |
+✅ does it · ❌ does not · ⚪ their docs do not say
 
-Read from each product's own public material. "Not stated" means their docs did
-not say, which is not the same as no, and any of this can move in a month.
+| Product | Blocks the call first | Budget over a task | Data-flow refusal | Egress control | Production | Licence |
+|---|:---:|:---:|:---:|:---:|:---:|---|
+| [Lakera Guard](https://www.lakera.ai/) | ⚠️ classifier | ❌ | ❌ | ❌ | ✅ | commercial |
+| [Portkey](https://portkey.ai/features/ai-gateway) | ❌ | ❌ | ❌ | ❌ | ✅ | commercial |
+| [LiteLLM](https://www.litellm.ai/) | ❌ | ❌ | ❌ | ❌ | ✅ | MIT |
+| [Invariant Guardrails](https://github.com/invariantlabs-ai/invariant) | ✅ | ⚪ loops only | ✅ | ⚪ | ✅ | Apache 2.0 |
+| [MS Agent Governance](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/) | ✅ | ⚪ stateless | ⚪ | ⚪ | ✅ | open source |
+| [Delinea Platform](https://www.globenewswire.com/news-release/2026/07/29/3335183/0/en/Delinea-Delivers-Runtime-Authorization-for-AI-Agents-the-Only-Platform-to-Enforce-Policy-on-Actions-Before-They-Execute.html) | ✅ | ⚪ | ⚪ | ⚪ | ✅ | commercial |
+| [E2B](https://e2b.dev/docs/sandbox/internet-access) · Firecracker | ❌ | ❌ | ❌ | ✅ | ✅ | commercial · OSS |
+| 🛡️ **`warden`** | ✅ | ✅ | ✅ | ✅ | ❌ | Apache 2.0 |
+
+**Read the last two columns together.** `warden` is the only row that does all
+four things, and the only row that is not production software. That is the
+trade, stated plainly.
+
+Where each sits: Lakera on the prompt and the response, Portkey and LiteLLM at
+the model, Invariant on the LLM and MCP proxy, Delinea inside the session, E2B
+at the network. `warden` is on the tool API **and** the egress path, which is
+why one task state can cover both.
+
+⚪ means their docs did not say, which is not the same as ❌, and any of this
+can move in a month.
 
 **Two honest notes.** Invariant already does cross-call dataflow, and E2B
 already does deny-all egress with an allowlist, so neither is new on its own.
