@@ -143,7 +143,7 @@ Everything the demo can do: **[docs/DEMO.md](docs/DEMO.md)**.
 ## How it works
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="The request pipeline: verify token, snapshot task state, validate, decide against OPA, record, then execute through an adapter" width="100%">
+  <img src="docs/assets/architecture.png" alt="broker-control, on its own network, signs an Ed25519 token and hands it to the untrusted agent runtime, which proposes but never decides. The agent reaches warden, one process and one worker, through two surfaces: the tool API on 8080 for declared tools, and the egress proxy on 3128 for all other HTTP. Both feed the same spine: verify signature and expiry, snapshot rows read and data held, validate (tool calls only), decide by asking OPA which evaluates authz.rego (the rules) against data.json (your facts), then record before anything runs. Only then do the adapters execute against the protected systems." width="100%">
 </p>
 
 **The order is the security property:**
@@ -198,6 +198,17 @@ audit log is therefore the rule that actually fired.
 | `rows.bounded` | The rows already read plus the rows now asked for exceed the task's budget |
 | `rows.scope` | The read names a customer the token never mentioned |
 | `mail.counterparty` | The recipient is not one the task declared up front |
+
+**Policy is two files, and only one of them is yours.**
+
+| File | Holds | Whose |
+|---|---|---|
+| [`warden/policies/authz.rego`](warden/policies/authz.rego) | The seven rules above, and the guards that make an unrecognised request deny | Ships with `warden`. 387 lines, most of them the reasoning. |
+| [`demo/scenario/data.json`](demo/scenario/data.json) | The facts those rules read: which tool produces which kind of target, which hosts each purpose may reach, which of those may receive customer data, and the row limit | **Yours.** 22 lines. |
+
+The rules never name a host, a tool or a number. Pointing them at your own
+systems is an edit to the second file, which is why the product ships no
+scenario at all.
 
 Trust boundaries, components, the full lifecycle and policy precedence:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.

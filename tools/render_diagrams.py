@@ -398,9 +398,9 @@ def architecture():
     d.zone("UNTRUSTED", "untrusted", [client])
 
     # The two surfaces are peers, side by side, and they meet at step 1.
-    api = d.box(CX - 215, 216, 200, bh, ["Tool API :8080", "declared tools", "app.py"],
+    api = d.box(CX - 215, 232, 200, bh, ["Tool API :8080", "declared tools", "app.py"],
                 "enforce")
-    proxy = d.box(CX + 15, 216, 200, bh,
+    proxy = d.box(CX + 15, 232, 200, bh,
                   ["Egress proxy :3128", "all other HTTP", "proxy.py"], "enforce")
 
     stages = [
@@ -409,27 +409,30 @@ def architecture():
         (["3 · Validate", "tool calls only", "config/catalog.py"]),
         (["4 · Decide", "ask the policy", "pdp.py"]),
     ]
-    pipe, y = [], 316
+    # 54px between stages, not 30: at 30 the connector was shorter than its
+    # own arrowhead and the column read as one block rather than six steps.
+    pipe, y = [], 348
     for lines in stages:
         pipe.append(d.box(CX - bw / 2, y, bw, bh, lines, "plumbing"))
-        y += bh + 30
+        y += bh + 54
     ident, taint, cat, pdp = pipe
     aud = d.box(CX - bw / 2, y, bw, 62,
                 ["5 · Record", "before anything runs", "audit.py"], "store", "store")
 
-    opa = d.box(790, pdp.cy - 31, 230, 62,
-                ["OPA 1.19.0 :8181", "authz.rego", "+ data.json"], "core", "hex")
+    opa = d.box(790, pdp.cy - 31, 250, 62,
+                ["OPA 1.19.0 :8181", "authz.rego · the rules",
+                 "data.json · your facts"], "core", "hex")
 
     d.zone("WARDEN · ONE PROCESS, ONE WORKER", "enforce", [api, proxy, *pipe, aud])
 
-    ay = aud.bottom + 74
+    ay = aud.bottom + 96
     names = ["docstore", "sql", "mail", "http"]
     targets = ["docstore.internal", "customers.db", "mailer.internal", "Allowlisted hosts"]
     cw, gap = 178, 20
     total = len(names) * cw + (len(names) - 1) * gap
     x0 = CX - total / 2
     ad = [d.box(x0 + i * (cw + gap), ay, cw, 40, [n], "plumbing") for i, n in enumerate(names)]
-    tg = [d.box(x0 + i * (cw + gap), ay + 120, cw, 42, [t], "target",
+    tg = [d.box(x0 + i * (cw + gap), ay + 140, cw, 42, [t], "target",
                 "store" if t == "customers.db" else "rect")
           for i, t in enumerate(targets)]
     d.zone("6 · EXECUTE · broker/adapters/", "plumbing", ad)
