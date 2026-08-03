@@ -208,9 +208,11 @@ never learns a model was involved. Cassettes replay model responses only —
 policy, egress, and the audit chain always execute for real.
 
 Asked for a management report with `--task report`, a live model read the
-customer table twice with no broker; with one it got its full 50-row budget and
-five refusals — using *more* tool calls to get far less, because a refusal
-makes an agent try another way.
+customer table twice with no broker; with one it read a single record — the
+customer the task declared. The bulk read and its narrower retries were refused
+on volume (`rows.bounded`), and the single-row lookups the model fell back to
+were refused on scope (`rows.scope`). One live sample spent 41 refusals trying,
+another gave up after 4; the effort varies, the one record does not.
 
 Live runs have produced both outcomes worth knowing about: a model that refused
 the injection on its own, and a policy rule that caught a benign mistake it made
