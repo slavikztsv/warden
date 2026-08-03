@@ -36,6 +36,10 @@ row budget that accumulates across calls, and data-flow rules that hold whoever
 is asking. It is the only route off the agent's network, so **containment is a
 property of the deployment, not a library the agent chooses to call.**
 
+<p align="center">
+  <img src="docs/assets/overview.png" width="100%" alt="An untrusted AI agent that reads text it cannot trust sends every tool call to warden, which decides, records and only then acts, and passes allowed calls on to customer data, mail and the internet. A dashed red arrow labelled 'no other route' shows the agent has no second path to those systems.">
+</p>
+
 > [!NOTE]
 > **There is no injection detector here, by design.** No classifier, no
 > heuristic. `warden` assumes injection succeeds and limits what a subverted

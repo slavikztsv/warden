@@ -389,7 +389,7 @@ def architecture():
     opa = d.box(770, pdp.cy - 27, 230, 54, ["OPA 1.19.0  :8181", "authz.rego + data.json"],
                 "core", "hex")
 
-    d.zone("WARDEN BROKER — ONE PROCESS, ONE WORKER", "enforce", [*pipe, aud])
+    d.zone("WARDEN BROKER · ONE PROCESS, ONE WORKER", "enforce", [*pipe, aud])
 
     ay = aud.bottom + 74
     names = ["docstore", "sql", "mail", "http"]
@@ -401,7 +401,7 @@ def architecture():
     tg = [d.box(x0 + i * (cw + gap), ay + 120, cw, 42, [t], "target",
                 "store" if t == "customers.db" else "rect")
           for i, t in enumerate(targets)]
-    d.zone("6 · EXECUTE — broker/adapters/", "plumbing", ad)
+    d.zone("6 · EXECUTE · broker/adapters/", "plumbing", ad)
     d.zone("PROTECTED SYSTEMS", "target", tg)
 
     d.edge(ctl.at("right"), client.at("left"), src=ctl, dst=client, label="Ed25519 task token")
@@ -430,7 +430,7 @@ def trust():
     poison = d.box(40, 76, 148, 44, ["Poisoned", "document"], "untrusted")
     reply = d.box(202, 76, 148, 44, ["Model", "response"], "untrusted")
     agent = d.box(40, 186, 310, 46, ["Agent runtime"], "untrusted", "stadium")
-    d.zone("UNTRUSTED — agent-net, internal: true", "untrusted", [poison, reply, agent])
+    d.zone("UNTRUSTED · agent-net, internal: true", "untrusted", [poison, reply, agent])
 
     # A boundary diagram, not a component diagram -- the architecture picture
     # already breaks the broker open. Here it is one box, because what matters
@@ -438,10 +438,10 @@ def trust():
     broker = d.box(468, 76, 332, 46, ["Tool API · egress proxy"], "enforce")
     pdp = d.box(468, 152, 332, 44, ["Policy decision"], "core", "hex")
     aud = d.box(468, 226, 332, 46, ["Hash-chained audit"], "store", "store")
-    d.zone("TRUSTED ENFORCEMENT — warden broker", "enforce", [broker, pdp, aud])
+    d.zone("TRUSTED ENFORCEMENT · warden broker", "enforce", [broker, pdp, aud])
 
     mint = d.box(468, 400, 332, 44, ["broker-control · private key"], "control")
-    d.zone("CONTROL PLANE — backend-net only", "control", [mint])
+    d.zone("CONTROL PLANE · backend-net only", "control", [mint])
 
     db = d.box(880, 76, 142, 44, ["customers.db"], "target", "store")
     intern = d.box(880, 146, 142, 44, ["docstore", "mailer"], "target")
@@ -475,11 +475,51 @@ def trust():
     return d
 
 
+def overview():
+    """The one picture at the top of the README.
+
+    Deliberately the least detailed diagram here. It answers only "what is
+    this thing and where does it sit", because a reader who needs the request
+    pipeline or the trust boundaries has two more diagrams further down. The
+    dashed arrow is the whole argument: containment is the absence of a second
+    route, not a check the agent is asked to respect.
+    """
+    d = Diagram(1000, 320, "warden sits between an AI agent and everything it can reach")
+
+    agent = d.box(40, 118, 250, 56,
+                  ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
+    d.zone("UNTRUSTED", "untrusted", [agent])
+
+    gate = d.box(430, 100, 210, 92,
+                 ["warden", "decide, record, then act", "every call, every task"],
+                 "core", "hex")
+    d.zone("THE ONLY WAY THROUGH", "enforce", [gate])
+
+    data = d.box(730, 100, 230, 44, ["Customer data · mail"], "target")
+    net = d.box(730, 168, 230, 44, ["The internet"], "target")
+    d.zone("YOUR SYSTEMS", "target", [data, net])
+
+    d.edge(agent.at("right"), gate.at("left"), src=agent, dst=gate,
+           label="every tool call")
+    d.route([gate.at("right"), (685, gate.cy), (685, data.cy), (data.x, data.cy)],
+            src=gate, dst=data)
+    d.route([gate.at("right"), (685, gate.cy), (685, net.cy), (net.x, net.cy)],
+            src=gate, dst=net)
+
+    d.route([agent.at("bottom"), (agent.cx, 268), (net.cx, 268), (net.cx, net.bottom)],
+            src=agent, dst=net, kind="forbidden", label="no other route")
+    d.note(500, 300,
+           "the agent holds no credential for anything on the right, and no way round",
+           FORBIDDEN)
+    d.fit()
+    return d
+
+
 def integration():
     d = Diagram(1000, 330, "integrating warden with an existing agent")
     loop = d.box(40, 78, 252, 44, ["Agent loop"], "untrusted", "stadium")
     sdk = d.box(40, 156, 252, 44, ["Model SDK · client · curl"], "untrusted", "stadium")
-    d.zone("YOUR AGENT — CODE UNCHANGED", "untrusted", [loop, sdk])
+    d.zone("YOUR AGENT, CODE UNCHANGED", "untrusted", [loop, sdk])
 
     api = d.box(390, 78, 150, 44, ["Tool API", ":8080"], "enforce")
     px = d.box(390, 156, 150, 44, ["Egress proxy", ":3128"], "enforce")
@@ -756,7 +796,7 @@ PRODUCT = [
     ("reference/", "pointing it at your own tools"),
 ]
 DEPLOYMENT = [
-    ("scenario/*.toml", "tools, task, wiring — no code"),
+    ("scenario/*.toml", "tools, task, wiring, no code"),
     ("scenario/data.json", "purposes, allowlists, limits"),
     ("agent/", "the loop, model clients, cassettes"),
     ("mocks/", "docstore · mailer · sinkhole · seed data"),
@@ -777,9 +817,9 @@ def repo_map():
                          # the third column by 20px against a hardcoded 1180
     top = 16
     body = []
-    a, ha = _tree_zone(x1, top, cw, "warden/  —  THE PRODUCT", PRODUCT, "enforce")
-    b, hb = _tree_zone(x2, top, cw, "demo/  —  ONE DEPLOYMENT", DEPLOYMENT, "control")
-    c, hc = _tree_zone(x3, top, cw, "tests/  tools/  —  THE PROOF", PROOF, "target")
+    a, ha = _tree_zone(x1, top, cw, "warden/  ·  THE PRODUCT", PRODUCT, "enforce")
+    b, hb = _tree_zone(x2, top, cw, "demo/  ·  ONE DEPLOYMENT", DEPLOYMENT, "control")
+    c, hc = _tree_zone(x3, top, cw, "tests/  tools/  ·  THE PROOF", PROOF, "target")
     body += [a, b, c]
 
     # The seam, drawn in the gap between the first two columns.
@@ -794,13 +834,13 @@ def repo_map():
 
     h = max(ha, hb, hc) + top
     body.append(_chip(W / 2, h + 12,
-                      "tests/test_seam.py enforces both directions — no product file may "
+                      "tests/test_seam.py enforces both directions: no product file may "
                       "even contain a scenario string", 11.5, TITLE_CHIP))
     H = h + 56
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
             f'height="{H}" role="img" aria-label="Repository map: warden is the product, '
             f'demo is one deployment that depends on it, and the product cannot import the '
-            f'demo — enforced by tests/test_seam.py">'
+            f'demo, enforced by tests/test_seam.py">'
             f'<title>Repository map</title><defs>'
             f'<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" '
             f'markerHeight="7" orient="auto"><path d="M0,1 L9,5 L0,9 z" fill="{LINE}"/></marker>'
@@ -826,7 +866,7 @@ FLOW_STEPS = [
      "The broker gets the public half only, so it can verify but never mint"),
     ("demo/cli/main.py  _mint_token()", "control",
      "POSTs that [task] table to broker-control on :8081",
-     "The orchestrator asks for authority — the agent never does, and has no route to"),
+     "The orchestrator asks for authority; the agent never does, and has no route to"),
     ("warden/broker/control.py", "enforce",
      "Signs one task token, five-minute TTL, scoped to exactly what was asked for",
      "The only process holding the private key, reachable only from backend-net"),
@@ -895,8 +935,8 @@ def demo_flow():
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     failed = False
-    for name, fn in (("architecture", architecture), ("trust-boundaries", trust),
-                     ("integration", integration)):
+    for name, fn in (("overview", overview), ("architecture", architecture),
+                     ("trust-boundaries", trust), ("integration", integration)):
         d = fn()
         problems = d.check()
         if problems:
