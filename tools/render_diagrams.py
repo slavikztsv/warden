@@ -486,29 +486,35 @@ def overview():
     """
     d = Diagram(1000, 320, "warden sits between an AI agent and everything it can reach")
 
-    agent = d.box(40, 118, 250, 56,
+    agent = d.box(40, 110, 250, 76,
                   ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
     d.zone("UNTRUSTED", "untrusted", [agent])
 
-    gate = d.box(430, 100, 210, 92,
-                 ["warden", "decide, record, then act", "every call, every task"],
+    gate = d.box(566, 96, 250, 104,
+                 ["warden", "tool API :8080 · proxy :3128", "decide, record, then act"],
                  "core", "hex")
     d.zone("THE ONLY WAY THROUGH", "enforce", [gate])
 
-    data = d.box(730, 100, 230, 44, ["Customer data · mail"], "target")
-    net = d.box(730, 168, 230, 44, ["The internet"], "target")
+    data = d.box(906, 96, 230, 44, ["Customer data · mail"], "target")
+    net = d.box(906, 164, 230, 44, ["The internet"], "target")
     d.zone("YOUR SYSTEMS", "target", [data, net])
 
-    d.edge(agent.at("right"), gate.at("left"), src=agent, dst=gate,
-           label="every tool call")
-    d.route([gate.at("right"), (685, gate.cy), (685, data.cy), (data.x, data.cy)],
+    # Two arrows, not one: the tool API and the egress proxy are separate
+    # surfaces, and the proxy is the half that makes "only way through" true.
+    # A diagram showing tool calls alone would suggest an agent could open a
+    # socket and go around.
+    d.edge(agent.at("right", 0.28), gate.at("left"), src=agent, dst=gate,
+           bend="h", label="tool calls")
+    d.edge(agent.at("right", 0.72), gate.at("left"), src=agent, dst=gate,
+           bend="h", label="all other HTTP", label_t=0.56)
+    d.route([gate.at("right"), (861, gate.cy), (861, data.cy), (data.x, data.cy)],
             src=gate, dst=data)
-    d.route([gate.at("right"), (685, gate.cy), (685, net.cy), (net.x, net.cy)],
+    d.route([gate.at("right"), (861, gate.cy), (861, net.cy), (net.x, net.cy)],
             src=gate, dst=net)
 
-    d.route([agent.at("bottom"), (agent.cx, 268), (net.cx, 268), (net.cx, net.bottom)],
+    d.route([agent.at("bottom"), (agent.cx, 272), (net.cx, 272), (net.cx, net.bottom)],
             src=agent, dst=net, kind="forbidden", label="no other route")
-    d.note(500, 300,
+    d.note(600, 304,
            "the agent holds no credential for anything on the right, and no way round",
            FORBIDDEN)
     d.fit()
