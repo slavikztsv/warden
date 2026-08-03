@@ -496,18 +496,29 @@ def overview():
     """
     d = Diagram(1000, 320, "warden sits between an AI agent and everything it can reach")
 
-    agent = d.box(40, 110, 250, 76,
+    # The attacker never touches warden. They write into something the agent
+    # will read, and the agent carries the instruction across the boundary on
+    # their behalf. Drawing them here is the difference between "a broker" and
+    # "a broker, and this is the attack it is for".
+    bait = d.box(40, 96, 260, 56,
+                 ["Poisoned document", "ticket · web page · tool result"], "untrusted")
+    agent = d.box(40, 200, 260, 76,
                   ["AI agent", "reads text it cannot trust"], "untrusted", "stadium")
-    d.zone("UNTRUSTED", "untrusted", [agent])
+    d.zone("WHAT AN ATTACKER CAN REACH", "untrusted", [bait, agent])
 
-    gate = d.box(500, 96, 250, 104,
+    gate = d.box(510, 186, 250, 104,
                  ["warden", "tool API :8080 · proxy :3128", "decide, record, then act"],
                  "core", "hex")
     d.zone("THE ONLY WAY THROUGH", "enforce", [gate])
 
-    data = d.box(840, 96, 230, 44, ["Customer data · mail"], "target")
-    net = d.box(840, 164, 230, 44, ["The internet"], "target")
+    data = d.box(850, 186, 230, 44, ["Customer data · mail"], "target")
+    net = d.box(850, 254, 230, 44, ["The internet"], "target")
     d.zone("YOUR SYSTEMS", "target", [data, net])
+
+    # Where the planted instruction wanted the data to go. Both routes to it
+    # are closed, and for different reasons: through warden it is refused by
+    # policy, around warden there is no path at all.
+    sink = d.box(850, 340, 230, 44, ["attacker.example"], "untrusted")
 
     # Two arrows, not one: the tool API and the egress proxy are separate
     # surfaces, and the proxy is the half that makes "only way through" true.
@@ -519,20 +530,25 @@ def overview():
     # with a long bare line running on to warden; turning late gives both
     # labels the full span to sit in the middle of, and the shared segment is
     # then short enough to read as "the same door".
+    d.edge(bait.at("bottom"), agent.at("top"), src=bait, dst=agent,
+           label="planted instruction")
+
     MERGE = gate.x - 46
     for t, label in ((0.28, "tool calls"), (0.72, "all other HTTP")):
         start = agent.at("right", t)
         d.route([start, (MERGE, start[1]), (MERGE, gate.cy), gate.at("left")],
                 src=agent, dst=gate, label=label)
-    d.route([gate.at("right"), (795, gate.cy), (795, data.cy), (data.x, data.cy)],
+    d.route([gate.at("right"), (805, gate.cy), (805, data.cy), (data.x, data.cy)],
             src=gate, dst=data)
-    d.route([gate.at("right"), (795, gate.cy), (795, net.cy), (net.x, net.cy)],
+    d.route([gate.at("right"), (805, gate.cy), (805, net.cy), (net.x, net.cy)],
             src=gate, dst=net)
 
-    d.route([agent.at("bottom"), (agent.cx, 272), (net.cx, 272), (net.cx, net.bottom)],
-            src=agent, dst=net, kind="forbidden", label="no other route")
-    d.note(600, 304,
-           "the agent holds no credential for anything on the right, and no way round",
+    d.route([gate.at("bottom"), (gate.cx, sink.cy), (sink.x, sink.cy)],
+            src=gate, dst=sink, kind="forbidden", label="refused")
+    d.route([agent.at("bottom"), (agent.cx, 440), (sink.cx, 440), (sink.cx, sink.bottom)],
+            src=agent, dst=sink, kind="forbidden", label="no way round")
+    d.note(610, 472,
+           "the agent holds no credential for anything on the right, and no second route",
            FORBIDDEN)
     d.fit()
     return d
