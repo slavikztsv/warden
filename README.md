@@ -337,7 +337,7 @@ what a landed one can do. Several families of tool exist, and they mostly
 
 ✅ does it · ❌ does not · ⚪ their docs do not say
 
-| Product | Blocks the call first | Budget over a task | Data-flow refusal | Egress control | Production | Licence |
+| Product | Blocks the call first | Limits add up across calls | Judges what the task already holds | Egress control | Production | Licence |
 |---|:---:|:---:|:---:|:---:|:---:|---|
 | [Lakera Guard](https://www.lakera.ai/) | ⚠️ classifier | ❌ | ❌ | ❌ | ✅ | commercial |
 | [Portkey](https://portkey.ai/features/ai-gateway) | ❌ | ❌ | ❌ | ❌ | ✅ | commercial |
@@ -348,48 +348,43 @@ what a landed one can do. Several families of tool exist, and they mostly
 | [E2B](https://e2b.dev/docs/sandbox/internet-access) · Firecracker | ❌ | ❌ | ❌ | ✅ | ✅ | commercial · OSS |
 | 🛡️ **`warden`** | ✅ | ✅ | ✅ | ✅ | ❌ | Apache 2.0 |
 
-**Read the last two columns together.** `warden` is the only row that does all
-four things, and the only row that is not production software. That is the
-trade, stated plainly.
+**Reading it**
 
-Where each sits: Lakera on the prompt and the response, Portkey and LiteLLM at
-the model, Invariant on the LLM and MCP proxy, Delinea inside the session, E2B
-at the network. `warden` is on the tool API **and** the egress path, which is
-why one task state can cover both.
+- `warden` is the only row that does all four, and the only row that is not
+  production software. That is the trade.
+- ⚪ means their docs did not say, which is not ❌. Any of this can move in a month.
+- Where each sits: Lakera at the prompt, Portkey and LiteLLM at the model,
+  Invariant at the LLM and MCP proxy, Delinea inside the session, E2B at the
+  network. `warden` is on the tool API **and** the egress path.
 
-⚪ means their docs did not say, which is not the same as ❌, and any of this
-can move in a month.
+**What is not new here**
 
-**Two honest notes.** Invariant already does cross-call dataflow, and E2B
-already does deny-all egress with an allowlist, so neither is new on its own.
-And Delinea's pitch, *"the only platform to enforce policy on what agents do
-inside a session before they act"*, is the same sentence this README opens with.
-The idea is not the differentiator.
+- Invariant already does cross-call dataflow.
+- E2B already does deny-all egress with an allowlist.
+- Delinea's own pitch, *"the only platform to enforce policy on what agents do
+  inside a session before they act"*, is this README's opening sentence. **The
+  idea is not the differentiator.**
 
-What is uncommon is the **combination**: tool authorisation, egress and the
-audit record as one decision against one piece of task state, rather than three
-products each seeing a slice. `share` is what that buys. The host was
-allowlisted, so a sandbox passes it; nothing in the request is malformed, so a
-detector passes it; it is refused for what the *task* is carrying, which no
-single call contains.
+**What is**
 
-**One thing worth checking.** [*Before the Tool Call: Deterministic Pre-Action
-Authorization*](https://arxiv.org/html/2603.20953v1) (2026) reaches the same
-design: intercept before execution, deterministic policy, Ed25519-signed audit.
-It names its own gap plainly, that it evaluates each call independently, so a
-run of individually-permitted calls can still add up to an unauthorised outcome,
-and defers aggregate limits to a later version. That gap is what `rows.bounded`
-closes, and `report` is a live model doing exactly that decomposition. It asked
-for the whole table and was refused on volume, retried with narrower filters and
-was refused again, then broke the read into single-customer lookups, where a
-*second* rule stopped it for naming customers the task never declared. **Four
-refusals on volume, then thirty-seven on scope.** One rule caps how much, the
-other caps whose.
+- Tool authorisation, egress and the audit record are **one decision against one
+  task state**, not three products each seeing a slice.
+- `share` is what that buys: the host was allowlisted, so a sandbox passes it;
+  the request is well formed, so a detector passes it. It is refused for what the
+  *task* is carrying, which no single call contains.
 
-**And where it loses.** No MCP front end, single worker only, in-memory state
-that does not survive a restart or scale out, no managed service, no UI. It is a
-reference implementation, and the [limitations](#known-limitations) below are
-the honest version of that.
+**Worth checking:** [*Before the Tool Call*](https://arxiv.org/html/2603.20953v1) (2026)
+
+- Same design: intercept before execution, deterministic policy, signed audit.
+- It names its own gap: each call is judged alone, so permitted calls can still
+  add up to an unauthorised outcome. Aggregate limits are deferred.
+- That gap is `rows.bounded`, and `report` is a live model doing exactly that
+  decomposition: **4 refusals on volume, then 37 on scope.** One rule caps how
+  much, the other caps whose.
+
+**Where it loses:** no MCP front end, one worker only, in-memory state that does
+not survive a restart or scale out, no managed service, no UI. The
+[limitations](#known-limitations) below are the honest version.
 
 ---
 
