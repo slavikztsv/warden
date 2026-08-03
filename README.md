@@ -444,7 +444,7 @@ each one.
 
 | | |
 |---|---|
-| [THREAT_MODEL.md](docs/THREAT_MODEL.md) | What is defended against, what is not, and every limitation found while building |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | What is defended against, what is not, and every limitation found while building |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Trust boundaries, components, decision lifecycle, per-task state, policy |
 | [docs/DEMO.md](docs/DEMO.md) | Every way to run the scenario, live or recorded |
 | [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | Drive each component by hand with `curl`, no AI involved |
