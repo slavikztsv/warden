@@ -125,6 +125,22 @@ def _cmd_config_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp(args: argparse.Namespace) -> int:
+    # Lazy: `mcp` is an optional extra (warden[mcp]), and `warden mcp --help`
+    # must work whether or not it is installed -- matching how every other
+    # handler here defers its own heavy/optional imports past argument
+    # parsing.
+    from warden.cli.mcp_shim import run_shim
+
+    try:
+        return run_shim(
+            args.broker, Path(args.token_file), allow_http=args.allow_http
+        )
+    except (ValueError, PermissionError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="warden")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -180,6 +196,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="also check what the MCP surface requires of each tool",
     )
     p_check.set_defaults(func=_cmd_config_check)
+
+    p_mcp = sub.add_parser(
+        "mcp", help="stdio MCP shim: forwards a local agent to a broker's MCP surface"
+    )
+    p_mcp.add_argument("--broker", required=True, help="base URL of the MCP surface")
+    p_mcp.add_argument(
+        "--token-file",
+        required=True,
+        help="path to the task token, re-read before each forwarded request",
+    )
+    p_mcp.add_argument(
+        "--allow-http", action="store_true", help="permit a plain-http broker URL"
+    )
+    p_mcp.set_defaults(func=_cmd_mcp)
 
     return parser
 
