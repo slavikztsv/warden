@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -107,7 +108,13 @@ def create_app(
     audit: AuditLog,
     catalog: ToolCatalog,
     policy_digest: str,
+    clock: "Callable[[], int] | None" = None,
 ) -> FastAPI:
+    # Injected rather than read from this module's globals at call time.
+    # Patching a module global covers exactly the module that reads it, and
+    # the decision sequence is about to be shared with a second surface that
+    # would not read this one. One clock, both surfaces, one patch point.
+    clock = clock or now
     app = FastAPI(title="warden broker")
 
     @app.post("/v1/tools/{tool}/invoke")
@@ -118,7 +125,7 @@ def create_app(
                 audit, tool, "Bearer token required.", policy_digest
             )
         try:
-            token = verifier.verify(header.removeprefix("Bearer "), now=now())
+            token = verifier.verify(header.removeprefix("Bearer "), now=clock())
         except TokenInvalid as exc:
             return _refuse_unauthenticated(audit, tool, str(exc), policy_digest)
 

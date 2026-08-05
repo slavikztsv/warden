@@ -22,7 +22,18 @@ def signer():
     return Signer.generate()
 
 
-def build(tmp_path, signer, opa_payload, backend_handler=None):
+class Clock:
+    """A clock the tests can move. Replaces patching app_module.now by
+    assignment, which only ever covered the module that read that global."""
+
+    def __init__(self, value: int = 1_000) -> None:
+        self.value = value
+
+    def __call__(self) -> int:
+        return self.value
+
+
+def build(tmp_path, signer, opa_payload, backend_handler=None, clock=None):
     db = tmp_path / "customers.db"
     seed_customers(db, count=120)
 
@@ -45,11 +56,12 @@ def build(tmp_path, signer, opa_payload, backend_handler=None):
             client=httpx.Client(transport=httpx.MockTransport(backend_handler)),
         ),
         policy_digest="sha256:test",
+        clock=clock,
     )
     return TestClient(app), audit
 
 
-def app_with_catalog(tmp_path, catalog):
+def app_with_catalog(tmp_path, catalog, clock=None):
     """Like build(), but takes a caller-supplied catalog directly instead of
     reconstructing one from a fixed docstore/db/mailer set of URLs -- for
     tests that need to hand the broker a catalog shaped a particular way
@@ -71,6 +83,7 @@ def app_with_catalog(tmp_path, catalog):
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
+        clock=clock,
     )
     token = signer.mint(
         agent_id="triage-bot",
@@ -148,16 +161,13 @@ def test_missing_token_is_rejected(tmp_path, signer):
 
 
 def test_expired_token_is_rejected(tmp_path, signer):
-    client, _ = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    clock = Clock()
+    client, _ = build(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, clock=clock
+    )
     stale = token_for(signer)
-    import warden.broker.app as app_module
-
-    original = app_module.now
-    app_module.now = lambda: 10**12
-    try:
-        response = invoke(client, stale, "read_document", {"doc_id": "x"})
-    finally:
-        app_module.now = original
+    clock.value = 10**12
+    response = invoke(client, stale, "read_document", {"doc_id": "x"})
     assert response.status_code == 401
 
 
@@ -639,7 +649,7 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
 # --- Beyond-the-brief verification ---
 
 
-def _build_with_spies(tmp_path, signer):
+def _build_with_spies(tmp_path, signer, clock=None):
     """Like build(), but exposes the pdp and catalog instances wrapped
     with call-recording spies, so a test can prove a stage was never
     reached rather than merely asserting the final status code."""
@@ -688,6 +698,7 @@ def _build_with_spies(tmp_path, signer):
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
+        clock=clock,
     )
     return TestClient(app), decide_calls, describe_calls
 
@@ -709,17 +720,14 @@ def test_unverified_token_never_reaches_pdp_or_backend(tmp_path, signer):
 
 def test_expired_token_never_reaches_pdp_or_backend(tmp_path, signer):
     """Same proof as above, for an expired-but-otherwise-valid token."""
-    client, decide_calls, describe_calls = _build_with_spies(tmp_path, signer)
+    clock = Clock()
+    client, decide_calls, describe_calls = _build_with_spies(
+        tmp_path, signer, clock=clock
+    )
     stale = token_for(signer)
 
-    import warden.broker.app as app_module
-
-    original = app_module.now
-    app_module.now = lambda: 10**12
-    try:
-        response = invoke(client, stale, "read_document", {"doc_id": "x"})
-    finally:
-        app_module.now = original
+    clock.value = 10**12
+    response = invoke(client, stale, "read_document", {"doc_id": "x"})
 
     assert response.status_code == 401
     assert describe_calls == []
@@ -891,27 +899,31 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
 # _audit_refusal, so the replay renderer already knows how to display them.
 
 
-def _unauthenticated_requests(client, signer):
-    """The three ways a caller reaches the tool API with no usable token."""
+def _unauthenticated_requests(client, signer, clock):
+    """The three ways a caller reaches the tool API with no usable token.
+
+    The third way is an expired token, so it needs the clock pushed past
+    expiry for that one call. Restored immediately after: callers use the
+    same client (and therefore the same injected clock) for calls before
+    and after this helper, and those must still see a valid clock."""
     client.post("/v1/tools/read_document/invoke", json={"args": {"doc_id": "a"}})
     client.post(
         "/v1/tools/read_document/invoke",
         json={"args": {"doc_id": "a"}},
         headers={"Authorization": "Bearer not-a-jwt-at-all"},
     )
-    import warden.broker.app as app_module
-
-    original = app_module.now
-    app_module.now = lambda: 10**12
-    try:
-        invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
-    finally:
-        app_module.now = original
+    unexpired = clock.value
+    clock.value = 10**12
+    invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+    clock.value = unexpired
 
 
 def test_every_unauthenticated_call_leaves_an_audit_record(tmp_path, signer):
-    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
-    _unauthenticated_requests(client, signer)
+    clock = Clock()
+    client, audit = build(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, clock=clock
+    )
+    _unauthenticated_requests(client, signer, clock)
 
     records = audit.records()
     assert len(records) == 3, "a refusal that leaves no trace makes a probe invisible"
@@ -937,9 +949,12 @@ def test_the_unauthenticated_record_carries_sentinel_principal_fields(tmp_path, 
 def test_unauthenticated_records_chain_with_real_decisions(tmp_path, signer):
     """The sentinel records go into the same log as authorized decisions, so
     they must not break the hash chain the replay artifact depends on."""
-    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    clock = Clock()
+    client, audit = build(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, clock=clock
+    )
     invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
-    _unauthenticated_requests(client, signer)
+    _unauthenticated_requests(client, signer, clock)
     invoke(client, token_for(signer), "read_document", {"doc_id": "b"})
 
     assert audit.verify_chain() == (True, None)
