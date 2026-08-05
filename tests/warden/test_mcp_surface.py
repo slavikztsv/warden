@@ -777,6 +777,116 @@ def test_every_handshake_era_version_is_refused_and_recorded(tmp_path, version):
     assert len(records) == 1, version
 
 
+# --- Fix round 1: a duplicated MCP-Protocol-Version splits the gate and the
+# SDK's own routing -----------------------------------------------------------
+#
+# _EraGate used to fold scope["headers"] into a dict, which keeps the LAST
+# value for a repeated key. StreamableHTTPSessionManager._handle_request reads
+# the SAME list with next(), which keeps the FIRST. Sent twice -- one
+# handshake-era copy, one modern copy, in either order -- the two components
+# disagreed about which one "the" version was: the gate could see modern and
+# wave the request through, while the SDK's own routing underneath saw
+# handshake-era and dispatched to the legacy transport anyway. That is the
+# exact leg with no Mcp-Method validation and str(exc) on the wire, reachable
+# again through the gate meant to close it off -- the same class of defect
+# (two components disagreeing about one header) recurring one layer up.
+#
+# httpx accepts headers as a plain list of (name, value) pairs, which is the
+# only way to actually send a header twice -- a dict or a Mapping can only
+# ever carry one value per key.
+
+
+def test_a_duplicated_protocol_version_header_is_refused_handshake_then_modern(
+    tmp_path,
+):
+    """Handshake-era copy first, modern copy second -- the exact split that
+    used to buy a served response: the old dict-fold read the LAST (modern)
+    copy and passed the request through, while the SDK's own first-match
+    routing underneath read the FIRST (handshake-era) copy and dispatched to
+    the legacy transport regardless."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = client.post(
+            "/mcp",
+            json=LEGACY_LIST,
+            headers=[
+                (b"mcp-protocol-version", b"2024-11-05"),
+                (b"mcp-protocol-version", b"2026-07-28"),
+            ],
+        )
+        records = audit.records()
+    assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
+    assert len(records) == 1
+    assert records[0]["action"] == {"type": "mcp_handshake"}
+    assert records[0]["rule"] == "mcp.unsupported_protocol"
+
+
+def test_a_duplicated_protocol_version_header_is_refused_modern_then_handshake(
+    tmp_path,
+):
+    """The other ordering. Both must refuse -- the gate does not get to pick
+    a side just because the ambiguous copy it would have preferred happens to
+    come first this time."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = client.post(
+            "/mcp",
+            json=LEGACY_LIST,
+            headers=[
+                (b"mcp-protocol-version", b"2026-07-28"),
+                (b"mcp-protocol-version", b"2024-11-05"),
+            ],
+        )
+        records = audit.records()
+    assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
+    assert len(records) == 1
+    assert records[0]["action"] == {"type": "mcp_handshake"}
+    assert records[0]["rule"] == "mcp.unsupported_protocol"
+
+
+def test_a_duplicated_protocol_version_header_refuses_even_when_both_copies_agree(
+    tmp_path,
+):
+    """Pinned deliberately: two copies that both name the modern version are
+    refused too, not served. No conforming client has a reason to send this
+    header twice, so there is no legitimate case being narrowed here -- only
+    an ambiguous one being closed, on principle, independent of what either
+    copy says."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = client.post(
+            "/mcp",
+            json=LEGACY_LIST,
+            headers=[
+                (b"mcp-protocol-version", b"2026-07-28"),
+                (b"mcp-protocol-version", b"2026-07-28"),
+            ],
+        )
+        records = audit.records()
+    assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
+    assert len(records) == 1
+    assert records[0]["action"] == {"type": "mcp_handshake"}
+    assert records[0]["rule"] == "mcp.unsupported_protocol"
+
+
 def test_a_request_with_no_protocol_version_is_refused_and_recorded(tmp_path):
     """Absent is the handshake era's own signature, and that era is the one
     the SDK serves without validating Mcp-Method. An enforcement point does
@@ -940,13 +1050,20 @@ def test_the_inline_lookup_is_answered_from_the_catalog_not_with_an_empty_list(
     it is consumed inside the SDK to validate the call's own headers. So there
     is no disclosure to scope to a token, and no spine call to make.
 
-    Driven at the handler rather than over HTTP because the condition cannot be
-    reached from a client: on the modern era the SDK's ladder rejects a
-    `tools/list` whose Mcp-Method says `tools/call` before dispatch, which is
+    Driven at the handler rather than over HTTP because the condition is not
+    reachable through a live request while two separate layers hold, not
+    because of any inherent property of this handler: `_EraGate` (see
+    `warden/broker/mcp.py`) refuses anything but an unambiguous, single-copy
+    modern `MCP-Protocol-Version` before the SDK ever routes at all, and for
+    whatever it lets through, `classify_inbound_request`'s own ladder rejects
+    a `tools/list` whose Mcp-Method says `tools/call` before dispatch --
     exactly the rung the guard rests on (pinned by
-    test_the_modern_era_rung_the_guard_rests_on_is_still_there). `Server`'s
-    `get_request_handler` is public API and `session_manager.app` is its
-    documented constructor argument.
+    test_the_modern_era_rung_the_guard_rests_on_is_still_there). Either layer
+    could regress independently of the other, so this test proves the guard's
+    OWN behaviour is still correct even then, by constructing the condition
+    directly rather than trusting that no live request can ever produce it.
+    `Server`'s `get_request_handler` is public API and `session_manager.app`
+    is its documented constructor argument.
     """
     import asyncio
     import dataclasses

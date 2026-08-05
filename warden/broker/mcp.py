@@ -71,6 +71,7 @@ from mcp import types
 from mcp.server import Server, ServerRequestContext
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
+from mcp.shared.inbound import MCP_PROTOCOL_VERSION_HEADER
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION
 from starlette.routing import Route
 
@@ -89,22 +90,24 @@ from warden.broker.spine import AUDIT_UNAVAILABLE, DENIED, Kind, Outcome, Spine
 
 logger = logging.getLogger(__name__)
 
-# The two protocol-error codes, taken from the SDK's own assigned set rather
-# than picked out of the -32000..-32099 implementation range. -32001 in
-# particular is NOT available: mcp_types binds it to REQUEST_TIMEOUT and the
-# SDK's client GENERATES that code locally when a call times out, so a server
-# answering with it sends something a client cannot tell from a timeout --
-# which is the one condition every client retries.
+# The three protocol-error codes, taken from the SDK's own assigned set
+# rather than picked out of the -32000..-32099 implementation range by hand.
+# -32001 in particular is NOT available: mcp_types binds it to
+# REQUEST_TIMEOUT and the SDK's client GENERATES that code locally when a
+# call times out, so a server answering with it sends something a client
+# cannot tell from a timeout -- which is the one condition every client
+# retries.
 UNAUTHENTICATED_CODE = types.INVALID_REQUEST
 FAULT_CODE = types.INTERNAL_ERROR
-
-# Not one of the SDK's own assigned codes -- there is no assigned code for
-# "this server does not serve your protocol revision" -- so this is picked
-# from the -32000..-32099 implementation-defined range the JSON-RPC spec
-# reserves for exactly that. It is what a modern-only server is asked to
-# answer a version it does not support with, per the specification, and it
-# carries the list of versions this server does support in `data`.
-UNSUPPORTED_PROTOCOL_VERSION = -32022
+# What the SDK's own dispatcher would answer a truly-unsupported version
+# with on the modern path -- see mcp_types.jsonrpc.UNSUPPORTED_PROTOCOL_VERSION
+# / mcp.shared.inbound.ERROR_CODE_HTTP_STATUS (which maps it to HTTP 400,
+# matching _refuse_era below). _EraGate uses the SAME code and status for a
+# version-less or handshake-era request, because from a client's point of
+# view the two failures are the same fact: this server does not serve the
+# revision it asked for. `data.supported` is what the specification asks a
+# modern-only server to return alongside it.
+UNSUPPORTED_PROTOCOL_VERSION = types.UNSUPPORTED_PROTOCOL_VERSION
 
 
 def _headers(ctx: ServerRequestContext) -> Mapping[str, str] | None:
@@ -164,16 +167,30 @@ def _is_internal_schema_lookup(ctx: ServerRequestContext) -> bool:
     HEADER_MISMATCH before reaching any handler.
 
     BELT AND BRACES: `_EraGate` (see `mount_mcp`) now refuses every
-    handshake-era or version-less request over HTTP before it reaches the
-    SDK's own routing at all, which makes the branch below unreachable from
-    any live request -- a legacy-era `ServerRequestContext` can no longer
-    exist by the time this function is called. It stays anyway. Deleting it
+    handshake-era, version-less, or AMBIGUOUS (duplicated
+    `MCP-Protocol-Version`) request over HTTP before it reaches the SDK's
+    own routing at all -- which makes the branch below unreachable from any
+    live request, but that is a property of the gate's current behaviour,
+    not an inherent one of this function. Said precisely: unreachable
+    BECAUSE the era gate refuses every handshake-era and ambiguous request,
+    not unreachable on its own account. The "ambiguous" half of that is not
+    hypothetical -- a request carrying `MCP-Protocol-Version` twice used to
+    be exactly how a live caller reached this branch regardless of the gate:
+    a folded (dict-style) header read let a modern LAST copy satisfy the
+    gate while the SDK's own FIRST-match routing underneath still picked the
+    handshake-era FIRST copy, so this handler could still be entered through
+    the legacy transport the gate believed it had refused. The gate's header
+    read was fixed to refuse any duplicate outright (see `_EraGate`) and to
+    match the SDK's own first-match semantics for the single-copy case, but
+    that fix lives one layer away from this function and could regress
+    there without anything here changing. It stays anyway. Deleting it
     trades a redundant check for a SILENT reopening of the exact vector this
-    function's docstring describes, the day someone removes or misconfigures
-    the gate in front of it; keeping it means that same removal instead
-    fails LOUDLY, here, the next time a handshake-era request reaches this
-    function directly (as it still can: this is a plain function, callable
-    without going through the gate at all -- see
+    function's docstring describes, the day someone removes or
+    misconfigures the gate in front of it, or reintroduces a header-read
+    disagreement like the one above; keeping it means that same regression
+    instead fails LOUDLY, here, the next time a handshake-era request
+    reaches this function directly (as it still can: this is a plain
+    function, callable without going through the gate at all -- see
     `test_the_inline_lookup_is_answered_from_the_catalog_not_with_an_empty_list`,
     which does exactly that).
     """
@@ -286,6 +303,16 @@ async def _refuse_era(send) -> None:
     await send({"type": "http.response.body", "body": _refuse_era_body()})
 
 
+# Encoded once, from the SDK's own constant -- not hand-spelled -- so this
+# and `StreamableHTTPSessionManager._handle_request`'s
+# `header = MCP_PROTOCOL_VERSION_HEADER.encode("ascii")` can never name two
+# different header strings. ASGI header names arrive pre-lowercased by a
+# conforming server (the ASGI spec requires it), which is what a bare `==`
+# against raw scope bytes below relies on -- the same reliance the SDK's own
+# read has.
+_PROTOCOL_VERSION_HEADER_BYTES = MCP_PROTOCOL_VERSION_HEADER.encode("ascii")
+
+
 class _EraGate:
     """Refuses every protocol revision but the modern one, before the SDK
     routes the request at all.
@@ -333,6 +360,38 @@ class _EraGate:
     a class with `__call__` is neither a function nor a method, so Starlette
     falls through to its other branch and treats it as what it is: an ASGI
     app in its own right, exactly like the sub-app it wraps.
+
+    THE HEADER READ MUST AGREE WITH THE SDK'S OWN, EXACTLY, OR THIS GATE IS
+    THE SAME BUG ONE LAYER UP. `StreamableHTTPSessionManager._handle_request`
+    reads the version with `next((v.decode(...) for k, v in scope["headers"]
+    if k == header), None)` -- FIRST match. A dict comprehension over the
+    same list keeps the LAST match instead. Sent twice, with a handshake-era
+    value first and a modern value second, those two reads disagree: this
+    gate would see "modern" and wave the request through, the SDK's routing
+    would see "handshake-era" underneath it and route to the legacy
+    transport anyway -- the exact leg with no `Mcp-Method` validation and
+    `str(exc)` on the wire, reachable again through the gate meant to close
+    it off. Measured. So the single-occurrence read below uses `next(...)`
+    against the raw scope, matching the SDK's read byte for byte, not a
+    folded mapping -- removing the disagreement by construction rather than
+    by a guard that could itself drift out of sync later.
+
+    A DUPLICATE IS REFUSED OUTRIGHT, independent of what either copy says.
+    No conforming client sends `MCP-Protocol-Version` twice; a second copy is
+    a disagreement attempt against whichever reader looks at it, and
+    warden's stance is that ambiguity refuses rather than picks a side --
+    the same discipline `mcp.shared.inbound.find_duplicated_routing_header`
+    applies one layer downstream, inside the modern transport's own
+    request-shape ladder. That function was not reused here: it checks THREE
+    routing headers (`Mcp-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) against
+    decoded string pairs, and this gate routes on exactly one, read off the
+    raw scope before any decoding happens for the other two -- duplicates of
+    the other two remain that ladder's job, once a single-valued
+    `MCP-Protocol-Version` has let a request reach it. Refusing on ANY
+    duplicate -- including two copies that both name the modern version --
+    is deliberate: a client with a legitimate reason to send this header
+    twice does not exist, so there is no served case being narrowed, only an
+    ambiguous one being closed.
     """
 
     def __init__(self, inner, *, spine: Spine) -> None:
@@ -340,11 +399,13 @@ class _EraGate:
         self._spine = spine
 
     async def __call__(self, scope, receive, send) -> None:
-        headers = {
-            key.decode("latin-1").lower(): value.decode("latin-1")
-            for key, value in scope.get("headers", [])
-        }
-        version = headers.get("mcp-protocol-version")
+        raw_headers = scope.get("headers", [])
+        occurrences = [v for k, v in raw_headers if k == _PROTOCOL_VERSION_HEADER_BYTES]
+        if len(occurrences) > 1:
+            self._spine.record_handshake_refusal("mcp.unsupported_protocol")
+            await _refuse_era(send)
+            return
+        version = occurrences[0].decode("latin-1") if occurrences else None
         if version is None or version in HANDSHAKE_PROTOCOL_VERSIONS:
             self._spine.record_handshake_refusal("mcp.unsupported_protocol")
             await _refuse_era(send)
