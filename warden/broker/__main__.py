@@ -109,6 +109,9 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         # product tree), the same three values compose.yml sets on the
         # broker service's `environment:`.
         catalog=load_catalog(config.catalog_path, os.environ, client),
+        # Not in components: BrokerComponents feeds serve_proxy too, which has
+        # no MCP surface and would raise TypeError on the extra keyword.
+        mcp=config.mcp,
         **components.as_app_kwargs(),
     )
     return app, components

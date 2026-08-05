@@ -14,6 +14,7 @@ way it does.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 
@@ -22,6 +23,7 @@ from fastapi.responses import JSONResponse
 
 from warden.broker.audit import AuditLog
 from warden.broker.config.catalog import ToolCatalog
+from warden.broker.config.loader import ConfigError, McpConfig
 from warden.broker.identity import Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.spine import (
@@ -109,6 +111,13 @@ def create_app(
     catalog: ToolCatalog,
     policy_digest: str,
     clock: Callable[[], int] | None = None,
+    # Its own parameter, never a BrokerComponents field. wiring.py's
+    # as_proxy_kwargs() returns as_app_kwargs() verbatim and serve_proxy's
+    # authorize_connect is keyword-only with no **kwargs, so a new key there
+    # raises TypeError inside EVERY CONNECT -- at request time, with the
+    # broker still reporting healthy. The proxy has no MCP surface and must
+    # not be handed the config for one.
+    mcp: McpConfig | None = None,
 ) -> FastAPI:
     app = FastAPI(title="warden broker")
     spine = Spine(
@@ -124,6 +133,33 @@ def create_app(
     # one spine per app, which is what makes two front doors incapable of
     # deciding differently.
     app.state.spine = spine
+
+    if mcp is not None and mcp.enabled:
+        # Imported here, not at module scope: the SDK is an optional extra
+        # that drags in a second HTTP stack and opentelemetry-api, and a
+        # deployment that never enables this surface must not need any of it
+        # installed to start the broker.
+        try:
+            from warden.broker.mcp import mount_mcp
+        except ImportError as exc:
+            raise ConfigError(
+                "[mcp].enabled is true but the MCP extra is not installed; "
+                "install warden[mcp]"
+            ) from exc
+
+        mount_mcp(app, spine=spine, catalog=catalog, config=mcp)
+
+        @contextlib.asynccontextmanager
+        async def lifespan(_app):
+            # A routed or mounted sub-app's lifespan never runs, so the
+            # session manager -- whose run() owns the task group every
+            # streamable-HTTP request is served inside -- has to be started by
+            # the app it was attached to. Without this, the first request to
+            # the surface raises "Task group is not initialized".
+            async with app.state.mcp_session_manager.run():
+                yield
+
+        app.router.lifespan_context = lifespan
 
     @app.post("/v1/tools/{tool}/invoke")
     async def invoke(tool: str, request: Request) -> JSONResponse:

@@ -29,9 +29,19 @@ class ConfigError(Exception):
 class McpConfig:
     """The MCP surface's wiring. Off unless a deployment says otherwise.
 
-    `host` is handed to the SDK's transport-security settings. Left unset,
-    the SDK infers a loopback host and turns on DNS-rebinding protection,
-    which answers 421 to every request arriving under a real hostname.
+    `host` becomes the SDK's transport-security allow-list. Left unset,
+    broker/mcp.py passes no settings at all, which is what lets the SDK apply
+    its own rule: `streamable_http_app` turns DNS-rebinding protection ON,
+    with a loopback allow-list, whenever it was given a loopback host -- and
+    its `host` argument defaults to 127.0.0.1. The surface then answers 421
+    "Invalid Host header" to every request arriving under a real hostname.
+    Verified, not assumed: tests/warden/test_mcp_surface.py asserts both
+    halves against the installed SDK.
+
+    Note what that loopback list accepts -- `127.0.0.1:*`, `localhost:*`,
+    `[::1]:*` -- patterns that require a port, so even a bare
+    `Host: 127.0.0.1` on port 80 is refused. Loopback with no port is not a
+    configuration this surface can serve; name the host.
     """
 
     enabled: bool = False

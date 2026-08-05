@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 
 import httpx
@@ -59,6 +60,72 @@ def build(tmp_path, signer, opa_payload, backend_handler=None, clock=None):
         clock=clock,
     )
     return TestClient(app), audit
+
+
+@contextlib.contextmanager
+def build_with_mcp(
+    tmp_path,
+    signer,
+    opa_payload,
+    backend_handler=None,
+    clock=None,
+    opa_handler=None,
+    catalog=None,
+    host="testserver",
+):
+    """build(), with the MCP surface mounted -- and entered as a context
+    manager, because a routed sub-app's lifespan never runs on its own and the
+    session manager must be started before the first request.
+
+    Yields the TestClient still inside its own `with`, which matters for more
+    than the lifespan: TestClient.__enter__ sets `.portal`, a blocking portal
+    onto the ONE event loop the lifespan (and therefore the session manager's
+    task group) lives in. tests/warden/test_mcp_surface.py drives the surface
+    through that portal, so the SDK client's coroutines and the task group
+    serving them share a loop. Driving them from a fresh `anyio.run()` in the
+    main thread instead puts the manager's task group in one loop and the
+    request in another.
+
+    `opa_handler` overrides `opa_payload` for a test that needs OPA to answer
+    differently depending on what it is asked -- a budget that runs out, say.
+    `catalog` overrides the demo catalog for a test that needs a tool shaped a
+    particular way. Both injected at construction like every other
+    collaborator here, so no test has to reach through the app afterwards.
+    """
+    from warden.broker.config.loader import McpConfig
+
+    db = tmp_path / "customers.db"
+    seed_customers(db, count=120)
+
+    if opa_handler is None:
+        def opa_handler(request):
+            return httpx.Response(200, json={"result": opa_payload})
+
+    backend_handler = backend_handler or (
+        lambda request: httpx.Response(200, text="doc-body")
+    )
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    app = create_app(
+        verifier=Verifier(signer.public_key_pem()),
+        pdp=PolicyDecisionPoint(
+            "http://opa:8181",
+            client=httpx.Client(transport=httpx.MockTransport(opa_handler)),
+        ),
+        taint=TaintTracker(),
+        audit=audit,
+        catalog=catalog
+        or demo_catalog(
+            docstore_url="http://docstore.internal",
+            db_path=db,
+            mailer_url="http://mailer.internal",
+            client=httpx.Client(transport=httpx.MockTransport(backend_handler)),
+        ),
+        policy_digest="sha256:test",
+        clock=clock,
+        mcp=McpConfig(enabled=True, path="/mcp", host=host),
+    )
+    with TestClient(app) as client:
+        yield client, audit
 
 
 def app_with_catalog(tmp_path, catalog, clock=None):
