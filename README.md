@@ -366,7 +366,7 @@ Config files, the keypair split and minting a task token:
 ## One task, end to end
 
 <p align="center">
-  <img src="docs/assets/demo-flow.png" width="100%" alt="Eight steps: task.toml declares the task; demo/cli/main.py generates the keypair and starts the services; _mint_token() POSTs to broker-control; warden/broker/control.py signs the token; demo/agent/loop.py runs with it; warden/broker/app.py verifies, decides, records and executes; authz.rego answers; the audit log proves it afterwards">
+  <img src="docs/assets/demo-flow.png" width="100%" alt="Eight steps: task.toml declares the task; demo/cli/main.py generates the keypair and starts the services; _mint_token() POSTs to broker-control; warden/broker/control.py signs the token; demo/agent/loop.py runs with it; warden/broker/spine.py verifies, decides, records and executes; authz.rego answers; the audit log proves it afterwards">
 </p>
 
 **Nothing begins with the agent.** By the time `demo/agent/loop.py` runs, its

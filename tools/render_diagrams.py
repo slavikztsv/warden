@@ -977,7 +977,7 @@ FLOW_STEPS = [
     ("demo/agent/loop.py  main()", "untrusted",
      "Runs with TASK_TOKEN, BROKER_URL and HTTP_PROXY set; asks the model, proposes tool calls",
      "Untrusted by design: it reads documents an attacker can influence"),
-    ("warden/broker/app.py  invoke()", "enforce",
+    ("warden/broker/spine.py  handle_tool_call()", "enforce",
      "verify → snapshot → validate → decide → record → execute",
      "Every call judged against the token AND everything the task has done so far"),
     ("warden/policies/authz.rego", "core",
