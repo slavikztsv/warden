@@ -479,11 +479,16 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   front door beside it; the adapter design already separates what a tool *is*
   from how it is *reached*, which is why that front door didn't need a
   rebuild. **It now exists** — `warden mcp` plus an `[mcp]` section in
-  `warden.toml`, both **off by default**. An off-the-shelf MCP-capable agent
-  gets brokered tools without changing its own code, which narrows this
-  limitation; it does not remove it. **MCP brokers tools; it does not contain
-  anything.** A local agent, running on the operator's own machine, still has
-  a route to the unauthenticated control plane that no client config closes.
+  `warden.toml`, both **off by default**. An MCP-capable agent gets brokered
+  tools without changing its own code — **if it speaks protocol revision
+  `2026-07-28`.** Every older revision is refused with `-32022` before
+  authentication, not served: its transport does not check a request's
+  routing header against its body and puts exception text on the wire, so
+  serving it would let the caller pick the weaker of two enforcement paths.
+  That narrows this limitation; it does not remove it. **MCP brokers tools;
+  it does not contain anything.** A local agent, running on the operator's
+  own machine, still has a route to the unauthenticated control plane that no
+  client config closes.
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers turning it on;
   [docs/ROADMAP.md](docs/ROADMAP.md) covers why `❌ Production` does not move
   for it.

@@ -120,7 +120,7 @@ one that does what it needs.
 | | Rung | What the agent's owner changes | Works with | Contained? |
 |---|---|---|---|---|
 | **0** | Egress proxy only | Five environment variables | Anything that honours proxy variables. **Works today.** | Yes — the network is the boundary |
-| **1** | MCP front door | One entry in an MCP client config | Any MCP-capable agent. **Works today, off by default.** | Only where you control the agent's network |
+| **1** | MCP front door | One entry in an MCP client config | Any MCP-capable agent speaking protocol revision `2026-07-28` — older revisions are refused with `-32022`. **Works today, off by default.** | Only where you control the agent's network |
 | **2** | `warden run` launcher | Nothing — the launcher writes the config | Any MCP-capable agent, started by an operator | Same as rung 1 |
 | **3** | Native tool API | Agent code calls `BROKER_URL` | Your own agent. **Works today.** | Yes |
 

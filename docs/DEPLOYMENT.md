@@ -72,6 +72,18 @@ before this surface existed:
 | `path` | `/mcp` | Where the surface listens, under `[broker].listen`. |
 | `host` | *(unset)* | The SDK's DNS-rebinding allow-list. Left unset, the SDK infers a loopback host and turns rebinding protection **on**, which answers **421** to every request arriving under a real hostname — name the host you will actually be reached on. |
 
+**Requirement, before you enable this: the client must speak MCP protocol
+revision `2026-07-28`.** Every older revision — the whole `initialize`
+handshake era — is refused with `-32022` and HTTP 400 before authentication,
+not served with reduced functionality. This is not a version floor picked for
+convenience: the handshake-era transport does not validate its routing header
+against the request body and puts raw exception text on the wire, and it was
+reachable by omitting one header, which would let the caller choose the
+weaker of two enforcement paths. `warden mcp` (the shim below) and the MCP
+SDK's own `Client` both negotiate `2026-07-28` and are unaffected; any other
+MCP client should be checked against this before it is pointed at the front
+door.
+
 `[mcp].enabled = true` needs the `warden[mcp]` extra installed
 (`pip install -e './warden[mcp]'`). It pulls a second HTTP stack (`httpx2`,
 alongside the deliberately pinned `httpx`) and `opentelemetry-api`, so a
