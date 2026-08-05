@@ -39,6 +39,18 @@ against anything real.
 - Run `warden config check --catalog … --data … --mcp` before setting
   `[mcp].enabled = true`. It demands a `description` and a `title` on every
   tool, which nothing else in this list requires.
+- Never run the broker under an OpenTelemetry auto-instrumentation wrapper
+  (`opentelemetry-instrument`, a Kubernetes OTel Operator webhook, a
+  site-wide `sitecustomize.py`) — checked and refused at **every** boot,
+  whether or not `[mcp].enabled` is set. This is not an MCP-specific
+  requirement: `opentelemetry-api` can be present for reasons that have
+  nothing to do with `warden[mcp]`, and OpenTelemetry's TracerProvider is a
+  process-global, so an external wrapper would instrument the broker's own
+  FastAPI app and its outbound calls to OPA and the adapters — exporting
+  tool names, task ids and decisions as spans — with no MCP surface involved
+  at all. See "The MCP front door" below for the one concrete trigger this
+  check is currently known to guard, and `_silence_telemetry()`'s own
+  docstring for why the check runs regardless.
 
 ### Recommended
 
@@ -100,17 +112,22 @@ and checks cleanly without them would otherwise advertise a tool with a blank
 label.
 
 **Do not run the broker under an OpenTelemetry auto-instrumentation
-wrapper** — `opentelemetry-instrument`, a Kubernetes OTel Operator webhook, or
-a site-wide `sitecustomize.py`. The MCP SDK installs an OpenTelemetry
-middleware as its outermost layer, so the broker installs a no-op tracer
-provider at boot and **refuses to start** if a real one was already
-installed. `set_tracer_provider()` is a process-global set-once: the first
-caller in the *process* wins, not the first caller in this codebase, so an
-external wrapper that installs a provider before the broker even imports
-would otherwise leave it believing telemetry was silenced while a live
-exporter kept running — spans naming tool calls and request ids, exported
-from the one process whose whole premise is being the only route out, with
-no audit record of any of it.
+wrapper** — see the general requirement above; this section names the one
+trigger enabling this surface adds. The MCP SDK installs an OpenTelemetry
+middleware as its outermost layer, so once `[mcp].enabled = true` an image
+that also carries the OTel SDK with the standard environment variables set
+would begin exporting spans through it — tool names and request ids — the
+moment a real `TracerProvider` reaches the process. The broker installs a
+no-op tracer provider at boot and **refuses to start** if a real one was
+already installed, on every boot, not only once this surface is on (see
+`_silence_telemetry()` in `warden/broker/__main__.py` for why the check is
+not scoped to `[mcp].enabled`). `set_tracer_provider()` is a process-global
+set-once: the first caller in the *process* wins, not the first caller in
+this codebase, so an external wrapper that installs a provider before the
+broker even imports would otherwise leave it believing telemetry was
+silenced while a live exporter kept running — spans naming tool calls and
+request ids, exported from the one process whose whole premise is being the
+only route out, with no audit record of any of it.
 
 **Reaching it from a local agent:** `warden mcp --broker URL --token-file
 PATH [--allow-http]` runs a stdio shim, launched inside the agent's own

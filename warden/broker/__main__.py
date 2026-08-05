@@ -59,6 +59,31 @@ def _silence_telemetry() -> None:
     logs a warning, easy to miss in production), leaving the broker to boot
     believing telemetry is silenced while a live exporter stays installed.
     Checking the outcome, not just making the call, is what closes that gap.
+
+    CALLED UNCONDITIONALLY, as the first line of `build()` -- not gated
+    behind `config.mcp.enabled`, even though the one CONCRETE trigger named
+    above (the MCP SDK's own middleware) cannot fire unless the MCP surface
+    is actually mounted: `warden.broker.mcp` -- and therefore the `mcp`
+    package -- is only ever imported inside `create_app`'s `if mcp is not
+    None and mcp.enabled` branch, so a deployment with the surface off never
+    loads code that could install that particular middleware. Scoping this
+    call to that branch would still be SOUND for the trigger described above.
+    It is not done, for a reason bigger than that one trigger: OpenTelemetry's
+    TracerProvider is a property of the PROCESS, not of one surface inside
+    it, and `opentelemetry-api` can be present in an image for reasons that
+    have nothing to do with `warden[mcp]` -- another dependency pulling it in,
+    an operator's own observability tooling, a base image that ships it. Any
+    of those, combined with an external auto-instrumentation wrapper around
+    the whole `warden serve` invocation, would instrument the enforcement
+    point's OWN FastAPI app and its outbound httpx calls to OPA and the
+    adapters -- exporting the exact same class of sensitive span (tool names,
+    task ids, decisions) this function exists to stop, with no MCP surface
+    involved at all. A deployment that never enables MCP is not exempt from
+    that risk, so it is not exempt from this check either. The cost of
+    checking regardless is one no-op provider install on every boot; the
+    cost of not checking is the silent, unaudited leak this whole function
+    exists to close, on exactly the deployments that assumed being MCP-free
+    made them safe from it.
     """
     try:
         from opentelemetry import trace

@@ -119,6 +119,58 @@ def test_silence_telemetry_still_passes_on_a_repeated_call_in_the_same_process()
     assert type(trace.get_tracer_provider()) is NoOpTracerProvider
 
 
+def test_the_telemetry_check_runs_even_with_the_mcp_surface_disabled(
+    tmp_path, monkeypatch
+):
+    """The decision pinned: `build()` calls `_silence_telemetry()`
+    unconditionally, as its first line, NOT gated behind `config.mcp.enabled`
+    -- see that function's own docstring for the reasoning. The one trigger
+    it names concretely (the MCP SDK's own middleware) cannot fire with the
+    surface off, since `warden.broker.mcp` -- and the `mcp` package itself --
+    is only ever imported inside create_app's `mcp.enabled` branch. But
+    OpenTelemetry's TracerProvider is process-global, not MCP-scoped, and an
+    external auto-instrumentation wrapper around the whole `warden serve`
+    invocation would instrument the broker's OWN FastAPI app and its
+    outbound httpx calls regardless of whether MCP is on -- exporting tool
+    names, task ids and decisions as spans either way. So a deployment with
+    `[mcp].enabled = false` (the config this test builds) must still refuse
+    to boot if a real TracerProvider already claimed the process-global
+    set-once, exactly like the MCP-enabled case
+    `test_silence_telemetry_refuses_to_start_if_a_provider_got_there_first`
+    covers in isolation. This proves it end to end, through build() itself,
+    with the surface off -- if a future change scoped the call behind
+    `mcp.enabled` (the alternative this decision rejected), this is the test
+    that would catch it.
+    """
+    from opentelemetry import trace
+    from opentelemetry.util._once import Once
+
+    from tests.warden.test_key_split import (
+        broker_config,
+        set_catalog_env,
+        stub_client,
+        write_keypair,
+    )
+    from warden.broker import __main__ as broker_main
+    from warden.broker.config.loader import ConfigError
+
+    class FakeRealProvider(trace.TracerProvider):
+        def get_tracer(self, *args, **kwargs):
+            return trace.NoOpTracer()
+
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER", None)
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER_SET_ONCE", Once())
+    trace.set_tracer_provider(FakeRealProvider())
+
+    _, public_path = write_keypair(tmp_path)
+    set_catalog_env(monkeypatch, tmp_path)
+    config = broker_config(tmp_path, public_path)
+    assert config.mcp.enabled is False
+
+    with pytest.raises(ConfigError):
+        broker_main.build(config, client=stub_client())
+
+
 # --- Driving the mounted surface -------------------------------------------
 
 
