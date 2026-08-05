@@ -1,9 +1,11 @@
 """Declarative validation must reproduce the hand-written checks exactly.
 
-Every expectation here was measured against broker/app.py's
-_args_are_well_shaped before it was replaced. Where they look inconsistent --
-doc_id "" denied but filter "" allowed -- that inconsistency IS the behaviour,
-and a uniform default in either direction changes what the broker permits.
+Every expectation here was measured against warden/broker/app.py's
+_args_are_well_shaped before it was replaced by the schema-driven validation
+warden/broker/spine.py now calls (ToolCatalog.validate). Where they look
+inconsistent -- doc_id "" denied but filter "" allowed -- that inconsistency
+IS the behaviour, and a uniform default in either direction changes what the
+broker permits.
 """
 
 from __future__ import annotations

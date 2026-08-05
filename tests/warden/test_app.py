@@ -857,16 +857,19 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
 
 
 # --- Concurrency: the TOCTOU this branch's review pass found while writing
-# docs/THREAT_MODEL.md. broker/app.py's only await must run BEFORE the taint
-# snapshot, or two concurrent calls for the same task can both read a stale
-# rows_returned_so_far and both be approved even though their combined total
-# breaks the bound. TestClient makes one request run to completion before the
-# next starts, so it cannot exercise this -- the two calls below are fired
-# directly at the ASGI endpoint function via asyncio.gather, each backed by a
-# hand-built Request whose receive() forces a real, deterministic suspension
-# (await asyncio.sleep(0)) at exactly the point a real body read would
-# suspend, so they genuinely interleave on one event loop instead of merely
-# running back-to-back.
+# docs/THREAT_MODEL.md. warden/broker/app.py's only await must run BEFORE
+# warden/broker/spine.py takes its taint snapshot, or two concurrent calls
+# for the same task can both read a stale rows_returned_so_far and both be
+# approved even though their combined total breaks the bound -- spine.py's
+# own docstring states the invariant now: the sequence from the snapshot
+# through record_read is synchronous by construction, not by discipline.
+# TestClient makes one request run to completion before the next starts, so
+# it cannot exercise this -- the two calls below are fired directly at the
+# ASGI endpoint function via asyncio.gather, each backed by a hand-built
+# Request whose receive() forces a real, deterministic suspension (await
+# asyncio.sleep(0)) at exactly the point a real body read would suspend, so
+# they genuinely interleave on one event loop instead of merely running
+# back-to-back.
 
 
 def _find_invoke_endpoint(app):

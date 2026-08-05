@@ -12,8 +12,11 @@ restart erases. Equally, a broker that survives restarts and scales to four
 workers is worth very little if the only way to reach its tool API is to write
 your own agent.
 
-**Nothing here is built.** Every "today" claim below cites the file it was read
-from, so a reviewer can check it rather than take it.
+**Nothing here was built when this was written; one rung of it has been
+since.** Rung 1 of the integration ladder below — the MCP front door — shipped
+as P1 and is marked where it appears. Every other "today" claim in what
+follows cites the file it was read from, so a reviewer can check it rather
+than take it.
 
 ---
 
@@ -117,7 +120,7 @@ one that does what it needs.
 | | Rung | What the agent's owner changes | Works with | Contained? |
 |---|---|---|---|---|
 | **0** | Egress proxy only | Five environment variables | Anything that honours proxy variables. **Works today.** | Yes — the network is the boundary |
-| **1** | MCP front door | One entry in an MCP client config | Any MCP-capable agent | Only where you control the agent's network |
+| **1** | MCP front door | One entry in an MCP client config | Any MCP-capable agent. **Works today, off by default.** | Only where you control the agent's network |
 | **2** | `warden run` launcher | Nothing — the launcher writes the config | Any MCP-capable agent, started by an operator | Same as rung 1 |
 | **3** | Native tool API | Agent code calls `BROKER_URL` | Your own agent. **Works today.** | Yes |
 
@@ -130,8 +133,11 @@ not exist on a laptop. Tool brokering, policy, budgets and audit all still
 apply there; egress containment does not. Fixing it is § C1, not a doc change.
 
 Rung 0 already ships and is the honest answer for a truly closed agent: it
-contains the network without brokering a single tool. Rung 3 already ships and is
-the most capable. **The plan is rungs 1 and 2.** The ladder overview is in
+contains the network without brokering a single tool. **Rung 1 now ships
+too** — the MCP front door landed as P1, off by default; see
+[docs/DEPLOYMENT.md](DEPLOYMENT.md#the-mcp-front-door) for turning it on —
+and rung 3 already ships and is the most capable. **What remains of the plan
+is rung 2**, the `warden run` launcher. The ladder overview is in
 [2026-08-05-third-party-agent-integration-design.md](superpowers/specs/2026-08-05-third-party-agent-integration-design.md);
 rung 1 is designed in full, and against a verified `mcp==2.0.0`, in
 [2026-08-05-p1-mcp-front-door-design.md](superpowers/specs/2026-08-05-p1-mcp-front-door-design.md),
@@ -157,6 +163,21 @@ one that receives a transport fault retries the same call.
 would be the most dangerous sentence in this repository. Containment stays the
 network layout. An agent reached through MCP can still have three other MCP
 servers configured that `warden` has never heard of.
+
+**Two small items were pulled forward out of later phases while P1 was in the
+area, and one item planned inside P1 itself was struck.** The tool API's
+`X-Warden-Rule` header — [the README](../README.md#integration)'s own
+integration diagram already claimed the tool API set it, and it did not — and
+a test pinning what a
+*deny* records when the audit write itself fails, both landed during P1
+rather than waiting for whichever later phase would otherwise have carried
+them. In the other direction, the plan's Task 13 (an era-parity test between
+the MCP handshake and modern protocol revisions) was struck: Task 11b's
+decision to refuse the handshake era outright left no second era to hold
+parity against, so the test became unwritable by construction. What survived
+of it — a tool withheld from `tools/list` is still refused by rule, with a
+record, when called anyway; the surface serves exactly one protocol era —
+was folded into Task 12.
 
 ---
 

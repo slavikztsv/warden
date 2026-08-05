@@ -181,8 +181,10 @@ def test_both_profiles_hand_the_model_the_same_response_envelope(tmp_path):
 
     So if the two profiles' envelopes differed by even one key, a live A/B
     would be feeding the model different text and the comparison would not be
-    controlled. The broker always answers {"content", "rows"} (broker/app.py);
-    DirectDispatcher must too, for every tool.
+    controlled. The broker always answers {"content", "rows"} --
+    warden/broker/adapters/base.py's ToolResult, rendered verbatim by
+    warden/broker/app.py's _render(); DirectDispatcher must too, for every
+    tool.
     """
     db_path = tmp_path / "customers.db"
     seed_customers(db_path, count=5)

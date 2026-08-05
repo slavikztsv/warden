@@ -90,6 +90,18 @@ file under `warden/` ever contains one of this repo's own demo strings
    underlying loader rejects it at load time, the same way an unrecognised
    `[tools.<name>.args]` key already does.
 
+   **If you plan to turn on the MCP front door, every tool also needs a
+   `description` and a `title`** — two plain strings alongside `kind` in
+   `[tools.<name>]`, not inside the binding. Nothing else in this file
+   requires either: the tool API happily executes a tool that has neither.
+   The MCP surface advertises tools to a model, though, and a tool with no
+   name for itself is not something a model can choose to call correctly.
+   Leaving one unset is not a load-time error — the catalog loads, `warden
+   serve` starts — which is exactly why `warden config check --mcp` treats a
+   missing `description` or `title` as a hard failure on every tool, so the
+   omission is caught before a model meets it rather than discovered the same
+   way an unset `data_class` is (see above).
+
 3. **Mirror your tools' target kinds in `data.json`.** The policy never
    reasons about tool *names* — `warden/policies/authz.rego`'s R0 and R1b
    deny any call whose declared target kind disagrees with the catalog, and
@@ -125,6 +137,11 @@ file under `warden/` ever contains one of this repo's own demo strings
    rather than silent. It is the same consistency `warden serve`'s startup
    silently depends on holding, made inspectable and CI-able on its own; see
    `warden/broker/config/check.py`.
+
+   **Add `--mcp` once you plan to set `[mcp].enabled = true`.** It runs the
+   same checks plus one more: every tool must carry a `description` and a
+   `title`, which the checks above never require. Run it before flipping
+   `[mcp].enabled`, not after — see `docs/DEPLOYMENT.md`.
 
 5. **Run it.**
 

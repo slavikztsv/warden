@@ -36,6 +36,9 @@ against anything real.
   and the broker so the recorded digest matches what was evaluated.
 - Give the broker a writable audit path. It returns 503 and refuses to act
   when it cannot record.
+- Run `warden config check --catalog … --data … --mcp` before setting
+  `[mcp].enabled = true`. It demands a `description` and a `title` on every
+  tool, which nothing else in this list requires.
 
 ### Recommended
 
@@ -57,6 +60,58 @@ against anything real.
 
 ---
 
+## The MCP front door
+
+Off unless a deployment turns it on. `[mcp]` is an optional section in
+`warden.toml` — absent means disabled, exactly like every config written
+before this surface existed:
+
+| Key | Default | What it does |
+|---|---|---|
+| `enabled` | `false` | Mounts the MCP surface onto the same broker process, on the same `:8080`, sharing the tool API's one spine. |
+| `path` | `/mcp` | Where the surface listens, under `[broker].listen`. |
+| `host` | *(unset)* | The SDK's DNS-rebinding allow-list. Left unset, the SDK infers a loopback host and turns rebinding protection **on**, which answers **421** to every request arriving under a real hostname — name the host you will actually be reached on. |
+
+`[mcp].enabled = true` needs the `warden[mcp]` extra installed
+(`pip install -e './warden[mcp]'`). It pulls a second HTTP stack (`httpx2`,
+alongside the deliberately pinned `httpx`) and `opentelemetry-api`, so a
+deployment that never turns the surface on never carries either — and
+turning it on without the extra installed is a boot-time `ConfigError`, not a
+runtime surprise.
+
+**Run `warden config check --catalog … --data … --mcp` before enabling the
+surface, on both front doors.** Without `--mcp`, a tool needs no
+`description` or `title` — the tool API never reads either. With it, both
+are mandatory on every tool: the MCP surface advertises them to a model,
+which needs a name for a tool to call it correctly, and a catalog that loads
+and checks cleanly without them would otherwise advertise a tool with a blank
+label.
+
+**Do not run the broker under an OpenTelemetry auto-instrumentation
+wrapper** — `opentelemetry-instrument`, a Kubernetes OTel Operator webhook, or
+a site-wide `sitecustomize.py`. The MCP SDK installs an OpenTelemetry
+middleware as its outermost layer, so the broker installs a no-op tracer
+provider at boot and **refuses to start** if a real one was already
+installed. `set_tracer_provider()` is a process-global set-once: the first
+caller in the *process* wins, not the first caller in this codebase, so an
+external wrapper that installs a provider before the broker even imports
+would otherwise leave it believing telemetry was silenced while a live
+exporter kept running — spans naming tool calls and request ids, exported
+from the one process whose whole premise is being the only route out, with
+no audit record of any of it.
+
+**Reaching it from a local agent:** `warden mcp --broker URL --token-file
+PATH [--allow-http]` runs a stdio shim, launched inside the agent's own
+process tree, that forwards every call to the broker's MCP surface holding
+one task token. `--broker` must be the **full endpoint URL including the
+mount path** (for example `https://broker.example:8080/mcp`, not just the
+host) — the shim connects to it directly rather than appending `[mcp].path`
+itself. A plain `http://` URL is refused unless `--allow-http` is given,
+because the token would otherwise cross the wire in the clear on every
+forwarded call; that flag is for loopback development only.
+
+---
+
 ## Security validation
 
 ```bash
@@ -75,6 +130,7 @@ the shipped `data.json` instead of a mock.
 | The exploit | `.venv/bin/pytest tests/demo/test_injection_contained.py` | Runs the full attack and asserts the sinkhole received **zero bytes** |
 | Audit integrity | `.venv/bin/warden verify-chain --audit tests/golden/audit-4711.jsonl` | `chain intact: 7 records`; exit 1 on tampering |
 | Config coherence | `.venv/bin/warden config check --catalog demo/scenario/tools.toml --data demo/scenario/data.json` | Every catalogued tool has a policy target kind, and vice versa |
+| MCP config coherence | `.venv/bin/warden config check --catalog … --data … --mcp` | The above, plus a `description` and a `title` on every tool. Run before `[mcp].enabled = true` |
 | Containment | `./tests/demo/test_isolation.sh` | `agent-net` has no gateway and exactly one reachable host. **Requires Docker; not run by CI** |
 
 **The exploit is a regression test.** `tests/demo/test_injection_contained.py`
@@ -101,7 +157,8 @@ entirely with `curl`.
 | Run the control plane | `.venv/bin/warden control --config <control.toml>` |
 | All tests | `.venv/bin/pytest -v` |
 | Policy tests | `~/.cache/warden/opa-1.19.0 test warden/policies/ demo/scenario/data.json -v` |
-| Config check | `.venv/bin/warden config check --catalog … --data …` |
+| Config check | `.venv/bin/warden config check --catalog … --data … [--mcp]` |
+| Run the MCP shim | `.venv/bin/warden mcp --broker <URL incl. mount path> --token-file <path>` |
 | Replay a task | `.venv/bin/warden replay <task_id> --audit <path>` |
 | Verify the chain | `.venv/bin/warden verify-chain --audit <path>` |
 

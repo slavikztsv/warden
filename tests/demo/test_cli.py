@@ -194,8 +194,8 @@ def test_replay_with_no_matching_records_gives_a_clear_message(tmp_path, capsys)
 
 def test_taint_marker_appears_before_the_first_record_that_already_holds_pii():
     # task_state is the snapshot taken BEFORE the record's own call ran (see
-    # broker/app.py: `state = taint.snapshot(...)` happens before `decide`,
-    # before `execute`, before `record_read`). So the first record whose
+    # warden/broker/spine.py: `state = taint.snapshot(...)` happens before
+    # `decide`, before `execute`, before `record_read`). So the first record whose
     # task_state carries "pii" is the one that *followed* the read that
     # caused it — the marker belongs directly above that record's own line,
     # not below it.

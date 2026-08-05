@@ -177,7 +177,8 @@ def test_describe_resolves_which_subjects_a_query_names(db):
     assert cat.describe(
         "query_customers", {"filter": "pro"}).subjects == ("*",)
     # A malformed id raises out of describe(), which the broker maps to
-    # input.malformed (broker/app.py) — refused with a reason, not guessed at.
+    # input.malformed (warden/broker/spine.py) — refused with a reason, not
+    # guessed at.
     with pytest.raises(ValueError):
         cat.describe("query_customers", {"filter": "id=notanumber"})
 

@@ -80,8 +80,8 @@ def test_the_shipped_demo_configuration_is_consistent():
 # No check exists that every argument an adapter dereferences unconditionally
 # (args[name], not args.get(name, ...)) is `required = true` in the schema.
 # When it is not, describe() raises KeyError, and the broker's widened
-# client-caused branch (broker/app.py) audits it as input.malformed -- i.e.
-# it blames the AGENT for what is really a config-authoring defect. Each
+# client-caused branch (warden/broker/spine.py) audits it as input.malformed
+# -- i.e. it blames the AGENT for what is really a config-authoring defect. Each
 # adapter class declares its own REQUIRED_ARGS (see broker/adapters/*.py),
 # the way _check_mail_binding already polices the analogous
 # recipients_arg-in-fields case for mail.

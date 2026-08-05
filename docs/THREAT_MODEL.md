@@ -217,3 +217,90 @@ quietly fixed. Each is a real property of the system as shipped.
   in the proxy URL, because a third-party SDK owns its own HTTP client and will
   not set a Bearer header — `proxy_token()` accepts both forms and anything
   else is audited as `unauthenticated`.
+
+- **The MCP front door adds six more, all found while building it.**
+  `warden/broker/mcp.py` renders the same `Outcome` the tool API does — it is
+  the same decision, over a second transport — so most of the threat model
+  above carries over unchanged. What follows is what does not carry over.
+
+  - **The front door contains nothing.** An agent reached over MCP can hold
+    other MCP servers `warden` has never heard of, and use them however it
+    likes. Containment was never a property the tool API added — the network
+    is what contains an agent, and the egress proxy is what closes the gap a
+    brokered tool API cannot. Fronting the broker with MCP adds a way to
+    *reach* the same tool API without writing agent code; it does not add a
+    boundary the network was not already providing. Believing otherwise would
+    be the single most dangerous sentence in this document.
+  - **The local/stdio path is uncontained.** `warden mcp` runs inside the
+    local agent's own process tree, on the operator's machine — not on
+    `agent-net` — and forwards to the broker holding one task token. That
+    machine is where a deployment following this repo's `compose.yml`
+    publishes `broker-control`'s port to the host, and the control plane
+    authenticates nobody (see "Authenticating the control plane" above): the
+    local agent's own shell has the same route to it the operator does, so it
+    can mint itself any authority it likes, including a fresh `task_id` that
+    resets the row budget. Tool brokering, policy, budgets and audit still
+    apply to whatever goes through the shim; the network boundary that makes
+    the tool API meaningfully contained does not exist on a laptop, and MCP
+    does not manufacture one.
+  - **Rule names in denials are a zero-cost enumeration oracle aimed at the
+    model.** Every refusal names the rule that fired — `rows.bounded`,
+    `egress.pii_sink`, and so on — because a model that can read *why* it was
+    refused adapts, and one that receives an opaque failure retries the same
+    call; the README's best numbers depend on this. The same design lets a
+    subverted agent map the policy surface for free: `DENY_PRECEDENCE`
+    (`warden/broker/pdp.py`) is ordered so each reported rule is a *positive*
+    assertion — "this specific control fired," never "something, unnamed,
+    objected" — a denied call is refused before `TaintTracker.record_read`
+    ever runs, so probing costs nothing against the row budget, and nothing
+    rate-limits a task's refusals, so a script can walk every rule's boundary
+    in a loop for free. Keeping the rule names is deliberate; the residual is
+    stated rather than closed. A per-task denial counter would make a search
+    of this kind visible in replay. It is not built — it would need a field on
+    `TaintTracker` and a decision about whether it enters the policy input,
+    both of which the durable task-state work in [ROADMAP.md](ROADMAP.md)
+    touches anyway, so it is planned there rather than built twice.
+  - **A non-object `arguments` value is refused with zero audit records on
+    MCP, while the same caller mistake on the HTTP door is an audited
+    `input.malformed` deny.** `tools/call` with `arguments` set to a string or
+    a list is rejected by the MCP SDK's own pydantic validation before any
+    warden handler runs — a protocol error, nothing written to the log. The
+    identical mistake on the tool API (an `args` body that is not a JSON
+    object) reaches the spine and is denied and recorded like any other
+    malformed call. This is reachable by any MCP client today, not a
+    hypothetical, and it is the one place the two doors disagree about
+    whether an attempt is recorded at all. Closing it needs `ServerMiddleware`,
+    which the MCP front door's build scoped out.
+    `tests/warden/test_surface_parity.py::test_non_object_arguments_are_recorded_on_http_and_invisible_on_mcp`
+    pins the current behaviour so it is visible rather than folklore.
+  - **A second unaudited refusal shape exists in the SDK, currently latent.**
+    The 2026-07-28 transport can check a `tools/call`'s `Mcp-Param-*` headers
+    against the called tool's schema before dispatch, and answer a mismatch
+    with a 400 the spine never sees — the same shape as the entry above, by a
+    different route. Measured: it validates nothing today. The SDK only
+    checks a property a tool's schema opts into via an `x-mcp-header`
+    annotation, and warden's generated schemas
+    (`warden/broker/schema_json.py`) emit none, so the check has nothing to
+    reject. The lookup is kept answered from the catalog rather than removed,
+    so the day that vocabulary grows an opt-in the check works correctly
+    instead of silently — but that same day, this unaudited 400 becomes
+    reachable. The cost is latent, not current, and that distinction is worth
+    keeping honest rather than rounding off in either direction.
+  - **The era gate lets an unauthenticated caller drive audit writes.** Every
+    request naming a protocol revision `warden` does not serve — absent,
+    handshake-era, or a duplicated `MCP-Protocol-Version` header — is refused
+    before it reaches authentication at all, and that refusal is still
+    recorded: a sentinel row, with no token and no parsed body behind it. That
+    is the same trade `warden/broker/proxy.py` already makes for an
+    unauthenticated non-CONNECT probe on the egress side: an unrecorded
+    refusal is what let a caller probe the enforcement point indefinitely by
+    adding one header, before this gate existed, and a caller with no
+    credential at all being able to write sentinel rows to the audit log is
+    the smaller cost of the two. Accepted, not overlooked.
+
+  The surface-parity and denial tests above drive a **mocked OPA with a
+  hardcoded payload**, as every denial test in this repository does — they
+  prove the rendering pipeline and that enforcement does not depend on the
+  `tools/list` filter, not that the rego computes `tools.allowed` from
+  `principal.allowed_tools`. That property is covered separately, by the 53
+  `opa test warden/policies/` cases.

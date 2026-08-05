@@ -303,10 +303,10 @@ owns its own HTTP client and will not set a custom header. A refused call gets
 
 **The two halves have different reach.** Egress works with anything that honours
 proxy variables, including a third-party agent you cannot modify. The tool API
-does not: something has to call `BROKER_URL`, which today means your own agent
-code. Fronting the broker with an MCP server, so an off-the-shelf agent gets
-brokered tools without changing, is the obvious next step and is
-[not built](#known-limitations).
+is narrower: something has to call `BROKER_URL`, or speak MCP to the front
+door that now sits beside it — off by default, and it brokers tools without
+containing anything, exactly like the tool API it fronts. See
+[limitations](#known-limitations).
 
 ### Using it with your own tools
 
@@ -439,8 +439,9 @@ in [*Before the Tool Call*](https://arxiv.org/html/2603.20953v1) (2026), which
 otherwise reaches the same design, and `report` shows why they matter: **4
 refusals on volume, then 37 on scope.**
 
-**What it does not do:** no MCP front end, one worker only, in-memory state that
-does not survive a restart, no managed service, no UI. See
+**What it does not do:** one worker only, in-memory state that does not survive
+a restart, no managed service, no UI — and an MCP front door that exists but
+ships off by default, brokering tools without containing anything. See
 [limitations](#known-limitations).
 
 ⚪ means their docs did not say, not that they cannot; where a ⚪ carries a
@@ -473,16 +474,19 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   answer) or redacting before the tool result comes back. This was not planned:
   the data-flow rule refused the agent's *own* model call during a live run,
   which forced the decision.
-- **The tool API needs an agent you can point at it.** Something has to call
-  `BROKER_URL`, so today that means an agent whose code or config you control.
-  Egress has no such limit: it works for any client that respects proxy settings,
-  because the network is what contains it. The fix is an **MCP server** (Model
-  Context Protocol) **in front of the broker**, so an off-the-shelf agent gets
-  brokered tools without changing.
-  The adapter design already separates what a tool *is* from how it is *reached*,
-  so that is a new front door rather than a rebuild. Not built, and not claimed —
-  [designed](docs/superpowers/specs/2026-08-05-third-party-agent-integration-design.md),
-  and sequenced in [docs/ROADMAP.md](docs/ROADMAP.md).
+- **The tool API needed an agent you could point at it — now an MCP client
+  will do too.** Something still has to call `BROKER_URL`, or speak MCP to the
+  front door beside it; the adapter design already separates what a tool *is*
+  from how it is *reached*, which is why that front door didn't need a
+  rebuild. **It now exists** — `warden mcp` plus an `[mcp]` section in
+  `warden.toml`, both **off by default**. An off-the-shelf MCP-capable agent
+  gets brokered tools without changing its own code, which narrows this
+  limitation; it does not remove it. **MCP brokers tools; it does not contain
+  anything.** A local agent, running on the operator's own machine, still has
+  a route to the unauthenticated control plane that no client config closes.
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers turning it on;
+  [docs/ROADMAP.md](docs/ROADMAP.md) covers why `❌ Production` does not move
+  for it.
 - **There are four adapter kinds, and adding a fifth is not a config change.**
   `docstore`, `sql`, `http` and `mail` cover the demo's backends. A gRPC
   service, an S3 bucket or a GraphQL API has no adapter, and writing one means
