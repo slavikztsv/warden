@@ -2263,12 +2263,29 @@ git commit -m "feat: refuse every MCP revision but the modern one, and record th
 
 ### Task 12: `tools/list` over MCP, and the list-is-not-enforcement test
 
+**Amended during execution.** Task 11 already shipped the listing itself and two
+of the tests this task planned — `test_the_listing_is_what_the_token_grants_with_schemas`
+and `test_an_unauthenticated_listing_is_refused_and_recorded`. Do not duplicate
+them. What remains unwritten is the property that matters most, plus the residue
+of the struck Task 13:
+
+1. **A tool filtered OUT of the listing is still refused by `tools.allowed`,
+   with an audit record, when called anyway.** This is the whole reason the
+   filter is allowed to exist. Nothing currently tests it: the existing listing
+   test grants `send_email` rather than withholding it, so "the filter is
+   usability, never enforcement" is asserted nowhere.
+2. **The surface serves exactly one protocol era.** This replaces the struck
+   Task 13's era-parity test, which is unwritable now that the handshake era is
+   refused. Assert that the modern era is served and that nothing else is —
+   drawing the version list from `mcp_types.version` rather than hardcoding it,
+   so the day the SDK adds a modern revision the test says so.
+
 **Files:**
 - Test: `tests/warden/test_mcp_surface.py` (append)
 
 **Interfaces:**
-- Consumes: `on_list_tools` from Task 11.
-- Produces: nothing new — this task proves Task 11's listing behaves.
+- Consumes: `on_list_tools` from Task 11, the era gate from Task 11b.
+- Produces: nothing new — this task proves existing behaviour.
 
 - [ ] **Step 1: Write the tests**
 
@@ -2360,7 +2377,31 @@ git commit -m "test: listing is scoped to the token, and never the thing enforci
 
 ---
 
-### Task 13: Era parity and the catch-all
+### Task 13: ~~Era parity and the catch-all~~ — MERGED INTO TASK 12
+
+Struck during execution. Both halves are gone for different reasons, and both
+reasons are consequences of decisions taken after this plan was written:
+
+**The era-parity half is obsolete by construction.** It asked that the same
+forced exception render identically at the 2026-07-28 and 2025-11-25 revisions,
+because the handshake-era dispatcher emits `str(exc)` verbatim while the modern
+one scrubs to `-32603`. Task 11b refuses the handshake era outright, so there is
+exactly one era to render in and nothing to hold parity with. The test would have
+had to assert that an unreachable code path behaves well.
+
+**The catch-all half already landed** in Task 11's fix round, which added
+`logger.exception` to both handlers and separated the recorded/not-recorded
+messages: `test_no_rendering_repeats_the_exception_text_it_was_handed`,
+`test_every_kind_has_a_rendering_and_it_is_the_right_channel`, and
+`test_an_unrecordable_decision_is_a_protocol_error_naming_no_paths`.
+
+What genuinely remains is Task 12's list-is-not-enforcement test, which no task
+has yet written, plus one assertion replacing era parity: that the surface serves
+one era and only one. Both are folded into Task 12 above.
+
+---
+
+### Task 13 (struck — see above)
 
 **Files:**
 - Test: `tests/warden/test_mcp_surface.py` (append)
