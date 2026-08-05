@@ -273,6 +273,28 @@ quietly fixed. Each is a real property of the system as shipped.
     which the MCP front door's build scoped out.
     `tests/warden/test_surface_parity.py::test_non_object_arguments_are_recorded_on_http_and_invisible_on_mcp`
     pins the current behaviour so it is visible rather than folklore.
+  - **An explicit `args: null` is denied unconditionally on the tool API, but
+    on MCP it can execute.** `{"args": null}` is a well-formed HTTP body
+    carrying an explicit null, not an absent key, so `app.py`'s `_parse_args`
+    returns the spine's reserved `None` and the call is denied as
+    `Kind.MALFORMED_BODY_DENIED` — `input.malformed` — without the tool's
+    schema ever being consulted. MCP's `"arguments": null` normalises to `{}`
+    inside `on_call_tool` before the spine is ever called, the same
+    normalisation an absent `arguments` gets, so the call is judged on the
+    tool's actual schema like any other MCP call. For a tool that requires at
+    least one argument (every tool in the shipped demo catalog), that check
+    also fails, landing on `Kind.SCHEMA_INVALID_DENIED` — which happens to
+    share `MALFORMED_BODY_DENIED`'s rule string and `{}` digest, so the two
+    doors' audit records are byte-identical for those tools despite being two
+    different `Kind`s underneath. For a tool whose schema has no required
+    arguments — legitimate catalog configuration, just absent from the
+    shipped demo — MCP's normalised `{}` passes that schema and the call
+    proceeds to `describe()`/`decide()`/`execute()`: allowed and executed,
+    while the tool API refuses the identical logical request outright. This
+    sits right beside the non-object-`arguments` case above, in the same
+    surface-parity test file:
+    `tests/warden/test_surface_parity.py::test_explicit_null_args_is_denied_on_http_and_can_execute_on_mcp`
+    pins it.
   - **A second unaudited refusal shape exists in the SDK, currently latent.**
     The 2026-07-28 transport can check a `tools/call`'s `Mcp-Param-*` headers
     against the called tool's schema before dispatch, and answer a mismatch

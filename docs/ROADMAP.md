@@ -151,7 +151,11 @@ it.** `verify → snapshot → validate → decide → record → execute` is ex
 and called by both `POST /v1/tools/{tool}/invoke` and MCP's `tools/call`. A
 separate translating process would be free to drift from the thing it translates
 for; a shared spine cannot, and a test pins that the two surfaces produce
-byte-identical decisions for identical calls.
+byte-identical decisions for every case it drives — two reachable inputs where
+they provably do not (a non-object `arguments` value, and an explicit
+`args: null` against a tool schema with no required arguments) are pinned as
+documented exceptions instead, not silently passed over; see
+[docs/THREAT_MODEL.md](THREAT_MODEL.md).
 
 **A refusal has to be legible to the model.** A policy denial is returned as a
 *tool execution* error carrying the rule name, not a protocol error. The README's

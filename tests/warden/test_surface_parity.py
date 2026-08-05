@@ -15,21 +15,41 @@ Coverage note -- not every `Kind` in `warden/broker/spine.py` is reachable
 through both doors, and this file says so at each Kind's own test rather
 than silently omitting it:
 
-* `Kind.MALFORMED_BODY_DENIED` is HTTP-only, and for `arguments: null`
-  specifically that IS a benign transport difference, not a divergence: it
-  fires when `warden/broker/app.py`'s `_parse_args` cannot parse the request
-  body as a JSON object at all -- `args=None` reaches the spine, which
-  reserves that exact value for "a body that did not parse". MCP's JSON-RPC
-  transport never hands a handler an unparsed body: `params.arguments` is
-  already a parsed value (or absent, which `on_call_tool` normalises to
-  `{}`, never to `None`) by the time the handler runs. See
-  `test_malformed_body_is_denied_over_http_only`.
+* `Kind.MALFORMED_BODY_DENIED` is HTTP-only. `warden/broker/app.py`'s
+  `_parse_args` produces its reserved `args=None` for TWO different HTTP
+  inputs: a body that is not parseable JSON at all (see
+  `test_malformed_body_is_denied_over_http_only`), and a well-formed body
+  carrying an EXPLICIT `"args": null` -- `body.get("args", {})` returns the
+  literal `None` in that case, not the `{}` default, because the key is
+  present. MCP's JSON-RPC transport never hands a handler an unparsed body,
+  so the first case has no MCP side to compare against at all. The second
+  --  `"arguments": null`, explicit -- does have an MCP equivalent, and
+  IT IS NOT BENIGN, despite once being described that way here: `on_call_tool`
+  normalises a null (or absent) `arguments` to `{}` BEFORE calling the
+  spine, so the call is judged on the tool's actual schema like any other
+  MCP call, landing on `Kind.SCHEMA_INVALID_DENIED` rather than
+  `Kind.MALFORMED_BODY_DENIED`. For the shipped demo catalog, where every
+  tool requires at least one argument, that distinction is invisible in the
+  audit record: `MALFORMED_BODY_DENIED` and `SCHEMA_INVALID_DENIED` share
+  the same rule string (`MALFORMED = "input.malformed"`, spine.py) and both
+  digest `{}`, so the two records come out byte-identical despite being two
+  different `Kind`s under the hood. For a tool whose schema has NO required
+  arguments, though, the two diverge in OUTCOME, not merely in internal
+  labelling: HTTP's `MALFORMED_BODY_DENIED` denies unconditionally, never
+  consulting the schema, while MCP's normalised `{}` PASSES that schema and
+  the call proceeds to `describe()`/`decide()`/`execute()` -- allowed and
+  executed, if policy permits, for the exact request HTTP flatly refused.
+  Measured, not hypothetical: any deployment's catalog may define a tool
+  with no required arguments (the shipped one happens not to). Pinned by
+  `test_explicit_null_args_is_denied_on_http_and_can_execute_on_mcp` and
+  documented in docs/THREAT_MODEL.md, next to the non-object-arguments case
+  below, which it sits right beside.
 
-  A DIFFERENT, REAL divergence sits right next to it, and is not benign:
-  `arguments` of a well-formed but NON-OBJECT type (a string, a list, ...)
-  is rejected by the SDK's own pydantic validation before ANY handler runs
-  -- -32602, zero audit records -- while the identical caller mistake on
-  the HTTP door (`args` as a non-dict) is denied and AUDITED as
+  A DIFFERENT, REAL divergence sits right next to it, and is not benign
+  either: `arguments` of a well-formed but NON-OBJECT type (a string, a
+  list, ...) is rejected by the SDK's own pydantic validation before ANY
+  handler runs -- -32602, zero audit records -- while the identical caller
+  mistake on the HTTP door (`args` as a non-dict) is denied and AUDITED as
   input.malformed, the same as the null-body case above. This is reachable
   by any MCP client today, not a hypothetical: the two doors do not agree
   on whether the attempt is recorded at all. Pinned, not glossed over, by
@@ -618,6 +638,120 @@ def test_non_object_arguments_are_recorded_on_http_and_invisible_on_mcp(tmp_path
         # The divergence, stated as a fact: HTTP recorded the attempt: MCP
         # added nothing at all.
         assert audit.records() == after_http
+
+
+def test_explicit_null_args_is_denied_on_http_and_can_execute_on_mcp(tmp_path):
+    """A SECOND real divergence, next to the non-object-arguments one above
+    -- undocumented until now, and found by driving the case the module
+    docstring used to wave off as "benign".
+
+    HTTP: `{"args": null}` is a well-formed JSON body carrying an EXPLICIT
+    null, not an absent key -- `app.py`'s `_parse_args` does
+    `body.get("args", {})`, which returns the literal `None` here because
+    the key IS present, not the `{}` default. `args=None` reaches the spine
+    and is denied UNCONDITIONALLY as `Kind.MALFORMED_BODY_DENIED` --
+    `input.malformed` -- without ever consulting the tool's schema.
+
+    MCP: `"arguments": null` in a well-formed `tools/call` normalises to
+    `{}` inside `on_call_tool`, BEFORE the spine is ever called -- the same
+    normalisation an ABSENT `arguments` gets. The call then proceeds to the
+    spine like any other, and is judged on the tool's ACTUAL schema.
+
+    For a tool that requires at least one argument (every tool in the
+    shipped demo catalog), that schema check fails too, landing on
+    `Kind.SCHEMA_INVALID_DENIED` -- which happens to share spine.py's same
+    `MALFORMED = "input.malformed"` rule string and the same `{}` digest as
+    `MALFORMED_BODY_DENIED`, so the two doors' audit records come out
+    byte-identical despite being different `Kind`s underneath. That
+    coincidence is what let the parity claim look true for this input.
+
+    For a tool whose schema has NO required arguments -- legitimate
+    catalog configuration, just absent from the shipped demo -- MCP's
+    normalised `{}` PASSES that schema, so the call proceeds all the way to
+    `describe()`/`decide()`/`execute()`: ALLOWED and EXECUTED. HTTP still
+    denies the identical logical request outright, because
+    `MALFORMED_BODY_DENIED` never looks at the schema at all. That is the
+    divergence this test pins: not a wording nicety, but one door executing
+    a tool call the other door refuses to even evaluate.
+    """
+    from warden.broker.adapters.base import ToolResult, ToolTarget
+    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
+    from warden.broker.config.schema import ToolSchema
+    from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
+
+    from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.identity import Signer
+
+    class NoArgsAdapter:
+        target_kind = "doc"
+
+        def describe(self, args):
+            return ToolTarget(kind="doc", path="/x")
+
+        def execute(self, args):
+            return ToolResult(content="ok", data_class="public")
+
+    # A schema with NO required arguments at all -- not `{"doc_id": ...}`
+    # like the demo catalog's own read_document, which is exactly what
+    # makes this reachable: `catalog.validate(tool, {})` succeeds here,
+    # where it fails for every shipped tool.
+    catalog = ToolCatalog({
+        "no_required_args": CatalogEntry(
+            kind="docstore",
+            target_kind="doc",
+            schema=ToolSchema(args={}),
+            adapter=NoArgsAdapter(),
+        )
+    })
+
+    signer = Signer.generate()
+    token = token_for(signer, allowed_tools=["no_required_args"])
+    with build_with_mcp(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, catalog=catalog
+    ) as (client, audit):
+        # HTTP: explicit null args, denied unconditionally -- the schema is
+        # never consulted for MALFORMED_BODY_DENIED.
+        http = client.post(
+            "/v1/tools/no_required_args/invoke",
+            json={"args": None},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert http.status_code == 403
+        assert http.json()["rule"] == "input.malformed"
+
+        # MCP: explicit null arguments, normalised to {} before the spine
+        # ever sees it, and {} satisfies this tool's (empty) schema.
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "no_required_args",
+                "arguments": None,
+                "_meta": {
+                    PROTOCOL_VERSION_META_KEY: LATEST_MODERN_VERSION,
+                    CLIENT_CAPABILITIES_META_KEY: {},
+                },
+            },
+        }
+        headers = {
+            "MCP-Protocol-Version": LATEST_MODERN_VERSION,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "no_required_args",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {token}",
+        }
+        mcp_response = client.post("/mcp", json=body, headers=headers)
+        assert mcp_response.status_code == 200
+        result = mcp_response.json()["result"]
+        assert result["isError"] is False
+        assert result["content"][0]["text"] == "ok"
+
+        # The divergence, stated as a fact: one denial, one execution, for
+        # the identical logical request.
+        records = audit.records()
+    assert [r["decision"] for r in records] == ["deny", "allow"]
+    assert records[0]["rule"] == "input.malformed"
 
 
 def test_listing_has_no_http_door_and_writes_no_record(tmp_path):
