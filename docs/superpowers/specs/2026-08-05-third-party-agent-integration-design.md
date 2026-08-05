@@ -1,11 +1,34 @@
 # Third-party agent integration
 
-**Status:** proposed design, not yet implemented
+**Status:** ladder overview. **Superseded for P1** by
+[2026-08-05-p1-mcp-front-door-design.md](2026-08-05-p1-mcp-front-door-design.md),
+which is authoritative wherever the two disagree.
 **Occasioned by:** the README's own limitation — *"the tool API needs an agent you
 can point at it"* — and the fix it names but does not build: an MCP server in
 front of the broker.
 **Companion:** [docs/ROADMAP.md](../../ROADMAP.md), which sequences this against
 the production-readiness work.
+
+> [!IMPORTANT]
+> **Four claims below were wrong, and the P1 spec corrects them.** Kept rather
+> than silently edited, because each was found by reading the code or the SDK
+> rather than by rethinking the design.
+>
+> 1. **The spine signature.** `decide_and_execute(token, ...)` takes an
+>    already-verified token, which strands `_refuse_unauthenticated` on each
+>    surface — the one branch whose whole purpose is that a refusal must be
+>    recorded. The spine must take the raw credential.
+> 2. **`X-Warden-Rule`.** The tool API does not set it; only `proxy.py` does.
+>    (`README.md`'s integration diagram is wrong about this too. P1 adds the
+>    header rather than editing the diagram.)
+> 3. **The parity test is a tautology** as described here: if both surfaces call
+>    one function, "identical decisions" is true by construction. It has to
+>    compare audit records and taint effects end to end instead.
+> 4. **Rung 2 does not make the local case contained.** The stdio shim's target
+>    deployment puts the agent on the operator's host, which is where the
+>    unauthenticated minter is published. Renewal was also under-specified: a
+>    `Client` captures its headers once at construction, so re-reading a token
+>    file per request needs an explicit auth hook.
 
 ## The problem
 

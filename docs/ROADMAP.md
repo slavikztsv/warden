@@ -114,17 +114,28 @@ it"*. Egress has no such limit, because the network contains it. So third-party
 support is not one feature, it is four rungs, and a deployment picks the lowest
 one that does what it needs.
 
-| | Rung | What the agent's owner changes | Works with |
-|---|---|---|---|
-| **0** | Egress proxy only | Five environment variables | Anything that honours proxy variables. **Works today.** |
-| **1** | MCP front door | One entry in an MCP client config | Any MCP-capable agent |
-| **2** | `warden run` launcher | Nothing — the launcher writes the config | Any MCP-capable agent, started by an operator |
-| **3** | Native tool API | Agent code calls `BROKER_URL` | Your own agent. **Works today.** |
+| | Rung | What the agent's owner changes | Works with | Contained? |
+|---|---|---|---|---|
+| **0** | Egress proxy only | Five environment variables | Anything that honours proxy variables. **Works today.** | Yes — the network is the boundary |
+| **1** | MCP front door | One entry in an MCP client config | Any MCP-capable agent | Only where you control the agent's network |
+| **2** | `warden run` launcher | Nothing — the launcher writes the config | Any MCP-capable agent, started by an operator | Same as rung 1 |
+| **3** | Native tool API | Agent code calls `BROKER_URL` | Your own agent. **Works today.** | Yes |
+
+**Rungs 1 and 2 do not contain a local agent, and the ladder should not imply
+they do.** An agent running on an operator's own machine has a route to the
+control plane — `compose.yml` publishes it to the host, and it authenticates
+nobody by design, so the agent's shell can mint itself unlimited authority. The
+containment argument in the threat model is topological, and that topology does
+not exist on a laptop. Tool brokering, policy, budgets and audit all still
+apply there; egress containment does not. Fixing it is § C1, not a doc change.
 
 Rung 0 already ships and is the honest answer for a truly closed agent: it
 contains the network without brokering a single tool. Rung 3 already ships and is
-the most capable. **The plan is rungs 1 and 2**, and the design is in
-[2026-08-05-third-party-agent-integration-design.md](superpowers/specs/2026-08-05-third-party-agent-integration-design.md).
+the most capable. **The plan is rungs 1 and 2.** The ladder overview is in
+[2026-08-05-third-party-agent-integration-design.md](superpowers/specs/2026-08-05-third-party-agent-integration-design.md);
+rung 1 is designed in full, and against a verified `mcp==2.0.0`, in
+[2026-08-05-p1-mcp-front-door-design.md](superpowers/specs/2026-08-05-p1-mcp-front-door-design.md),
+which is authoritative where the two disagree.
 
 Three things about that design belong here, in the roadmap, because they are
 decisions rather than details:
