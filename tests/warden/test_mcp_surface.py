@@ -275,23 +275,36 @@ def test_an_unauthenticated_call_is_a_protocol_error_recorded_once(tmp_path):
 def test_an_authenticated_call_is_decided_once_not_twice(tmp_path):
     """The same inline-listing hazard, on the path that succeeds: one
     tools/call must reach the spine once, however many times the SDK consults
-    the tool catalog on its way there."""
+    the tool catalog on its way there.
+
+    `list_tools` is the load-bearing half of this and used to be missing. The
+    inline lookup calls list_tools, NOT handle_tool_call, so a version of this
+    test that spied only the latter passed with the guard deleted.
+
+    The counts are measured, both ways. Guard on: handle_tool_call 1,
+    list_tools 1 -- that one listing is the SDK client's own `tools/list`,
+    which it issues before calling. Guard replaced by `lambda ctx: False`:
+    handle_tool_call 1, list_tools 2. So the number below is what fails if the
+    guard ever stops firing.
+    """
     from tests.warden.test_app import build_with_mcp, token_for
     from warden.broker.identity import Signer
 
-    calls = []
+    decided, listed = [], []
     signer = Signer.generate()
     with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
         client,
         audit,
     ):
         spine = client.app.state.spine
-        real = spine.handle_tool_call
-        spine.handle_tool_call = lambda *a: (calls.append(a), real(*a))[1]
+        decide, listing = spine.handle_tool_call, spine.list_tools
+        spine.handle_tool_call = lambda *a: (decided.append(a), decide(*a))[1]
+        spine.list_tools = lambda *a: (listed.append(a), listing(*a))[1]
         result = call_tool(client, token_for(signer), "read_document", {"doc_id": "a"})
 
     assert result.is_error is False
-    assert len(calls) == 1
+    assert len(decided) == 1
+    assert len(listed) == 1, "the SDK's inline schema lookup must not reach the spine"
     assert [r["decision"] for r in audit.records()] == ["allow"]
 
 
@@ -369,7 +382,7 @@ def test_a_failure_after_the_action_says_not_to_repeat_the_call(tmp_path):
     # The one durable allow record, named so a caller can find what happened.
     records = audit.records()
     assert [r["decision"] for r in records] == ["allow"]
-    assert str(records[0]["seq"]) in text
+    assert f"(audit record {records[0]['seq']})" in text
     # And nothing of the failure itself.
     assert "upstream on fire" not in text
     assert "x.internal" not in text
@@ -478,7 +491,7 @@ def test_the_surface_answers_only_under_the_configured_host(tmp_path):
 # --- Rendering, without a transport ----------------------------------------
 
 
-def test_no_rendering_repeats_the_exception_text_it_was_handed(tmp_path):
+def test_no_rendering_repeats_the_exception_text_it_was_handed():
     """Every Outcome whose message is str(exc) is rendered without it.
 
     Which kinds those are is read off the spine's own groupings rather than
@@ -509,19 +522,35 @@ def test_no_rendering_repeats_the_exception_text_it_was_handed(tmp_path):
         assert "audit.jsonl" not in rendered, kind
 
 
-def test_every_kind_has_a_rendering(tmp_path):
-    """A Kind with no branch must be a protocol error, never an
-    AttributeError escaping into the transport."""
+def test_every_kind_has_a_rendering_and_it_is_the_right_channel():
+    """Each Kind renders on the channel its meaning requires, and none of them
+    escapes as a bare Python exception.
+
+    Split by channel rather than suppressed: an earlier version wrapped the
+    assert in `contextlib.suppress(MCPError)`, so a Kind that must be a TOOL
+    error (a denial a model can adapt to) would have passed by raising a
+    protocol error instead -- the exact confusion this surface exists to
+    avoid.
+    """
     from mcp.shared.exceptions import MCPError
 
     from warden.broker.mcp import render_call
-    from warden.broker.spine import Kind, Outcome
+    from warden.broker.refusals import AFTER_EXECUTE
+    from warden.broker.spine import AUDIT_UNAVAILABLE, DENIED, Kind, Outcome
 
-    for kind in Kind:
-        if kind is Kind.EXECUTED:
-            continue
-        with contextlib.suppress(MCPError):
-            assert render_call(Outcome(kind=kind, message="m")).is_error is True
+    tool_errors = DENIED | AFTER_EXECUTE | {Kind.DESCRIBE_BACKEND_FAULT}
+    protocol_errors = AUDIT_UNAVAILABLE | {Kind.UNAUTHENTICATED, Kind.LISTED}
+    # No Kind is unaccounted for, so a new one added to spine.py fails here
+    # rather than quietly landing in whichever branch happens to catch it.
+    assert tool_errors | protocol_errors | {Kind.EXECUTED} == set(Kind)
+
+    for kind in tool_errors:
+        result = render_call(Outcome(kind=kind, rule="r", message="m", audit_seq=3))
+        assert result.is_error is True, kind
+        assert result.content[0].text, kind
+    for kind in protocol_errors:
+        with pytest.raises(MCPError):
+            render_call(Outcome(kind=kind, rule="r", message="m", audit_seq=3))
 
 
 # --- The wiring ------------------------------------------------------------
@@ -599,10 +628,273 @@ def test_enabling_the_surface_without_the_extra_fails_at_boot(tmp_path, monkeypa
     from warden.broker.identity import Signer
 
     # What an absent extra looks like from create_app's import site, without
-    # uninstalling anything: a None in sys.modules makes the import raise
-    # ImportError, which is the branch under test.
-    monkeypatch.setitem(sys.modules, "warden.broker.mcp", None)
+    # uninstalling anything: evict warden.broker.mcp so the import re-executes
+    # the module, and poison `mcp` so its own `from mcp import types` raises
+    # ImportError(name="mcp") -- which is the branch under test. Poisoning
+    # warden.broker.mcp directly would NOT exercise it: that raises
+    # ImportError(name="warden.broker.mcp"), a first-party defect create_app
+    # deliberately re-raises rather than blaming on the extra.
+    monkeypatch.delitem(sys.modules, "warden.broker.mcp", raising=False)
+    monkeypatch.setitem(sys.modules, "mcp", None)
     signer = Signer.generate()
     with pytest.raises(ConfigError, match=r"warden\[mcp\]"):
         with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}):
             pass  # pragma: no cover
+
+
+# --- The handshake era, driven raw -----------------------------------------
+#
+# Every test above goes through the SDK's Client, which negotiates 2026-07-28.
+# That leaves the OTHER era -- the one a bare `POST /mcp` with no
+# MCP-Protocol-Version header lands on, i.e. the default for anything that is
+# not this SDK -- with no coverage at all. It is the era that skips the header
+# rung `_is_internal_schema_lookup` depends on, and the era whose dispatcher
+# puts `str(exc)` on the wire verbatim. Raw POSTs are the only way to reach it.
+
+
+LEGACY_LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+
+def modern_list(routed_method="tools/list"):
+    """A 2026-07-28 `tools/list` envelope and its headers, built by hand.
+
+    `routed_method` is what the `Mcp-Method` header claims, which the caller
+    can make disagree with the body on purpose.
+    """
+    from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
+    from mcp_types.version import LATEST_MODERN_VERSION
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {
+            "_meta": {
+                PROTOCOL_VERSION_META_KEY: LATEST_MODERN_VERSION,
+                CLIENT_CAPABILITIES_META_KEY: {},
+            }
+        },
+    }
+    headers = {
+        "MCP-Protocol-Version": LATEST_MODERN_VERSION,
+        "Mcp-Method": routed_method,
+        "Accept": "application/json, text/event-stream",
+    }
+    return body, headers
+
+
+def test_a_spoofed_routing_header_cannot_buy_an_unrecorded_probe(tmp_path):
+    """The audit-evasion vector this guard shipped with, as a regression test.
+
+    `_is_internal_schema_lookup` rests on the SDK rejecting a request whose
+    `Mcp-Method` disagrees with its JSON-RPC method. That rung exists on the
+    modern transport only: `StreamableHTTPSessionManager._handle_request`
+    routes on `MCP-Protocol-Version` alone, and an absent or handshake-era
+    version goes to the legacy transport, which never calls the classifier and
+    never reads `Mcp-Method` at all. There, the header is unvalidated attacker
+    input.
+
+    Measured before the era check existed: this exact request was served and
+    left ZERO audit records, so an unauthenticated caller could probe the
+    enforcement point indefinitely by adding one header. Each case below must
+    leave exactly one record -- the same one the request leaves without the
+    header at all.
+    """
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    payload = {"allow": True, "deny_reasons": []}
+    for label, headers in [
+        ("no routing header at all", {}),
+        ("spoofed, no version header", {"Mcp-Method": "tools/call"}),
+        ("spoofed, version pinned to the handshake era",
+         {"Mcp-Method": "tools/call", "MCP-Protocol-Version": "2025-06-18"}),
+        ("spoofed, version pinned to the oldest era",
+         {"Mcp-Method": "tools/call", "MCP-Protocol-Version": "2024-11-05"}),
+    ]:
+        with build_with_mcp(tmp_path / label.replace(" ", "-"), signer, payload) as (
+            client,
+            audit,
+        ):
+            client.post("/mcp", json=LEGACY_LIST, headers=headers)
+            records = audit.records()
+        assert len(records) == 1, label
+        assert records[0]["rule"] == "unauthenticated", label
+        assert records[0]["action"]["type"] == "tool_list", label
+
+
+def test_every_handshake_era_version_is_treated_as_a_caller(tmp_path):
+    """The era check reads the SDK's own version tuple rather than a list of
+    strings copied into this codebase, so a version added to
+    HANDSHAKE_PROTOCOL_VERSIONS is covered the day the SDK ships it."""
+    from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
+
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    for version in HANDSHAKE_PROTOCOL_VERSIONS:
+        with build_with_mcp(
+            tmp_path / version, signer, {"allow": True, "deny_reasons": []}
+        ) as (client, audit):
+            client.post(
+                "/mcp",
+                json=LEGACY_LIST,
+                headers={"Mcp-Method": "tools/call", "MCP-Protocol-Version": version},
+            )
+            records = audit.records()
+        assert len(records) == 1, version
+
+
+def test_the_modern_era_rung_the_guard_rests_on_is_still_there(tmp_path):
+    """Pins the SDK behaviour, so an upgrade that relaxes it fails loudly.
+
+    On the modern era the guard is safe ONLY because
+    `classify_inbound_request` refuses a `tools/list` whose `Mcp-Method` says
+    `tools/call` before any handler runs -- so such a request can never be a
+    caller's. If a future SDK let it through, the guard would answer a real
+    caller's listing from the catalog with no spine call and no record. This
+    asserts the refusal, and that a well-formed modern listing still reaches
+    the spine (i.e. the guard does not over-fire on that era either).
+    """
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    payload = {"allow": True, "deny_reasons": []}
+
+    body, headers = modern_list(routed_method="tools/call")
+    with build_with_mcp(tmp_path / "mismatched", signer, payload) as (client, audit):
+        mismatched = client.post("/mcp", json=body, headers=headers)
+        mismatched_records = audit.records()
+    # -32020 is HEADER_MISMATCH, from the SDK's ladder, before dispatch.
+    assert mismatched.json()["error"]["code"] == -32020
+    assert mismatched_records == []
+
+    body, headers = modern_list()
+    with build_with_mcp(tmp_path / "agreeing", signer, payload) as (client, audit):
+        agreeing = client.post("/mcp", json=body, headers=headers)
+        agreeing_records = audit.records()
+    # Warden's own refusal, from the spine, recorded.
+    assert agreeing.json()["error"]["code"] == -32600
+    assert [r["rule"] for r in agreeing_records] == ["unauthenticated"]
+
+
+def test_the_surface_serves_post_only(tmp_path):
+    """GET opens the protocol's standalone SSE stream and holds the connection
+    open indefinitely with nothing recorded anywhere -- measured: no response
+    in six seconds, before the route was narrowed. Nothing this deployment
+    needs it: the SDK's client returns from handle_get_stream unless it holds
+    a session id, and stateless mode never issues one.
+
+    The GET is asserted against the route's own method set rather than by
+    sending one. Sending it is what proves the hazard, and it is exactly why
+    this test must not: with the narrowing removed, a live GET HANGS the suite
+    instead of failing it -- verified by removing `methods=["POST"]`, at which
+    point this file stopped terminating. DELETE is safe to send (the router
+    answers it without reaching any stream) and covers the same mechanism
+    end-to-end.
+    """
+    from starlette.routing import Route
+
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        route = next(
+            r
+            for r in client.app.routes
+            if isinstance(r, Route) and r.path == "/mcp"
+        )
+        assert route.methods == {"POST"}
+        assert client.request("DELETE", "/mcp").status_code == 405
+        assert client.post("/mcp", json=LEGACY_LIST).status_code == 200
+        assert len(audit.records()) == 1
+
+
+def test_the_inline_lookup_is_answered_from_the_catalog_not_with_an_empty_list(
+    tmp_path,
+):
+    """The guarded path answers the SDK's own schema lookup from the catalog.
+
+    Answering with an EMPTY listing -- the first shape of this guard -- makes
+    `_tool_input_schema` find nothing and silently disables the SDK's
+    `Mcp-Param-*`/body agreement check for every call. The catalog's names and
+    schemas are what that lookup needs, and the result never reaches the wire:
+    it is consumed inside the SDK to validate the call's own headers. So there
+    is no disclosure to scope to a token, and no spine call to make.
+
+    Driven at the handler rather than over HTTP because the condition cannot be
+    reached from a client: on the modern era the SDK's ladder rejects a
+    `tools/list` whose Mcp-Method says `tools/call` before dispatch, which is
+    exactly the rung the guard rests on (pinned by
+    test_the_modern_era_rung_the_guard_rests_on_is_still_there). `Server`'s
+    `get_request_handler` is public API and `session_manager.app` is its
+    documented constructor argument.
+    """
+    import asyncio
+    import dataclasses
+
+    from mcp.server import ServerRequestContext
+    from mcp.shared.exceptions import MCPError
+    from mcp_types.version import LATEST_MODERN_VERSION
+
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    @dataclasses.dataclass
+    class FakeRequest:
+        headers: dict
+
+    def context(**headers):
+        return ServerRequestContext(
+            session=None,
+            lifespan_context=None,
+            protocol_version=LATEST_MODERN_VERSION,
+            method="tools/list",
+            request=FakeRequest(headers=headers),
+        )
+
+    listed = []
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        spine = client.app.state.spine
+        real = spine.list_tools
+        spine.list_tools = lambda *a: (listed.append(a), real(*a))[1]
+        handler = client.app.state.mcp_session_manager.app.get_request_handler(
+            "tools/list"
+        ).handler
+
+        internal = asyncio.run(
+            handler(
+                context(
+                    **{
+                        "mcp-protocol-version": LATEST_MODERN_VERSION,
+                        "mcp-method": "tools/call",
+                    }
+                ),
+                None,
+            )
+        )
+        # The same condition without the era, i.e. what an attacker can forge
+        # on the legacy transport: this must NOT be treated as internal.
+        with pytest.raises(MCPError):
+            asyncio.run(handler(context(**{"mcp-method": "tools/call"}), None))
+
+        records = audit.records()
+
+    names = sorted(tool.name for tool in internal.tools)
+    assert names == sorted(client.app.state.spine._catalog.names())
+    # Schemas, which are the only reason the SDK asked.
+    assert all(tool.input_schema for tool in internal.tools)
+    # The internal lookup asked the spine nothing; the forged one did.
+    assert len(listed) == 1
+    assert [r["rule"] for r in records] == ["unauthenticated"]

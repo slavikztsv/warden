@@ -26,16 +26,28 @@ from warden.broker.config.catalog import ToolCatalog
 from warden.broker.config.loader import ConfigError, McpConfig
 from warden.broker.identity import Verifier
 from warden.broker.pdp import PolicyDecisionPoint
+from warden.broker.refusals import (
+    AFTER_EXECUTE,
+    AUDIT_UNAVAILABLE_MESSAGE,
+    NOTHING_RAN,
+    UNAUTHENTICATED_MESSAGE,
+    after_the_fact,
+)
 from warden.broker.spine import (
     AUDIT_UNAVAILABLE,
     DENIED,
-    FAULT,
     UNAUTHENTICATED,
     Kind,
     Outcome,
     Spine,
 )
 from warden.broker.taint import TaintTracker
+
+
+# The top-level packages `warden[mcp]` installs. An ImportError naming
+# anything else out of warden/broker/mcp.py is a first-party defect, not a
+# missing extra, and must not be reported as one.
+_MCP_EXTRA = frozenset({"mcp", "mcp_types"})
 
 
 def now() -> int:
@@ -46,22 +58,41 @@ def now() -> int:
 
 def _render(outcome: Outcome) -> JSONResponse:
     """One Outcome, one response. Pure: rendering twice changes nothing,
-    because every side effect already happened in the spine."""
+    because every side effect already happened in the spine.
+
+    The status codes and `error` keys are this surface's own; the MESSAGES are
+    not. They come from warden/broker/refusals.py, which the MCP surface reads
+    too, because the message is where the security-relevant content is: no
+    exception text (three of the branches below used to render `str(exc)`
+    straight out of Outcome.message, which put the audit log's path in a 503
+    and an internal hostname in a 502), and a post-execute fault that says so
+    rather than reading as retryable.
+    """
     if outcome.kind is Kind.EXECUTED:
         return JSONResponse(
             {"content": outcome.result.content, "rows": outcome.result.rows}
         )
     if outcome.kind is Kind.UNAUTHENTICATED:
         return JSONResponse(
-            {"error": UNAUTHENTICATED, "message": outcome.message}, status_code=401
+            {"error": UNAUTHENTICATED, "message": UNAUTHENTICATED_MESSAGE},
+            status_code=401,
         )
     if outcome.kind in AUDIT_UNAVAILABLE:
         return JSONResponse(
-            {"error": "audit_unavailable", "message": outcome.message}, status_code=503
+            {"error": "audit_unavailable", "message": AUDIT_UNAVAILABLE_MESSAGE},
+            status_code=503,
         )
-    if outcome.kind in FAULT:
+    if outcome.kind is Kind.DESCRIBE_BACKEND_FAULT:
         return JSONResponse(
-            {"error": "backend_error", "message": outcome.message}, status_code=502
+            {"error": "backend_error", "message": NOTHING_RAN}, status_code=502
+        )
+    if outcome.kind in AFTER_EXECUTE:
+        # The action may already have happened and the taint update did not
+        # run, so a retry would pass the same row budget twice. Same words, and
+        # the same durable allow seq, as the MCP surface sends.
+        return JSONResponse(
+            {"error": "backend_error", "message": after_the_fact(outcome.audit_seq)},
+            status_code=502,
         )
     if outcome.kind in DENIED:
         return JSONResponse(
@@ -120,6 +151,9 @@ def create_app(
     mcp: McpConfig | None = None,
 ) -> FastAPI:
     app = FastAPI(title="warden broker")
+    # Captured before anything can replace it, so the check below is against
+    # what FastAPI itself installed rather than against a type name.
+    pristine_lifespan = app.router.lifespan_context
     spine = Spine(
         verifier=verifier,
         pdp=pdp,
@@ -142,12 +176,28 @@ def create_app(
         try:
             from warden.broker.mcp import mount_mcp
         except ImportError as exc:
+            # Narrowed to the module that is actually optional. A typo'd
+            # first-party import inside mcp.py raises ImportError too, and
+            # reporting that as "install warden[mcp]" would send whoever hits
+            # it to reinstall a package that is already there.
+            if exc.name is not None and exc.name.split(".")[0] not in _MCP_EXTRA:
+                raise
             raise ConfigError(
                 "[mcp].enabled is true but the MCP extra is not installed; "
                 "install warden[mcp]"
             ) from exc
 
         mount_mcp(app, spine=spine, catalog=catalog, config=mcp)
+
+        # Asserted, not assumed: a second surface added later would overwrite
+        # this and silently stop the first one's session manager from ever
+        # starting -- which shows up as a request-time "Task group is not
+        # initialized", not as a boot failure.
+        if app.router.lifespan_context is not pristine_lifespan:
+            raise ConfigError(
+                "something already claimed this app's lifespan; the MCP "
+                "session manager cannot be started without displacing it"
+            )
 
         @contextlib.asynccontextmanager
         async def lifespan(_app):

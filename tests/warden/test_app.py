@@ -339,19 +339,32 @@ def test_audit_write_failure_on_a_deny_is_reported_not_hidden(tmp_path, signer):
     """The deny path's own 503. _write_deny_record catches OSError and returns
     audit_unavailable, and every one of the five deny call sites funnels
     through it -- so a log that cannot be written must not become a quiet 403
-    that looks like an ordinary refusal."""
+    that looks like an ordinary refusal.
+
+    The last assertion used to read `"disk full" in message`, i.e. it asserted
+    the leak. An OSError off the audit log names the audit path, and the MCP
+    surface has never rendered it; the two doors render one Outcome and must
+    not disagree about that, so this one stopped too. What is asserted now is
+    the property, not the old behaviour: a 503 that says nothing was decided
+    and names no filesystem.
+    """
+    from warden.broker.refusals import AUDIT_UNAVAILABLE_MESSAGE
+
     client, audit = build(
         tmp_path, signer, {"allow": False, "deny_reasons": ["rows.bounded"]}
     )
 
     def explode(**kwargs):
-        raise OSError("disk full")
+        raise OSError("[Errno 28] No space left on device: '/srv/warden/audit.jsonl'")
 
     audit.append = explode
     response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
     assert response.status_code == 503
-    assert response.json()["error"] == "audit_unavailable"
-    assert "disk full" in response.json()["message"]
+    body = response.json()
+    assert body["error"] == "audit_unavailable"
+    assert body["message"] == AUDIT_UNAVAILABLE_MESSAGE
+    assert "audit.jsonl" not in body["message"]
+    assert "Errno" not in body["message"]
 
 
 def test_control_plane_mints_a_usable_token(signer):
@@ -1108,3 +1121,150 @@ def test_a_denial_names_its_rule_in_a_header(tmp_path, signer):
     response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
     assert response.status_code == 403
     assert response.headers["X-Warden-Rule"] == "rows.bounded"
+
+
+# --- The HTTP door renders the same words the MCP door does -----------------
+#
+# Both surfaces render one Outcome. They pick their own status codes and error
+# keys -- that is what a surface is for -- but the MESSAGE is where the
+# security-relevant content lives, and for a whole task this door leaked what
+# the other one did not: str(exc) straight out of Outcome.message, which is the
+# audit log's own filesystem path on a 503 and an internal hostname on a 502.
+# It also said nothing about not retrying a call whose action already happened.
+
+
+def test_a_backend_fault_before_any_decision_names_nothing_internal(tmp_path, signer):
+    """DESCRIBE_BACKEND_FAULT: the spine wrote nothing and ran nothing, and
+    Outcome.message is str(exc) from the adapter. The 502 says what happened
+    without repeating it."""
+    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
+    from warden.broker.config.schema import ArgSpec, ToolSchema
+    from warden.broker.refusals import NOTHING_RAN
+
+    class Explodes:
+        target_kind = "doc"
+
+        def describe(self, args):
+            raise RuntimeError("connect to docs.corp.internal:5432 failed")
+
+        def execute(self, args):  # pragma: no cover
+            raise AssertionError("must never be reached")
+
+    catalog = ToolCatalog({
+        "brittle": CatalogEntry(
+            kind="docstore", target_kind="doc",
+            schema=ToolSchema(args={"id": ArgSpec(type="string")}),
+            adapter=Explodes(),
+        )
+    })
+    audit, client, token = app_with_catalog(tmp_path, catalog)
+    response = client.post(
+        "/v1/tools/brittle/invoke", json={"args": {"id": "a"}},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 502
+    body = response.json()
+    assert body["error"] == "backend_error"
+    assert body["message"] == NOTHING_RAN
+    assert "internal" not in body["message"]
+    assert "5432" not in body["message"]
+    # Said so truthfully: nothing was recorded against this call.
+    assert audit.records() == []
+
+
+def test_a_failure_after_the_action_warns_and_names_the_durable_record(
+    tmp_path, signer
+):
+    """EXECUTE_FAILED_AFTER_DURABLE_ALLOW over HTTP. The allow is durable and
+    the taint update never ran, so a retry would pass the same row budget
+    twice -- the body has to say so, and name the record that stands as the
+    account of what was authorised. It used to say only str(exc)."""
+    from warden.broker.refusals import after_the_fact
+
+    def backend_handler(request):
+        return httpx.Response(500, text="secrets.corp.internal is on fire")
+
+    client, audit = build(
+        tmp_path, signer, {"allow": True, "deny_reasons": []}, backend_handler
+    )
+    response = invoke(client, token_for(signer), "http_fetch", {"url": "http://x/a"})
+    assert response.status_code == 502
+    body = response.json()
+    assert body["error"] == "backend_error"
+    records = audit.records()
+    assert [r["decision"] for r in records] == ["allow"]
+    assert body["message"] == after_the_fact(records[0]["seq"])
+    assert "Do not repeat this call." in body["message"]
+    assert "corp.internal" not in body["message"]
+
+
+def test_an_unauthenticated_refusal_carries_no_verifier_text(tmp_path, signer):
+    """The 401's message came from str(TokenInvalid), i.e. whatever PyJWT
+    happened to say. One wording, shared with the MCP door."""
+    from warden.broker.refusals import UNAUTHENTICATED_MESSAGE
+
+    client, _ = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    response = client.post(
+        "/v1/tools/read_document/invoke", json={"args": {"doc_id": "a"}},
+        headers={"Authorization": "Bearer not-a-token"},
+    )
+    assert response.status_code == 401
+    body = response.json()
+    assert body["error"] == "unauthenticated"
+    assert body["message"] == UNAUTHENTICATED_MESSAGE
+
+
+def test_both_doors_render_one_outcome_with_the_same_words(tmp_path, signer):
+    """The property, asserted directly rather than inferred from two tests.
+
+    Every non-EXECUTED Outcome the HTTP door renders must produce a message
+    that is either the spine's own refusal text (the DENIED five, which the
+    spine writes itself for a model to read, and which never carry str(exc))
+    or one of refusals.py's constants. Anything else means this door grew a
+    wording of its own again.
+
+    Which kinds carry str(exc) is read off the spine's groupings rather than
+    listed, so a kind added to any of them is covered the day it exists.
+    """
+    from warden.broker.app import _render
+    from warden.broker.refusals import (
+        AFTER_EXECUTE,
+        AUDIT_UNAVAILABLE_MESSAGE,
+        NOTHING_RAN,
+        UNAUTHENTICATED_MESSAGE,
+        after_the_fact,
+    )
+    from warden.broker.spine import AUDIT_UNAVAILABLE, DENIED, Kind, Outcome
+
+    secret = "host=docs.corp.internal path=/srv/warden/state/audit.jsonl"
+    shared = {
+        UNAUTHENTICATED_MESSAGE,
+        AUDIT_UNAVAILABLE_MESSAGE,
+        NOTHING_RAN,
+        after_the_fact(7),
+    }
+    # The kinds whose Outcome.message is str(exc). The DENIED five are not
+    # among them: the spine writes their message itself.
+    carries_exception_text = AUDIT_UNAVAILABLE | AFTER_EXECUTE | {
+        Kind.UNAUTHENTICATED,
+        Kind.DESCRIBE_BACKEND_FAULT,
+    }
+    assert carries_exception_text | DENIED | {Kind.EXECUTED, Kind.LISTED} == set(Kind)
+
+    for kind in carries_exception_text:
+        outcome = Outcome(kind=kind, message=secret, audit_seq=7)
+        message = json.loads(bytes(_render(outcome).body))["message"]
+        assert secret not in message, kind
+        assert "internal" not in message, kind
+        assert "audit.jsonl" not in message, kind
+        assert message in shared, kind
+
+    for kind in DENIED:
+        outcome = Outcome(
+            kind=kind, rule="rows.bounded", message="Denied by policy rule rows.bounded."
+        )
+        body = json.loads(bytes(_render(outcome).body))
+        # Passed through on purpose: it names the rule, and it is what the MCP
+        # door puts in its tool error too.
+        assert body["message"] == "Denied by policy rule rows.bounded."
+        assert body["rule"] == "rows.bounded"
