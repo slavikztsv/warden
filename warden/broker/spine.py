@@ -307,6 +307,18 @@ class Spine:
             audit_seq=record["seq"],
         )
 
+    def task_state(self, task_id: str) -> dict:
+        """What this task has accumulated: rows read, data classes held.
+
+        A read-only view for anything that needs to see the budget without
+        spending it -- a diagnostic, an operator question, a test. Deliberately
+        NOT named for tests: a production class carrying a test-only method
+        invites a caller who should not have one, and this accessor is
+        legitimate on its own terms. The serving path still reads state only
+        through handle_tool_call, which snapshots it once per call.
+        """
+        return self._taint.snapshot(task_id)
+
     def list_tools(self, credential: str | None) -> ListOutcome:
         """What this token may call. Usability, never enforcement.
 
