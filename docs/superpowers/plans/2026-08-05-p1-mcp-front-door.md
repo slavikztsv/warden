@@ -2562,9 +2562,9 @@ def test_an_allowed_read_advances_the_budget_once_per_surface(tmp_path):
     ):
         spine = client.app.state.spine
         invoke(client, token, "query_customers", {"filter": "id=8812"})
-        after_http = spine.snapshot_for_test("4711")["rows_returned_so_far"]
+        after_http = spine.task_state("4711")["rows_returned_so_far"]
         call_tool(client, token, "query_customers", {"filter": "id=8812"})
-        after_mcp = spine.snapshot_for_test("4711")["rows_returned_so_far"]
+        after_mcp = spine.task_state("4711")["rows_returned_so_far"]
         assert after_http == 1
         assert after_mcp == 2
 ```
@@ -2572,9 +2572,16 @@ def test_an_allowed_read_advances_the_budget_once_per_surface(tmp_path):
 Add to `Spine` in `warden/broker/spine.py`:
 
 ```python
-    def snapshot_for_test(self, task_id: str) -> dict:
-        """The task's accumulated state. Named for its only caller: nothing
-        in the serving path reads state except through handle_tool_call."""
+    def task_state(self, task_id: str) -> dict:
+        """What this task has accumulated: rows read, data classes held.
+
+        A read-only view for anything that needs to see the budget without
+        spending it -- a diagnostic, an operator question, a test. Deliberately
+        NOT named for tests: a production class carrying a test-only method
+        invites a caller who should not have one, and this accessor is
+        legitimate on its own terms. The serving path still reads state only
+        through handle_tool_call, which snapshots it once per call.
+        """
         return self._taint.snapshot(task_id)
 ```
 
@@ -2988,4 +2995,4 @@ git commit -m "docs: state what the front door does, and what it does not contai
 
 **Placeholders.** None. Every code step carries the code. Three steps carry a conditional fallback (the ASGI transport in Task 11, the cache keyword in Task 15, the handler accessor in Task 14) — each names the exact alternative and requires recording which was used, because the SDK's 2.0.0 signatures were read from published sources rather than exercised here.
 
-**Type consistency.** `Kind`, `Outcome`, `ListOutcome`, `Spine`, `DENIED`/`AUDIT_UNAVAILABLE`/`FAULT` are defined in Task 4 and used with those names in Tasks 5, 11, 13, 14. `json_schema` is defined in Task 7 and called in Tasks 9 and 11. `McpConfig(enabled, path, host)` is defined in Task 8 and consumed in Tasks 11 and 14's builder. `CatalogEntry.description`/`.title` are added in Task 6 and read in Tasks 9 and 11. `check_catalog(..., *, opa_url=None, mcp_enabled=False)` is keyword-only throughout. `snapshot_for_test` is added in Task 14 and used only there.
+**Type consistency.** `Kind`, `Outcome`, `ListOutcome`, `Spine`, `DENIED`/`AUDIT_UNAVAILABLE`/`FAULT` are defined in Task 4 and used with those names in Tasks 5, 11, 13, 14. `json_schema` is defined in Task 7 and called in Tasks 9 and 11. `McpConfig(enabled, path, host)` is defined in Task 8 and consumed in Tasks 11 and 14's builder. `CatalogEntry.description`/`.title` are added in Task 6 and read in Tasks 9 and 11. `check_catalog(..., *, opa_url=None, mcp_enabled=False)` is keyword-only throughout. `task_state` is added in Task 14 as a read-only accessor.
