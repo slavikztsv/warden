@@ -1774,17 +1774,26 @@ import contextlib
 
 
 @contextlib.contextmanager
-def build_with_mcp(tmp_path, signer, opa_payload, backend_handler=None, clock=None):
+def build_with_mcp(
+    tmp_path, signer, opa_payload, backend_handler=None, clock=None, opa_handler=None
+):
     """build(), with the MCP surface mounted -- and entered as a context
     manager, because a mounted sub-app's lifespan never runs on its own and
-    the session manager must be started."""
+    the session manager must be started.
+
+    `opa_handler` overrides `opa_payload` for a test that needs OPA to answer
+    differently depending on what it is asked -- a budget that runs out, say.
+    Injected at construction like every other collaborator here, so no test
+    has to reach through the app to swap a client afterwards.
+    """
     from warden.broker.config.loader import McpConfig
 
     db = tmp_path / "customers.db"
     seed_customers(db, count=120)
 
-    def opa_handler(request):
-        return httpx.Response(200, json={"result": opa_payload})
+    if opa_handler is None:
+        def opa_handler(request):
+            return httpx.Response(200, json={"result": opa_payload})
 
     backend_handler = backend_handler or (
         lambda request: httpx.Response(200, text="doc-body")
@@ -2331,8 +2340,9 @@ async def test_concurrent_mcp_calls_for_one_task_do_not_exceed_the_row_bound(tmp
     signer = Signer.generate()
     token = token_for(signer)
 
+    import httpx
+
     def opa(request):
-        import httpx
         import json as _json
 
         state = _json.loads(request.content)["input"]["task_state"]
@@ -2347,10 +2357,8 @@ async def test_concurrent_mcp_calls_for_one_task_do_not_exceed_the_row_bound(tmp
             },
         )
 
-    with build_with_mcp(tmp_path, signer, None) as (client, audit):
-        client.app.state.spine._pdp._client = __import__("httpx").Client(
-            transport=__import__("httpx").MockTransport(opa)
-        )
+    # The stateful OPA goes in at construction, not swapped in afterwards.
+    with build_with_mcp(tmp_path, signer, None, opa_handler=opa) as (client, audit):
         results = []
         async def one():
             results.append(call_tool(client, token, "query_customers", {"filter": "id=8812"}))
