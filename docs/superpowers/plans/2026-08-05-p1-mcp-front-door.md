@@ -1328,7 +1328,10 @@ def test_a_non_boolean_enabled_is_refused(tmp_path):
 
 def test_a_malformed_mcp_section_names_itself(tmp_path):
     path = write_complete_config(tmp_path)
-    path.write_text(path.read_text() + '\nmcp = "not a table"\n')
+    # PREPENDED, not appended. A bare key written after a table header belongs
+    # to that table, so appending `mcp = "..."` below [catalog] parses as
+    # catalog.mcp and never reaches the top level this test is about.
+    path.write_text('mcp = "not a table"\n' + path.read_text())
     with pytest.raises(ConfigError, match=r"\[mcp\]"):
         load_broker_config(path, env={})
 ```
