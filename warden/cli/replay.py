@@ -20,6 +20,13 @@ def _describe(record: dict) -> str:
         # may I call", refused. Without this the renderer falls through to
         # the tool_call branch and prints `?()`.
         return "list_tools()"
+    if record["action"].get("type") == "mcp_handshake":
+        # The era gate's refusal (warden/broker/mcp.py's _EraGate) carries
+        # no tool name either -- it never got far enough into a request to
+        # read one. Same reason as tool_list: without this branch the record
+        # falls through and prints `?()` inside the same hash chain as real
+        # decisions.
+        return "mcp_handshake()"
     tool = record["action"].get("tool", "?")
     target = record["target"]
     kind = target.get("kind")

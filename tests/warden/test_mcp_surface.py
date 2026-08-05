@@ -25,6 +25,14 @@ import pytest
 
 mcp = pytest.importorskip("mcp", reason="requires the warden[mcp] extra")
 
+# Only reachable once "mcp" itself imported cleanly -- importorskip above
+# aborts the whole module before this line runs otherwise, and mcp_types is
+# one of mcp==2.0.0's own pinned dependencies, so it is never absent when
+# "mcp" is present.
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS  # noqa: E402
+
+UNSUPPORTED_PROTOCOL_VERSION = -32022
+
 
 def test_telemetry_is_a_no_op_after_the_broker_boots(monkeypatch):
     """The happy path: nothing has claimed the process-global TracerProvider
@@ -468,23 +476,32 @@ def test_the_surface_answers_only_under_the_configured_host(tmp_path):
     arriving under any real hostname. Configured, that hostname is what the
     surface accepts. Both halves asserted here, because the claim used to sit
     in McpConfig's docstring with nothing exercising it.
+
+    The modern protocol-version header is required on both calls now that
+    `_EraGate` sits in front of the DNS-rebinding check: it reads its own
+    header before the request ever reaches `sub`, and a version-less POST
+    (what this test sent before that gate existed) is refused with -32022
+    before the 421 this test means to exercise is ever reached at all.
     """
+    from mcp_types.version import LATEST_MODERN_VERSION
+
     from tests.warden.test_app import build_with_mcp
     from warden.broker.identity import Signer
 
     signer = Signer.generate()
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    headers = {"MCP-Protocol-Version": LATEST_MODERN_VERSION}
     payload = {"allow": True, "deny_reasons": []}
 
     with build_with_mcp(tmp_path / "unset", signer, payload, host="") as (client, _):
-        refused = client.post("/mcp", json=body)
+        refused = client.post("/mcp", json=body, headers=headers)
     assert refused.status_code == 421
 
     with build_with_mcp(tmp_path / "named", signer, payload, host="testserver") as (
         client,
         _,
     ):
-        accepted = client.post("/mcp", json=body)
+        accepted = client.post("/mcp", json=body, headers=headers)
     assert accepted.status_code != 421
 
 
@@ -647,12 +664,21 @@ def test_enabling_the_surface_without_the_extra_fails_at_boot(tmp_path, monkeypa
 # Every test above goes through the SDK's Client, which negotiates 2026-07-28.
 # That leaves the OTHER era -- the one a bare `POST /mcp` with no
 # MCP-Protocol-Version header lands on, i.e. the default for anything that is
-# not this SDK -- with no coverage at all. It is the era that skips the header
-# rung `_is_internal_schema_lookup` depends on, and the era whose dispatcher
-# puts `str(exc)` on the wire verbatim. Raw POSTs are the only way to reach it.
+# not this SDK -- reachable only by raw POST. It is the era that skips the
+# header rung `_is_internal_schema_lookup` depends on, and the era whose
+# dispatcher puts `str(exc)` on the wire verbatim. `_era_gate` in
+# warden/broker/mcp.py now refuses every request that would land there,
+# before the SDK's own routing ever sees it -- the tests below are that
+# gate's coverage.
 
 
 LEGACY_LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+
+
+def raw_post(client, body, headers):
+    """A bare `POST /mcp`, headers and all -- the only way to reach the
+    handshake era, since the SDK's own Client always negotiates modern."""
+    return client.post("/mcp", json=body, headers=headers)
 
 
 def modern_list(routed_method="tools/list"):
@@ -696,9 +722,10 @@ def test_a_spoofed_routing_header_cannot_buy_an_unrecorded_probe(tmp_path):
 
     Measured before the era check existed: this exact request was served and
     left ZERO audit records, so an unauthenticated caller could probe the
-    enforcement point indefinitely by adding one header. Each case below must
-    leave exactly one record -- the same one the request leaves without the
-    header at all.
+    enforcement point indefinitely by adding one header. `_era_gate` now
+    refuses every case below outright, before the legacy transport (and
+    therefore the spoofed `Mcp-Method`) is ever reached -- each must still
+    leave exactly one record, now the era gate's own.
     """
     from tests.warden.test_app import build_with_mcp
     from warden.broker.identity import Signer
@@ -717,34 +744,112 @@ def test_a_spoofed_routing_header_cannot_buy_an_unrecorded_probe(tmp_path):
             client,
             audit,
         ):
-            client.post("/mcp", json=LEGACY_LIST, headers=headers)
+            response = raw_post(client, LEGACY_LIST, headers)
             records = audit.records()
+        assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION, label
         assert len(records) == 1, label
-        assert records[0]["rule"] == "unauthenticated", label
-        assert records[0]["action"]["type"] == "tool_list", label
+        assert records[0]["rule"] == "mcp.unsupported_protocol", label
+        assert records[0]["action"] == {"type": "mcp_handshake"}, label
 
 
-def test_every_handshake_era_version_is_treated_as_a_caller(tmp_path):
+@pytest.mark.parametrize("version", sorted(HANDSHAKE_PROTOCOL_VERSIONS))
+def test_every_handshake_era_version_is_refused_and_recorded(tmp_path, version):
     """The era check reads the SDK's own version tuple rather than a list of
     strings copied into this codebase, so a version added to
-    HANDSHAKE_PROTOCOL_VERSIONS is covered the day the SDK ships it."""
-    from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
-
+    HANDSHAKE_PROTOCOL_VERSIONS is covered the day the SDK ships it. Every
+    one of them is refused by `_era_gate`, not merely "treated as a caller"
+    -- that used to be the whole vulnerability: a handshake-era version was
+    enough to reach the transport that skips `Mcp-Method` validation."""
     from tests.warden.test_app import build_with_mcp
     from warden.broker.identity import Signer
 
     signer = Signer.generate()
-    for version in HANDSHAKE_PROTOCOL_VERSIONS:
-        with build_with_mcp(
-            tmp_path / version, signer, {"allow": True, "deny_reasons": []}
-        ) as (client, audit):
-            client.post(
-                "/mcp",
-                json=LEGACY_LIST,
-                headers={"Mcp-Method": "tools/call", "MCP-Protocol-Version": version},
-            )
-            records = audit.records()
-        assert len(records) == 1, version
+    with build_with_mcp(
+        tmp_path / version, signer, {"allow": True, "deny_reasons": []}
+    ) as (client, audit):
+        response = raw_post(
+            client,
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {"MCP-Protocol-Version": version},
+        )
+        records = audit.records()
+    assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION, version
+    assert len(records) == 1, version
+
+
+def test_a_request_with_no_protocol_version_is_refused_and_recorded(tmp_path):
+    """Absent is the handshake era's own signature, and that era is the one
+    the SDK serves without validating Mcp-Method. An enforcement point does
+    not let the party it contains pick the weaker of two code paths."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = raw_post(
+            client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, {}
+        )
+        assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
+        assert "2026-07-28" in response.text
+        records = audit.records()
+        assert len(records) == 1
+        assert records[0]["action"] == {"type": "mcp_handshake"}
+        assert records[0]["rule"] == "mcp.unsupported_protocol"
+
+
+def test_an_unauthenticated_initialize_no_longer_discloses_capabilities(tmp_path):
+    """Measured before this task, with a well-formed `initialize` (real
+    clients always send protocolVersion/capabilities/clientInfo; an empty
+    `params: {}` fails the SDK's own request-shape validation for an
+    unrelated reason and was never a fair test of the disclosure): HTTP 200
+    with a full InitializeResult -- capabilities and serverInfo both present
+    -- and ZERO audit records, to a caller carrying no credential at all and
+    no MCP-Protocol-Version header. The era gate now refuses the request
+    before the SDK's initialize handler ever runs, so neither field reaches
+    the wire and the attempt is recorded."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = raw_post(
+            client,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "probe", "version": "0.0"},
+                },
+            },
+            {},
+        )
+        assert "serverInfo" not in response.text
+        assert "capabilities" not in response.text
+        assert len(audit.records()) == 1
+
+
+def test_the_sdk_client_still_works_end_to_end(tmp_path):
+    """The whole bet: a real modern client is unaffected. Every request it
+    sends -- server/discover included -- carries the modern version header."""
+    from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        _,
+    ):
+        result = call_tool(client, token_for(signer), "read_document", {"doc_id": "a"})
+        assert result.is_error is False
 
 
 def test_the_modern_era_rung_the_guard_rests_on_is_still_there(tmp_path):
@@ -795,6 +900,12 @@ def test_the_surface_serves_post_only(tmp_path):
     point this file stopped terminating. DELETE is safe to send (the router
     answers it without reaching any stream) and covers the same mechanism
     end-to-end.
+
+    The final POST is version-less `LEGACY_LIST`, which used to be served
+    (200) and is refused by `_EraGate` now (400, still recorded once) -- this
+    test only cares that a POST reaches SOME handler rather than the 405 a
+    non-POST method gets, so the exact response it gets back is incidental to
+    what this test is proving; the era gate's own tests pin that response.
     """
     from starlette.routing import Route
 
@@ -813,7 +924,7 @@ def test_the_surface_serves_post_only(tmp_path):
         )
         assert route.methods == {"POST"}
         assert client.request("DELETE", "/mcp").status_code == 405
-        assert client.post("/mcp", json=LEGACY_LIST).status_code == 200
+        assert client.post("/mcp", json=LEGACY_LIST).status_code == 400
         assert len(audit.records()) == 1
 
 

@@ -61,6 +61,7 @@ Python 3 has no implicit relative imports, so a module named `mcp` inside
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -70,7 +71,7 @@ from mcp import types
 from mcp.server import Server, ServerRequestContext
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION
 from starlette.routing import Route
 
 from warden.broker.config.catalog import ToolCatalog
@@ -96,6 +97,14 @@ logger = logging.getLogger(__name__)
 # which is the one condition every client retries.
 UNAUTHENTICATED_CODE = types.INVALID_REQUEST
 FAULT_CODE = types.INTERNAL_ERROR
+
+# Not one of the SDK's own assigned codes -- there is no assigned code for
+# "this server does not serve your protocol revision" -- so this is picked
+# from the -32000..-32099 implementation-defined range the JSON-RPC spec
+# reserves for exactly that. It is what a modern-only server is asked to
+# answer a version it does not support with, per the specification, and it
+# carries the list of versions this server does support in `data`.
+UNSUPPORTED_PROTOCOL_VERSION = -32022
 
 
 def _headers(ctx: ServerRequestContext) -> Mapping[str, str] | None:
@@ -153,12 +162,28 @@ def _is_internal_schema_lookup(ctx: ServerRequestContext) -> bool:
     A `tools/list` on the modern era whose `Mcp-Method` says something else
     cannot be a caller's, because the classifier would have rejected it with
     HEADER_MISMATCH before reaching any handler.
+
+    BELT AND BRACES: `_EraGate` (see `mount_mcp`) now refuses every
+    handshake-era or version-less request over HTTP before it reaches the
+    SDK's own routing at all, which makes the branch below unreachable from
+    any live request -- a legacy-era `ServerRequestContext` can no longer
+    exist by the time this function is called. It stays anyway. Deleting it
+    trades a redundant check for a SILENT reopening of the exact vector this
+    function's docstring describes, the day someone removes or misconfigures
+    the gate in front of it; keeping it means that same removal instead
+    fails LOUDLY, here, the next time a handshake-era request reaches this
+    function directly (as it still can: this is a plain function, callable
+    without going through the gate at all -- see
+    `test_the_inline_lookup_is_answered_from_the_catalog_not_with_an_empty_list`,
+    which does exactly that).
     """
     headers = _headers(ctx)
     if headers is None:
         return False
     version = headers.get("mcp-protocol-version")
     if version is None or version in HANDSHAKE_PROTOCOL_VERSIONS:
+        # Redundant with _EraGate today; kept as the belt to its braces --
+        # see the docstring above.
         return False
     routed = headers.get("mcp-method")
     return routed is not None and routed != "tools/list"
@@ -227,6 +252,104 @@ def _transport_security(host: str) -> TransportSecuritySettings | None:
         enable_dns_rebinding_protection=True,
         allowed_hosts=[host, f"{host}:*"],
     )
+
+
+def _refuse_era_body() -> bytes:
+    return json.dumps({
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {
+            "code": UNSUPPORTED_PROTOCOL_VERSION,
+            "message": (
+                "Unsupported protocol version. This server serves the "
+                f"{LATEST_PROTOCOL_VERSION} revision only."
+            ),
+            "data": {"supported": [LATEST_PROTOCOL_VERSION]},
+        },
+    }).encode("utf-8")
+
+
+async def _refuse_era(send) -> None:
+    """The -32022 refusal, written directly over ASGI.
+
+    This runs in front of the SDK's own routing -- there is no Starlette
+    Request or Response built for it yet, only the raw `send` callable -- so
+    the two ASGI messages that make up an HTTP response are assembled by
+    hand instead of going through FastAPI/Starlette's usual response
+    classes.
+    """
+    await send({
+        "type": "http.response.start",
+        "status": 400,
+        "headers": [(b"content-type", b"application/json")],
+    })
+    await send({"type": "http.response.body", "body": _refuse_era_body()})
+
+
+class _EraGate:
+    """Refuses every protocol revision but the modern one, before the SDK
+    routes the request at all.
+
+    `StreamableHTTPSessionManager._handle_request` reads `MCP-Protocol-
+    Version` straight off the raw ASGI scope to pick between two transports:
+    absent, or any of `HANDSHAKE_PROTOCOL_VERSIONS`, goes to a legacy leg
+    that does not validate `Mcp-Method` against the request body and whose
+    dispatcher puts `str(exc)` on the wire verbatim (see this module's
+    docstring). Both of those are reachable by omitting one header, which
+    makes the WEAKER of the two enforcement paths the default -- selectable
+    by the party this broker exists to contain. An enforcement point cannot
+    let the party it contains choose which of its own code paths handles the
+    request, so this wraps the mounted sub-app rather than living in a
+    handler: by the time any handler runs, the SDK has already made that
+    choice, and there would be nothing left here to refuse.
+
+    Refusing is spec-conformant, not a new restriction invented for this
+    deployment: dual-era support is a MAY in the specification, not a MUST,
+    and -32022 with a `supported` list in `data` is what a modern-only
+    server is asked to answer a version it does not serve with. It costs a
+    real client nothing either -- the SDK's own `Client` carries
+    `MCP-Protocol-Version: 2026-07-28` on every request of a session,
+    including the opening one, so "absent" and "handshake-era" are exactly
+    the requests this SDK's own client never sends.
+
+    The refusal is audited. `Spine.record_handshake_refusal` writes a
+    sentinel record before `_refuse_era` answers, which -- like
+    broker/proxy.py's equivalent for a non-CONNECT probe -- lets a caller
+    with no credential at all, not even an invalid one, drive a write to the
+    audit log. That is the deliberate trade recorded in the audit-evasion
+    vector this closes: an unrecorded refusal is what let a caller probe the
+    enforcement point indefinitely by adding one header, and a few sentinel
+    rows from an unauthenticated party are a smaller cost than a probe that
+    leaves no trace.
+
+    A CLASS, deliberately, not a closure returning a plain function.
+    `starlette.routing.Route.__init__` decides how to treat its `endpoint`
+    by `inspect.isfunction`/`inspect.ismethod`: a plain function is assumed
+    to be `func(request) -> response` and gets wrapped in
+    `request_response()`, which calls it with a single `Request` rather than
+    `(scope, receive, send)` -- the exact three this needs, and a
+    `functools.partial` does not dodge the check either, since Starlette
+    unwraps those to the function underneath before testing. An instance of
+    a class with `__call__` is neither a function nor a method, so Starlette
+    falls through to its other branch and treats it as what it is: an ASGI
+    app in its own right, exactly like the sub-app it wraps.
+    """
+
+    def __init__(self, inner, *, spine: Spine) -> None:
+        self._inner = inner
+        self._spine = spine
+
+    async def __call__(self, scope, receive, send) -> None:
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        version = headers.get("mcp-protocol-version")
+        if version is None or version in HANDSHAKE_PROTOCOL_VERSIONS:
+            self._spine.record_handshake_refusal("mcp.unsupported_protocol")
+            await _refuse_era(send)
+            return
+        await self._inner(scope, receive, send)
 
 
 def mount_mcp(
@@ -333,7 +456,14 @@ def mount_mcp(
     # gated the same way, and the modern transport already 405s non-POST
     # itself. GET and DELETE become load-bearing the moment anyone chooses
     # `stateless_http=False` above, so the two go together.
-    app.router.routes.append(Route(config.path, endpoint=sub, methods=["POST"]))
+    #
+    # `sub` wrapped in `_EraGate`, not mounted bare: the gate has to see
+    # every request before the SDK's own routing does, and by the time a
+    # request reaches anything mounted AS this sub-app that routing has
+    # already happened.
+    app.router.routes.append(
+        Route(config.path, endpoint=_EraGate(sub, spine=spine), methods=["POST"])
+    )
     # The sub-app's own lifespan is what would have started this, and a
     # mounted or routed sub-app's lifespan never runs. The app this was
     # attached to has to start it; see create_app.

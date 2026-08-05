@@ -322,6 +322,54 @@ class Spine:
         granted = frozenset(token.allowed_tools) & self._catalog.names()
         return ListOutcome(kind=Kind.LISTED, tools=tuple(sorted(granted)))
 
+    def record_handshake_refusal(self, rule: str) -> None:
+        """Records a refusal for a call that never reached authentication --
+        or any of this spine's other methods -- at all.
+
+        Called from warden/broker/mcp.py's `_EraGate`, which wraps the MCP
+        surface's mounted sub-app and runs BEFORE the SDK's own routing:
+        every request whose `MCP-Protocol-Version` is absent or names a
+        handshake-era release is refused right there, without ever reaching
+        `authenticate`, `handle_tool_call`, or `list_tools` above. There is
+        no token and no parsed body at that point -- not even an unverified
+        one -- so the record carries the same sentinel principal fields
+        `_refuse` uses, and an action shaped for what this is: a refusal of
+        the transport handshake itself, not of any named tool.
+
+        This lets a caller presenting no credential at all drive a write to
+        the audit log, exactly as broker/proxy.py's refusal for a
+        non-CONNECT probe does. That is the deliberate trade, not an
+        oversight: the alternative is the vector this method exists to
+        close, where an unrecorded refusal let a caller probe the
+        enforcement point indefinitely by adding one header, and a
+        forgeable audit row is a smaller cost than a probe that leaves no
+        trace of ever having happened.
+
+        Best-effort, unlike `_refuse`: there is no Outcome for this to
+        return -- the gate runs in raw ASGI, before any handler exists that
+        could render one -- so there is no channel to report an unavailable
+        log through. Matches broker/proxy.py's own `_audit_refusal`, which
+        the same asymmetry (documented in docs/THREAT_MODEL.md) applies to:
+        the refusal itself is not optional, but logging it is best-effort on
+        top of that, so a write failure here is swallowed and the caller is
+        still refused.
+        """
+        try:
+            self._audit.append(
+                task_id="-",
+                agent_id=UNAUTHENTICATED,
+                purpose="-",
+                action={"type": "mcp_handshake"},
+                target=ToolTarget(kind="unknown").as_dict(),
+                args_digest="sha256:none",
+                decision="deny",
+                rule=rule,
+                task_state=_empty_state(),
+                policy_bundle_digest=self._digest,
+            )
+        except OSError:
+            pass
+
     def _refuse(self, action: dict, message: str, factory):
         """Records a call that carried no usable authority, then refuses it.
 

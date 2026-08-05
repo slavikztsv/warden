@@ -200,3 +200,42 @@ def test_replay_renders_a_list_refusal(tmp_path):
         "target": {"kind": "unknown"},
     })
     assert rendered == "list_tools()"
+
+
+def test_a_handshake_refusal_is_recorded_with_sentinel_fields(tmp_path):
+    """record_handshake_refusal, driven directly rather than through the MCP
+    surface's HTTP layer. There is no token here at all -- not even an
+    unverified one, since the era gate that calls this runs before the SDK
+    ever routes a request to anything that could try to read one -- so the
+    record must carry the same sentinel principal fields _refuse() writes
+    for every other authority-less call."""
+    from tests.warden.test_app import build
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    spine = client.app.state.spine
+
+    spine.record_handshake_refusal("mcp.unsupported_protocol")
+
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["action"] == {"type": "mcp_handshake"}
+    assert records[0]["task_id"] == "-"
+    assert records[0]["agent_id"] == "unauthenticated"
+    assert records[0]["purpose"] == "-"
+    assert records[0]["args_digest"] == "sha256:none"
+    assert records[0]["decision"] == "deny"
+    assert records[0]["rule"] == "mcp.unsupported_protocol"
+
+
+def test_replay_renders_a_handshake_refusal(tmp_path):
+    """The same illegible-`?()` hazard test_replay_renders_a_list_refusal
+    covers, for the era gate's own record shape."""
+    from warden.cli.replay import _describe
+
+    rendered = _describe({
+        "action": {"type": "mcp_handshake"},
+        "target": {"kind": "unknown"},
+    })
+    assert rendered == "mcp_handshake()"
