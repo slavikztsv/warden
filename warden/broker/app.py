@@ -69,6 +69,9 @@ def _render(outcome: Outcome) -> JSONResponse:
                 "message": outcome.message,
             },
             status_code=403,
+            # The rule, where a proxy-aware client can read it without
+            # parsing a body -- the same header broker/proxy.py sets on its
+            # own refusals.
             headers={"X-Warden-Rule": outcome.rule},
         )
     raise ValueError(f"no HTTP rendering for {outcome.kind}")
@@ -124,11 +127,20 @@ def create_app(
 
     @app.post("/v1/tools/{tool}/invoke")
     async def invoke(tool: str, request: Request) -> JSONResponse:
+        # Authenticate BEFORE anything else about the request is read. A
+        # credential that does not hold up must never cause the body to be
+        # parsed -- see Spine.authenticate()'s docstring -- so this checks
+        # for, and immediately returns on, a refusal before the one await
+        # below ever runs.
+        credential = _credential(request)
+        authentication = spine.authenticate(credential, tool)
+        if isinstance(authentication, Outcome):
+            return _render(authentication)
+
         # The only await, and it is here rather than in the spine: past this
         # line the whole sequence is synchronous, so the snapshot-to-record
         # window cannot be interleaved by construction.
-        credential = _credential(request)
-        args = None if credential is None else await _parse_args(request)
+        args = await _parse_args(request)
         return _render(spine.handle_tool_call(credential, tool, args))
 
     return app

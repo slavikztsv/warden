@@ -1,11 +1,11 @@
 """Declarative argument validation.
 
-broker/app.py's docstring states the invariant this upholds: args are
-shape-checked BEFORE describe() is called, so describe() (which decides what
-gets audited and policy-checked) and execute() (which acts) are guaranteed to
-interpret the same args the same way. Its worked example is a bare string
-where a tool's schema expects a list of recipients -- read character-by-
-character by one stage and whole by the other.
+warden/broker/spine.py's handle_tool_call states the invariant this upholds:
+args are shape-checked BEFORE describe() is called, so describe() (which
+decides what gets audited and policy-checked) and execute() (which acts) are
+guaranteed to interpret the same args the same way. Its worked example is a
+bare string where a tool's schema expects a list of recipients -- read
+character-by-character by one stage and whole by the other.
 
 Moving that check into config makes it OMISSIBLE, which is the new risk. Two
 rules answer it: a tool with no args table is a ConfigError rather than a

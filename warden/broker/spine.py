@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from warden.broker.adapters.base import ToolResult, ToolTarget, UnknownTool
-from warden.broker.identity import TokenInvalid
+from warden.broker.identity import TaskToken, TokenInvalid
 
 UNAUTHENTICATED = "unauthenticated"
 MALFORMED = "input.malformed"
@@ -83,7 +83,16 @@ FAULT = frozenset({
     Kind.TAINT_REJECTED_AFTER_EXECUTE,
 })
 
-EMPTY_STATE = {"data_classes_held": [], "rows_returned_so_far": 0}
+
+def _empty_state() -> dict:
+    # A fresh dict per call, deliberately -- not a shared module-level
+    # constant. AuditLog.append does `record = dict(body)`, a SHALLOW copy,
+    # so a record built from one shared mutable dict would let every
+    # unauthenticated refusal's stored task_state alias the same object.
+    # Nothing aliases it today because _refuse() discards the record it
+    # gets back, but the next caller to keep that return value would not
+    # know it was holding a landmine.
+    return {"data_classes_held": [], "rows_returned_so_far": 0}
 
 
 def args_digest(args: dict) -> str:
@@ -97,9 +106,12 @@ class Outcome:
     rule: str = ""
     result: ToolResult | None = None
     message: str = ""
-    # The seq of the durable allow record, on the two variants that fire
-    # after one was written. A caller that must not retry needs a handle on
-    # the thing that already happened.
+    # The seq of the durable allow record. Three variants carry it: EXECUTED
+    # (the allow that went on to succeed) and the two that fire after the
+    # same allow was written but something downstream still failed
+    # (EXECUTE_FAILED_AFTER_DURABLE_ALLOW, TAINT_REJECTED_AFTER_EXECUTE). A
+    # caller that must not retry needs a handle on the thing that already
+    # happened.
     audit_seq: int | None = None
 
 
@@ -128,6 +140,11 @@ class Spine:
         self._audit = audit
         self._catalog = catalog
         self._digest = policy_digest
+        # Injected rather than read from a module-level clock at call time.
+        # Patching a module global only ever covers the one module that
+        # reads it, and this sequence is shared by every front door mounted
+        # on the broker -- each of which would need its own patch point.
+        # One clock, every surface, one patch point.
         self._clock = clock
 
     def _authenticate(self, credential: str | None):
@@ -137,6 +154,32 @@ class Spine:
             return self._verifier.verify(credential, now=self._clock()), ""
         except TokenInvalid as exc:
             return None, str(exc)
+
+    def authenticate(self, credential: str | None, tool: str) -> TaskToken | Outcome:
+        """Verifies a credential and, on failure, writes the sentinel
+        refusal record right here.
+
+        Exists so a route can call this FIRST -- before it reads anything
+        else about the request, in particular the body -- and stop the
+        instant it gets an Outcome back. handle_tool_call() below does NOT
+        accept the TaskToken this returns; it re-verifies the same
+        credential from scratch (an Ed25519 verify is cheap). That is
+        deliberate, not redundant: a route calls this, then awaits the body
+        across a suspension point, then calls handle_tool_call(), and a
+        credential that goes stale in that window must still be caught.
+
+        The two verifies cannot double-write a sentinel record for the same
+        refusal, because they cover disjoint cases. If THIS call refuses,
+        the route stops here and handle_tool_call() never runs -- one
+        write. If this call succeeds, nothing is written here at all, so
+        handle_tool_call()'s own refusal (if the credential expires before
+        it re-checks) is the first and only record for that failure -- also
+        one write. Either way, exactly one record per refused request.
+        """
+        token, message = self._authenticate(credential)
+        if token is None:
+            return self._refuse({"type": "tool_call", "tool": tool}, message, Outcome)
+        return token
 
     def handle_tool_call(
         self, credential: str | None, tool: str, args: dict | None
@@ -298,10 +341,16 @@ class Spine:
                 args_digest="sha256:none",
                 decision="deny",
                 rule=UNAUTHENTICATED,
-                task_state=EMPTY_STATE,
+                task_state=_empty_state(),
                 policy_bundle_digest=self._digest,
             )
         except OSError as exc:
+            # Same rule as every other refusal this spine writes: if it
+            # cannot be logged, it is reported as unavailable rather than
+            # quietly refused. (broker/proxy.py deliberately differs -- it
+            # swallows the failure and still refuses -- because a tunnel
+            # refusal must happen even when it cannot be recorded. The
+            # asymmetry is documented in docs/THREAT_MODEL.md.)
             return factory(
                 kind=Kind.AUDIT_UNAVAILABLE_ON_UNAUTHENTICATED, message=str(exc)
             )

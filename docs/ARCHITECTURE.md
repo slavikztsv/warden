@@ -88,7 +88,8 @@ against a fully compromised broker.
 
 | Component | Responsibility | Trust level | Failure impact |
 |---|---|---|---|
-| `broker/app.py` | Tool API on `:8080`. Orders the whole decision: verify → snapshot → validate → describe → decide → audit → execute | TCB for enforcement | Total. Compromise invalidates every decision it makes |
+| `broker/app.py` | Tool API on `:8080`. HTTP surface only: parses the request, calls `broker/spine.py`, renders whatever it returns | Thin, but still in the request path | A rendering bug can misreport a decision `spine.py` already made correctly |
+| `broker/spine.py` | Orders the whole decision, for every front door mounted on the broker: verify → snapshot → validate → describe → decide → audit → execute | TCB for enforcement | Total. Compromise invalidates every decision it makes |
 | `broker/proxy.py` | Forward proxy on `:3128`, the only egress path off `agent-net`. Authorizes `CONNECT` and then pipes bytes | TCB for enforcement | Egress becomes unavailable; no traffic is authorized |
 | `broker/identity.py` | Verifies Ed25519 task tokens. Loads the **public key only** | Trusted; holds no secret | Every call is refused as `unauthenticated` and recorded |
 | `broker/pdp.py` | Posts the input document to OPA and maps `deny_reasons` to a single reported rule | Trusted transport + fail-closed mapping | Denies everything as `pdp.unavailable` |

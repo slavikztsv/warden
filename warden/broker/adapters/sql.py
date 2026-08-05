@@ -94,7 +94,7 @@ class SqlAdapter:
         return f"{self._subject_column}="
 
     def _coerce(self, raw: str):
-        # int() raises ValueError, which broker/app.py maps to
+        # int() raises ValueError, which warden/broker/spine.py maps to
         # input.malformed. Any other exception type would fall into the
         # backend-fault branch, which records nothing at all against the
         # agent.

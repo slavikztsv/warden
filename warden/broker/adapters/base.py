@@ -61,8 +61,8 @@ class Adapter(Protocol):
     # reads this off each concrete adapter class and requires the matching
     # schema entry to be `required = true` -- otherwise a call omitting that
     # argument makes describe() raise KeyError, which the broker's widened
-    # client-caused branch (broker/app.py) audits as input.malformed against
-    # the agent, for what is really a config-authoring defect. Declared as
+    # client-caused branch (warden/broker/spine.py) audits as input.malformed
+    # against the agent, for what is really a config-authoring defect. Declared as
     # data on each concrete class, next to the __init__ that sets the
     # attribute, rather than pattern-matched from source.
     REQUIRED_ARGS: tuple[str, ...] = ()

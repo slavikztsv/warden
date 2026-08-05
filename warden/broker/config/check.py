@@ -26,7 +26,7 @@ value that names an argument (a `binding.arg`, `binding.filter_arg`,
     describe() -- or, for DocstoreAdapter, execute(), which dereferences
     args[self._arg] where describe() only does args.get(self._arg, "") --
     raises KeyError. A describe()-time KeyError is caught by the broker's
-    widened client-caused branch (broker/app.py) and audited as
+    widened client-caused branch (warden/broker/spine.py) and audited as
     input.malformed against the agent, a config-authoring defect wearing an
     agent-caused reason. An execute()-time KeyError is worse: describe() and
     the policy decision built on it already SUCCEEDED, so the allow is

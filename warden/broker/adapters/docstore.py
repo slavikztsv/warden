@@ -12,8 +12,8 @@ class DocstoreAdapter:
     # argument name that describe() dereferences UNCONDITIONALLY -- args[name],
     # not args.get(name, ...). Read by `warden config check`: if the schema
     # does not mark that argument required, describe() raises KeyError, and
-    # the broker's widened client-caused branch (broker/app.py) audits it as
-    # input.malformed against the agent, for what is really a
+    # the broker's widened client-caused branch (warden/broker/spine.py)
+    # audits it as input.malformed against the agent, for what is really a
     # config-authoring defect. describe() below reads args.get(self._arg, ""),
     # so nothing here is dereferenced unconditionally.
     REQUIRED_ARGS: tuple[str, ...] = ()
