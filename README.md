@@ -480,7 +480,9 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   Context Protocol) **in front of the broker**, so an off-the-shelf agent gets
   brokered tools without changing.
   The adapter design already separates what a tool *is* from how it is *reached*,
-  so that is a new front door rather than a rebuild. Not built, and not claimed.
+  so that is a new front door rather than a rebuild. Not built, and not claimed —
+  [designed](docs/superpowers/specs/2026-08-05-third-party-agent-integration-design.md),
+  and sequenced in [docs/ROADMAP.md](docs/ROADMAP.md).
 - **There are four adapter kinds, and adding a fifth is not a config change.**
   `docstore`, `sql`, `http` and `mail` cover the demo's backends. A gRPC
   service, an S3 bucket or a GraphQL API has no adapter, and writing one means
@@ -530,6 +532,7 @@ each one.
 | [docs/DEMO.md](docs/DEMO.md) | Every way to run the scenario, live or recorded |
 | [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | Drive each component by hand with `curl`, no AI involved |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deployment models, required controls, tests, development |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What "production" would license us to claim, and the work between here and there |
 | [warden/reference/README.md](warden/reference/README.md) | Pointing the broker at your own tools |
 
 ---
