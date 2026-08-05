@@ -352,8 +352,10 @@ class Spine:
 
         Called from warden/broker/mcp.py's `_EraGate`, which wraps the MCP
         surface's mounted sub-app and runs BEFORE the SDK's own routing:
-        every request whose `MCP-Protocol-Version` is absent or names a
-        handshake-era release is refused right there, without ever reaching
+        every request whose `MCP-Protocol-Version` is absent, duplicated, or
+        names anything other than the one revision this server serves --
+        a handshake-era release, an unserved future revision, or outright
+        garbage -- is refused right there, without ever reaching
         `authenticate`, `handle_tool_call`, or `list_tools` above. There is
         no token and no parsed body at that point -- not even an unverified
         one -- so the record carries the same sentinel principal fields

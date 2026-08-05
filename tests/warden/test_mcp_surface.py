@@ -783,6 +783,43 @@ def test_every_handshake_era_version_is_refused_and_recorded(tmp_path, version):
     assert len(records) == 1, version
 
 
+@pytest.mark.parametrize("version", ["2027-01-01", "not-a-version", ""])
+def test_an_unserved_non_handshake_version_is_refused_and_recorded(tmp_path, version):
+    """The gap this fix closes. `_EraGate` used to refuse only "absent or a
+    member of HANDSHAKE_PROTOCOL_VERSIONS" -- which left a third shape
+    uncovered: a version that is neither, because it names a revision this
+    server has never served (an unserved future release like "2027-01-01")
+    or is not a revision at all ("not-a-version", ""). That value is not
+    None and not in HANDSHAKE_PROTOCOL_VERSIONS, so the old condition let it
+    fall through to `self._inner` -- the SDK's own routing, which sends
+    anything neither absent nor handshake-era to its modern entry
+    (`classify_inbound_request`, default `supported_modern_versions=
+    MODERN_PROTOCOL_VERSIONS`). That answers with the SAME -32022/400 the
+    gate itself returns, so the response looked identical either way -- but
+    with no spine call, so no audit record. Measured before this fix: this
+    exact request left ZERO records. Testing "not in
+    MODERN_PROTOCOL_VERSIONS" instead of "in HANDSHAKE_PROTOCOL_VERSIONS"
+    catches it in the gate, before the SDK ever routes, exactly like every
+    other era refusal."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(
+        tmp_path / (version or "empty"), signer, {"allow": True, "deny_reasons": []}
+    ) as (client, audit):
+        response = raw_post(
+            client,
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {"MCP-Protocol-Version": version},
+        )
+        records = audit.records()
+    assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION, version
+    assert len(records) == 1, version
+    assert records[0]["rule"] == "mcp.unsupported_protocol", version
+    assert records[0]["action"] == {"type": "mcp_handshake"}, version
+
+
 # --- Fix round 1: a duplicated MCP-Protocol-Version splits the gate and the
 # SDK's own routing -----------------------------------------------------------
 #

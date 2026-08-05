@@ -72,7 +72,11 @@ from mcp.server import Server, ServerRequestContext
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
 from mcp.shared.inbound import MCP_PROTOCOL_VERSION_HEADER
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION
+from mcp_types.version import (
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    LATEST_PROTOCOL_VERSION,
+    MODERN_PROTOCOL_VERSIONS,
+)
 from starlette.routing import Route
 
 from warden.broker.config.catalog import ToolCatalog
@@ -406,7 +410,23 @@ class _EraGate:
             await _refuse_era(send)
             return
         version = occurrences[0].decode("latin-1") if occurrences else None
-        if version is None or version in HANDSHAKE_PROTOCOL_VERSIONS:
+        if version is None or version not in MODERN_PROTOCOL_VERSIONS:
+            # Not "in HANDSHAKE_PROTOCOL_VERSIONS": that only names the four
+            # revisions the SDK recognises as handshake-era, and leaves a gap
+            # for the versions it recognises as neither -- an unserved future
+            # revision (e.g. "2027-01-01") or outright garbage ("not-a-
+            # version"). Those are not "absent" and not "handshake-era", so
+            # the old condition let them fall through to `self._inner`,
+            # which routes them into the SDK's own modern entry
+            # (`classify_inbound_request`, default `supported_modern_versions
+            # =MODERN_PROTOCOL_VERSIONS`) for a STRUCTURALLY IDENTICAL -32022
+            # refusal -- same code, same HTTP 400 -- with no spine call and
+            # therefore no audit record. Testing against MODERN_PROTOCOL_
+            # VERSIONS instead closes that gap by construction: it is the
+            # exact set `classify_inbound_request` itself accepts (verified
+            # against mcp.shared.inbound's default), so nothing this SDK's
+            # modern transport would serve is refused here by mistake, and
+            # everything it would refuse is now refused WITH a record.
             self._spine.record_handshake_refusal("mcp.unsupported_protocol")
             await _refuse_era(send)
             return
