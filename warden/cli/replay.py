@@ -15,6 +15,11 @@ from warden.broker.audit import AuditLog
 
 
 def _describe(record: dict) -> str:
+    if record["action"].get("type") == "tool_list":
+        # A listing carries no tool name -- it is the question "which tools
+        # may I call", refused. Without this the renderer falls through to
+        # the tool_call branch and prints `?()`.
+        return "list_tools()"
     tool = record["action"].get("tool", "?")
     target = record["target"]
     kind = target.get("kind")

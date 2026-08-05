@@ -153,3 +153,50 @@ def test_authentication_failure_never_reads_the_request_body(tmp_path, monkeypat
     records = audit.records()
     assert len(records) == 3
     assert [r["rule"] for r in records] == ["unauthenticated"] * 3
+
+
+def test_listing_is_filtered_by_the_token_and_records_nothing(tmp_path):
+    from tests.warden.test_app import build, token_for
+    from warden.broker.identity import Signer
+    from warden.broker.spine import Kind
+
+    signer = Signer.generate()
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    spine = client.app.state.spine
+
+    # The token grants three of the catalog's four tools.
+    outcome = spine.list_tools(token_for(signer))
+    assert outcome.kind is Kind.LISTED
+    assert outcome.tools == ("http_fetch", "query_customers", "read_document")
+    assert audit.records() == []
+
+
+def test_an_unauthenticated_listing_is_refused_and_recorded(tmp_path):
+    from tests.warden.test_app import build
+    from warden.broker.identity import Signer
+    from warden.broker.spine import Kind
+
+    signer = Signer.generate()
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    spine = client.app.state.spine
+
+    outcome = spine.list_tools(None)
+    assert outcome.kind is Kind.UNAUTHENTICATED
+    assert outcome.tools == ()
+    records = audit.records()
+    assert len(records) == 1
+    assert records[0]["action"] == {"type": "tool_list"}
+    assert records[0]["agent_id"] == "unauthenticated"
+    assert records[0]["rule"] == "unauthenticated"
+
+
+def test_replay_renders_a_list_refusal(tmp_path):
+    """A record shape the renderer has never seen prints as `?()` -- an
+    illegible line in the same hash chain as real decisions."""
+    from warden.cli.replay import _describe
+
+    rendered = _describe({
+        "action": {"type": "tool_list"},
+        "target": {"kind": "unknown"},
+    })
+    assert rendered == "list_tools()"
