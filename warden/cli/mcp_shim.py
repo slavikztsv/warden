@@ -123,17 +123,29 @@ Python 3 has no implicit relative imports, so a module named `mcp_shim`
 inside `warden.cli` cannot shadow the top-level `mcp` package for its own
 imports -- and the `mcp` extra is optional, so every SDK import is deferred
 into function bodies rather than sitting at module scope, matching how
-warden/broker/mcp.py handles the same optional dependency.)
+warden/broker/mcp.py handles the same optional dependency. `httpx2` is part
+of that deferral too, even though it is `mcp`'s own transitive dependency
+rather than something this module talks to the SDK through directly:
+`warden.cli.main`'s `_cmd_mcp` imports `run_shim` from this module OUTSIDE
+any try/except, so a module-scope `import httpx2` here would turn a missing
+extra into an uncaught `ModuleNotFoundError` traceback instead of the clean
+`error: install warden[mcp]` every other missing-extra path produces. The one
+wrinkle is `TokenFileAuth`, which subclasses `httpx2.Auth` -- a base class
+has to exist at class-definition time, so it cannot simply live inside a
+`def` the way a function-body `import httpx2` can. `_token_file_auth_class()`
+below builds it lazily instead, on first call, and caches the result: every
+caller after the first gets back the same class object with no repeated
+import or repeated class construction, and nothing at module scope ever
+touches `httpx2` at all.)
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import stat
 from pathlib import Path
 from urllib.parse import urlparse
-
-import httpx2
 
 # The wire key the SDK stamps onto every 2026-07-28 result's `_meta`
 # (mcp_types._types.SERVER_INFO_META_KEY). Named once, not re-spelled at each
@@ -141,36 +153,47 @@ import httpx2
 _SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
 
 
-class TokenFileAuth(httpx2.Auth):
-    """Reads the task token from disk on every request, never once.
+@functools.lru_cache(maxsize=1)
+def _token_file_auth_class():
+    """Builds and caches the `TokenFileAuth` class, importing `httpx2` only
+    on first call rather than at module scope -- see the module docstring's
+    closing paragraph for why that matters. `lru_cache` rather than a
+    module-level `_cls = None` sentinel: it is the same one-time-then-cached
+    shape without a mutable global to get out of sync, and every call site
+    below reads as "the class", not "build it, unless already built".
 
-    A ``Client`` captures its ``httpx2.AsyncClient``'s default headers at
-    construction time; a bare ``Authorization`` header set once would never
-    see a token rewritten later, which only breaks once renewal exists, as
-    "the session dies at the first refresh". Subclassing ``httpx2.Auth``
-    instead means the read happens inside ``auth_flow``, which the client
-    calls fresh before every outgoing request.
+    Reads the task token from disk on every request, never once. A `Client`
+    captures its `httpx2.AsyncClient`'s default headers at construction time;
+    a bare `Authorization` header set once would never see a token rewritten
+    later, which only breaks once renewal exists, as "the session dies at the
+    first refresh". Subclassing `httpx2.Auth` instead means the read happens
+    inside `auth_flow`, which the client calls fresh before every outgoing
+    request.
     """
+    import httpx2
 
-    def __init__(self, path: Path) -> None:
-        self._path = Path(path)
+    class TokenFileAuth(httpx2.Auth):
+        def __init__(self, path: Path) -> None:
+            self._path = Path(path)
 
-    def read(self) -> str:
-        st = self._path.stat()
-        if st.st_uid != os.getuid():
-            raise PermissionError(
-                f"{self._path} is not owned by this process's uid "
-                f"({os.getuid()}); refusing to read it"
-            )
-        if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise PermissionError(
-                f"{self._path} is group- or world-accessible; it must be 0600"
-            )
-        return self._path.read_text(encoding="utf-8").strip()
+        def read(self) -> str:
+            st = self._path.stat()
+            if st.st_uid != os.getuid():
+                raise PermissionError(
+                    f"{self._path} is not owned by this process's uid "
+                    f"({os.getuid()}); refusing to read it"
+                )
+            if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                raise PermissionError(
+                    f"{self._path} is group- or world-accessible; it must be 0600"
+                )
+            return self._path.read_text(encoding="utf-8").strip()
 
-    def auth_flow(self, request):
-        request.headers["Authorization"] = f"Bearer {self.read()}"
-        yield request
+        def auth_flow(self, request):
+            request.headers["Authorization"] = f"Bearer {self.read()}"
+            yield request
+
+    return TokenFileAuth
 
 
 def validate_broker(url: str, *, allow_http: bool = False) -> str:
@@ -194,6 +217,8 @@ def validate_broker(url: str, *, allow_http: bool = False) -> str:
 def build_upstream_client(broker: str) -> httpx2.AsyncClient:
     """The httpx2 client the upstream MCP transport sends every request
     through. Every keyword here is one of the six hardening rules."""
+    import httpx2
+
     return httpx2.AsyncClient(
         base_url=broker,
         # The agent that launched this process is told (rung 0) to export
@@ -279,7 +304,7 @@ def run_shim(broker: str, token_file: Path, *, allow_http: bool = False) -> int:
     from mcp.server.stdio import stdio_server
 
     validate_broker(broker, allow_http=allow_http)
-    auth = TokenFileAuth(Path(token_file))
+    auth = _token_file_auth_class()(Path(token_file))
 
     async def main() -> None:
         client = build_upstream_client(broker)

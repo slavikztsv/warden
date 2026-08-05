@@ -28,7 +28,19 @@ import pytest
 
 pytest.importorskip("mcp", reason="requires the warden[mcp] extra")
 
-from warden.cli.mcp_shim import TokenFileAuth, build_upstream_client, validate_broker
+from warden.cli.mcp_shim import (
+    _token_file_auth_class,
+    build_upstream_client,
+    validate_broker,
+)
+
+# `TokenFileAuth` itself is not a module-level name: it subclasses
+# `httpx2.Auth`, and the module builds it lazily inside
+# `_token_file_auth_class()` so that importing `warden.cli.mcp_shim` never
+# needs `httpx2` -- see that module's docstring. `TokenFileAuth` below is
+# this test module's own bound name for the (cached, so this is one class
+# for the whole run) class the factory returns.
+TokenFileAuth = _token_file_auth_class()
 
 
 # --- Unit level: the six hardening rules, in isolation ----------------------
@@ -375,3 +387,108 @@ def test_a_401_does_not_tear_down_the_shim_or_its_upstream(tmp_path):
     assert "Unauthenticated" in raised.message
     assert recovered.is_error is False
     assert [r["decision"] for r in audit.records()] == ["allow", "deny", "allow"]
+
+
+# --- The extra genuinely absent, driven through the CLI ---------------------
+#
+# Everything above runs with `mcp` (and therefore `mcp_types` and `httpx2`)
+# actually installed -- this test file's own `importorskip` at the top
+# requires it. The two tests below simulate the OTHER case -- an operator
+# who ran `pip install warden` without the `[mcp]` extra -- from inside that
+# same installed environment, by poisoning `sys.modules` rather than by
+# actually uninstalling anything.
+
+
+def _poison_mcp_extra(monkeypatch):
+    """Makes `mcp`, `mcp_types`, and `httpx2` unimportable for the rest of
+    this test -- the same `sys.modules[name] = None` technique
+    test_mcp_surface.py's own `test_enabling_the_surface_without_the_extra_
+    fails_at_boot` uses for `mcp` alone.
+
+    Evicting every already-cached submodule under these three roots first is
+    what makes it work HERE: a bare `sys.modules["mcp"] = None` does not
+    stop `from mcp.client.streamable_http import ...` once that submodule is
+    already fully imported and cached under its own dotted name -- as it
+    always is by the time this test runs, from the real-SDK tests earlier in
+    this same file. Measured: without the eviction loop below, `run_shim`
+    reaches its upstream connection instead of raising. Deleting every
+    cached entry first forces the next import of any of them to re-resolve
+    starting from the (poisoned) top-level name, exactly as it would in a
+    process where the package was never installed at all.
+
+    `warden.cli.mcp_shim` and `warden.cli.main` are evicted too, and for the
+    identical reason: this test file's own top-of-module `from
+    warden.cli.mcp_shim import ...` already fully imported and cached the
+    REAL mcp_shim -- with a real, working module-scope `import httpx2` if
+    one ever crept back in -- long before this test runs. Without evicting
+    it here, that module-scope statement (the exact bug this fix removes)
+    would never re-run under the poisoned environment, and a regression that
+    reintroduced it would pass this test by accident, for the same reason a
+    stale cache always hides an import-time regression: the broken line
+    simply never executes a second time.
+    """
+    import sys
+
+    roots = ("mcp", "mcp_types", "httpx2")
+    prefixes = tuple(f"{root}." for root in roots)
+    for name in list(sys.modules):
+        if name in roots or name.startswith(prefixes):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delitem(sys.modules, "warden.cli.mcp_shim", raising=False)
+    monkeypatch.delitem(sys.modules, "warden.cli.main", raising=False)
+    for root in roots:
+        monkeypatch.setitem(sys.modules, root, None)
+
+
+def test_mcp_help_works_without_the_extra_installed(monkeypatch, capsys):
+    """`warden mcp --help` must work whether or not `warden[mcp]` is
+    installed, because argparse builds and prints the subcommand's help --
+    and exits -- before `_cmd_mcp`, and therefore this module, is ever
+    reached. Proven with mcp, mcp_types AND httpx2 all made unimportable."""
+    from warden.cli.main import main as cli_main
+
+    _poison_mcp_extra(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main(["mcp", "--help"])
+    assert exc_info.value.code == 0
+
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert "--broker" in captured.out
+
+
+def test_cmd_mcp_reports_a_missing_extra_cleanly_not_a_traceback(monkeypatch, capsys):
+    """The gap this fix closes. `_cmd_mcp`'s `from warden.cli.mcp_shim import
+    run_shim` used to raise `ModuleNotFoundError: No module named 'httpx2'`
+    itself -- outside any try/except -- because mcp_shim.py imported httpx2
+    at module scope (see that module's docstring). Deferring the import
+    fixes THAT path: this module no longer needs `httpx2` (or `mcp`, or
+    `mcp_types`) to be importable at all. But `run_shim`'s own body still
+    imports `mcp` the moment it actually runs, inside `_cmd_mcp`'s
+    try/except -- so `_cmd_mcp` now also catches `ImportError` there, and
+    this proves the result is the same clean `error: ...` line every other
+    missing-extra path in this codebase gives, not a bare traceback. Driven
+    with all three names poisoned: any one of them missing is the identical
+    "extra not installed" fact from an operator's point of view."""
+    from warden.cli.main import main as cli_main
+
+    _poison_mcp_extra(monkeypatch)
+
+    exit_code = cli_main(
+        [
+            "mcp",
+            "--broker",
+            "https://broker.internal/mcp",
+            "--token-file",
+            "/nonexistent-token-file",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert captured.err.strip().startswith("error:")
+    assert "warden[mcp]" in captured.err

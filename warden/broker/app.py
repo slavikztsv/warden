@@ -44,10 +44,17 @@ from warden.broker.spine import (
 from warden.broker.taint import TaintTracker
 
 
-# The top-level packages `warden[mcp]` installs. An ImportError naming
-# anything else out of warden/broker/mcp.py is a first-party defect, not a
-# missing extra, and must not be reported as one.
-_MCP_EXTRA = frozenset({"mcp", "mcp_types"})
+# The top-level packages `warden[mcp]` installs, or that installing it pulls
+# in transitively. `httpx2` is the transitive case: `pyproject.toml`'s `mcp`
+# extra names only `mcp==2.0.0`, but `mcp/__init__.py` itself imports
+# `httpx2` (via `mcp.client.session_group`), so a partial install missing
+# only `httpx2` surfaces as `ModuleNotFoundError` with `.name == "httpx2"`,
+# not `"mcp"` -- measured. Leaving it out of this set would make that one
+# missing package the sole case reported as a first-party defect instead of
+# "install warden[mcp]". An ImportError naming anything else out of
+# warden/broker/mcp.py IS a first-party defect, not a missing extra, and
+# must not be reported as one.
+_MCP_EXTRA = frozenset({"mcp", "mcp_types", "httpx2"})
 
 
 def now() -> int:

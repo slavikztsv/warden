@@ -662,6 +662,50 @@ def test_enabling_the_surface_without_the_extra_fails_at_boot(tmp_path, monkeypa
             pass  # pragma: no cover
 
 
+def test_a_partial_install_missing_only_httpx2_is_also_reported_as_the_extra(
+    tmp_path, monkeypatch
+):
+    """The gap `_MCP_EXTRA` used to have. `pyproject.toml`'s `mcp` extra names
+    only `mcp==2.0.0`, but `mcp/__init__.py` itself imports `httpx2`
+    (transitively, via `mcp.client.session_group`) -- so a virtualenv with
+    `mcp` and `mcp_types` installed but `httpx2` missing (a broken partial
+    install, or a lockfile drift) makes `from mcp import types` inside
+    warden/broker/mcp.py raise `ModuleNotFoundError` with `.name == "httpx2"`,
+    not `"mcp"`. `_MCP_EXTRA` used to be `{"mcp", "mcp_types"}`, which does
+    not contain "httpx2" -- so create_app's `exc.name.split(".")[0] not in
+    _MCP_EXTRA` read that as a first-party defect and re-raised the bare
+    ModuleNotFoundError instead of the same clean ConfigError the sibling
+    test above gets for `mcp` itself missing entirely.
+
+    Reproduced without uninstalling anything: `mcp` and `warden.broker.mcp`
+    are evicted from `sys.modules` so `from mcp import types` re-executes
+    `mcp/__init__.py` for real rather than returning an already-cached
+    module (which would skip its imports entirely and prove nothing), and
+    `httpx2` is evicted and then poisoned. `mcp_types` is left alone,
+    cached and real, which is what makes this "only httpx2 is missing"
+    rather than a repeat of the sibling test above.
+    """
+    import sys
+
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.config.loader import ConfigError
+    from warden.broker.identity import Signer
+
+    for name in list(sys.modules):
+        if name == "mcp" or name.startswith("mcp."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.delitem(sys.modules, "warden.broker.mcp", raising=False)
+    for name in list(sys.modules):
+        if name == "httpx2" or name.startswith("httpx2."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "httpx2", None)
+
+    signer = Signer.generate()
+    with pytest.raises(ConfigError, match=r"warden\[mcp\]"):
+        with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}):
+            pass  # pragma: no cover
+
+
 # --- The handshake era, driven raw -----------------------------------------
 #
 # Every test above goes through the SDK's Client, which negotiates 2026-07-28.

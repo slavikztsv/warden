@@ -129,7 +129,11 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     # Lazy: `mcp` is an optional extra (warden[mcp]), and `warden mcp --help`
     # must work whether or not it is installed -- matching how every other
     # handler here defers its own heavy/optional imports past argument
-    # parsing.
+    # parsing. This import alone cannot raise ImportError for a missing
+    # extra any more: warden/cli/mcp_shim.py's own module scope imports
+    # nothing from `mcp`, `mcp_types`, or `httpx2` (see that module's
+    # docstring) -- but `run_shim`, below, still does, inside its own body,
+    # the first time it actually needs the SDK.
     from warden.cli.mcp_shim import run_shim
 
     try:
@@ -138,6 +142,16 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
         )
     except (ValueError, PermissionError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except ImportError as exc:
+        # Raised from inside run_shim's own deferred imports (`mcp`,
+        # `mcp_types`, or its transitive `httpx2`) when `warden[mcp]` is not
+        # installed. Without this, that ModuleNotFoundError -- a plain
+        # ImportError subclass, not one of the three caught above -- would
+        # reach the caller as a bare traceback instead of the same clean
+        # "install warden[mcp]" message every other missing-extra path in
+        # this codebase gives (see warden/broker/app.py's own catch).
+        print(f"error: warden[mcp] is not installed: {exc}", file=sys.stderr)
         return 1
 
 
