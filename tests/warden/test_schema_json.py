@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
-
 import pytest
 from jsonschema import Draft202012Validator
 
@@ -58,29 +56,65 @@ def test_an_unmappable_type_raises_rather_than_emitting_an_empty_schema():
 def test_the_generated_schema_and_accepts_agree_in_both_directions():
     """The property test. A schema looser than accepts() produces calls the
     broker denies as input.malformed; a tighter one produces calls the client
-    refuses to send at all -- silently, with no record anywhere."""
+    refuses to send at all -- silently, with no record anywhere.
+
+    `sr` is the only required spec. ToolSchema.validate() (schema.py:86-97)
+    iterates every spec in the schema, not just the keys present in the
+    payload, so a payload missing `sr` forces enforced=False, and the
+    generated schema's "required": ["sr"] forces advertised=False in
+    lockstep -- regardless of how any OTHER key is mapped. A payload that
+    omits `sr` therefore can't discriminate a wrong mapping on any other
+    spec: both sides agree for the same reason (the missing key), not
+    because the mapping under test is correct.
+
+    So the majority of payloads below carry a valid "sr": "x" and vary
+    exactly one other key -- that's what actually exercises non_empty,
+    null_is_absent, and additionalProperties. A minority of payloads still
+    omit `sr`, to keep the required-check itself covered.
+    """
     specs = {
         "s": ArgSpec(type="string"),
         "sr": ArgSpec(type="string", required=True),
         "sn": ArgSpec(type="string", non_empty=True),
         "sz": ArgSpec(type="string", null_is_absent=True),
+        "snz": ArgSpec(type="string", non_empty=True, null_is_absent=True),
         "a": ArgSpec(type="array", items="string"),
         "an": ArgSpec(type="array", items="string", non_empty=True),
+        "anz": ArgSpec(type="array", items="string", non_empty=True, null_is_absent=True),
     }
     schema = build(specs)
     validator = Draft202012Validator(json_schema(schema))
 
     values = ["x", "", None, [], ["a"], ["a", 1], 42, {"k": "v"}]
     names = sorted(specs)
-    # Every one-key payload, plus the empty one and a two-key one, over every
-    # value. Enough to exercise required/non_empty/null/type in combination
-    # without enumerating 8**6.
-    payloads = [{}]
-    for name in names:
-        payloads += [{name: value} for value in values]
-    for a, b in itertools.combinations(names, 2):
-        payloads += [{a: "x", b: "y"}, {a: None, b: []}]
-    payloads += [{"unknown": "x"}]
+    non_required = [name for name in names if name != "sr"]
+
+    payloads = []
+
+    # Majority: sr present and valid, crossed with every non-required spec
+    # over every value. This is what actually probes each mapping, because
+    # the required-check on sr agrees on both sides before any other key is
+    # considered -- so it can't mask a wrong mapping here. Covers, among
+    # others, {"sr": "x", "sz": None} (null-with-sr), {"sr": "x", "s": None}
+    # (null on a spec where null is NOT allowed), {"sr": "x", "sn": ""} and
+    # {"sr": "x", "an": []} (non_empty violations), and the null_is_absent +
+    # non_empty combinations via snz/anz.
+    for name in non_required:
+        for value in values:
+            payloads.append({"sr": "x", name: value})
+
+    # sr present with an unknown key alongside it: probes
+    # additionalProperties without the required-check masking the result.
+    payloads.append({"sr": "x", "unknown": "y"})
+
+    # sr alone: baseline, satisfies required, nothing else present.
+    payloads.append({"sr": "x"})
+
+    # Minority: sr omitted, so the required-check itself stays covered, but
+    # it no longer dominates the whole payload set.
+    payloads.append({})
+    payloads += [{"sr": value} for value in values]
+    payloads.append({"unknown": "x"})
 
     disagreements = []
     for payload in payloads:
