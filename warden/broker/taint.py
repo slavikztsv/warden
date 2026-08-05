@@ -31,6 +31,29 @@ class TaintTracker:
             "rows_returned_so_far": state.rows_returned_so_far,
         }
 
+    def peek(self, task_id: str) -> dict:
+        """The same view as `snapshot`, WITHOUT creating an entry for a
+        task_id that has never read anything.
+
+        `snapshot` and `record_read` both key off `self._tasks[task_id]`, a
+        defaultdict -- fine for every caller on the serving path, which only
+        ever asks about a task_id a minted token names, about to spend its
+        budget, and which `record_read` (or the next `snapshot`) will fill
+        in regardless. A read-only caller -- a diagnostic, an operator
+        question -- may ask about an ARBITRARY string with no minted token
+        behind it at all, and creating a phantom entry for one that never
+        spends anything would leak memory for every id it is ever asked
+        about, forever. `Spine.task_state` reads through here, not through
+        `snapshot`, for exactly that reason.
+        """
+        state = self._tasks.get(task_id)
+        if state is None:
+            return {"data_classes_held": [], "rows_returned_so_far": 0}
+        return {
+            "data_classes_held": sorted(state.data_classes_held),
+            "rows_returned_so_far": state.rows_returned_so_far,
+        }
+
     def record_read(self, task_id: str, *, data_class: str | None, rows: int) -> None:
         if rows < 0:
             raise ValueError(f"rows must be non-negative, got {rows}")

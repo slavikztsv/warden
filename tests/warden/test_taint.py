@@ -56,6 +56,29 @@ def test_negative_rows_are_rejected():
     assert tracker.snapshot("4711")["rows_returned_so_far"] == 0
 
 
+def test_peek_does_not_create_an_entry_for_an_unseen_task():
+    """Unlike snapshot(), which reads through self._tasks[task_id] (a
+    defaultdict access that plants an entry), peek() must leave an unseen
+    task_id untouched -- Spine.task_state reads through here precisely so a
+    caller asking about an arbitrary id cannot leak one phantom entry per id,
+    forever."""
+    tracker = TaintTracker()
+    assert tracker.peek("never-seen") == {
+        "data_classes_held": [],
+        "rows_returned_so_far": 0,
+    }
+    assert "never-seen" not in tracker._tasks
+
+
+def test_peek_reports_the_same_state_snapshot_would():
+    tracker = TaintTracker()
+    tracker.record_read("4711", data_class="pii", rows=3)
+    assert tracker.peek("4711") == tracker.snapshot("4711") == {
+        "data_classes_held": ["pii"],
+        "rows_returned_so_far": 3,
+    }
+
+
 def test_snapshot_is_not_a_live_view_of_internal_state():
     tracker = TaintTracker()
     tracker.record_read("4711", data_class="pii", rows=1)

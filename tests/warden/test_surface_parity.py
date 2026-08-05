@@ -15,14 +15,25 @@ Coverage note -- not every `Kind` in `warden/broker/spine.py` is reachable
 through both doors, and this file says so at each Kind's own test rather
 than silently omitting it:
 
-* `Kind.MALFORMED_BODY_DENIED` is HTTP-only. It fires when
-  `warden/broker/app.py`'s `_parse_args` cannot parse the request body as a
-  JSON object at all -- `args=None` reaches the spine, which reserves that
-  exact value for "a body that did not parse". MCP's JSON-RPC transport
-  never hands a handler an unparsed body: `params.arguments` is already a
-  parsed value (or absent, which `on_call_tool` normalises to `{}`, never to
-  `None`) by the time the handler runs. See
+* `Kind.MALFORMED_BODY_DENIED` is HTTP-only, and for `arguments: null`
+  specifically that IS a benign transport difference, not a divergence: it
+  fires when `warden/broker/app.py`'s `_parse_args` cannot parse the request
+  body as a JSON object at all -- `args=None` reaches the spine, which
+  reserves that exact value for "a body that did not parse". MCP's JSON-RPC
+  transport never hands a handler an unparsed body: `params.arguments` is
+  already a parsed value (or absent, which `on_call_tool` normalises to
+  `{}`, never to `None`) by the time the handler runs. See
   `test_malformed_body_is_denied_over_http_only`.
+
+  A DIFFERENT, REAL divergence sits right next to it, and is not benign:
+  `arguments` of a well-formed but NON-OBJECT type (a string, a list, ...)
+  is rejected by the SDK's own pydantic validation before ANY handler runs
+  -- -32602, zero audit records -- while the identical caller mistake on
+  the HTTP door (`args` as a non-dict) is denied and AUDITED as
+  input.malformed, the same as the null-body case above. This is reachable
+  by any MCP client today, not a hypothetical: the two doors do not agree
+  on whether the attempt is recorded at all. Pinned, not glossed over, by
+  `test_non_object_arguments_are_recorded_on_http_and_invisible_on_mcp`.
 
 * `Kind.LISTED` belongs to a different dataclass (`ListOutcome`, returned by
   `Spine.list_tools`) than the `Outcome` this file compares -- so it sits
@@ -59,12 +70,24 @@ evolution a single, correctly-ordered tracker predicts.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+
 import httpx
 import pytest
 
 pytest.importorskip("mcp", reason="requires the warden[mcp] extra")
 
-from warden.broker.adapters.base import ToolResult
+# Only reachable once "mcp" itself imported cleanly -- importorskip above
+# aborts the whole module before these lines run otherwise, and mcp_types is
+# one of mcp==2.0.0's own pinned dependencies, so it is never absent when
+# "mcp" is present. Same convention as test_mcp_surface.py's own post-skip
+# imports.
+from mcp.server import ServerRequestContext  # noqa: E402
+from mcp_types._types import CallToolRequestParams  # noqa: E402
+from mcp_types.version import LATEST_MODERN_VERSION  # noqa: E402
+
+from warden.broker.adapters.base import ToolResult  # noqa: E402
 
 VOLATILE = {"seq", "ts", "prev_hash", "hash"}
 
@@ -123,12 +146,12 @@ def test_both_surfaces_write_the_same_record(tmp_path, name, payload, tool, args
     token = token_for(signer)
     with build_with_mcp(tmp_path, signer, payload) as (client, audit):
         response = invoke(client, token, tool, args)
-        try:
-            mcp_result = call_tool(client, token, tool, args)
-        except Exception:
-            # A protocol error is a legitimate rendering for some variants;
-            # the record it wrote is what the rest of this test is about.
-            mcp_result = None
+        # Every CASES entry is DENIED-shaped -- a TOOL error on MCP, not a
+        # protocol error (see DENIED's own set in spine.py and render_call's
+        # branch for it) -- so this is never expected to raise. No
+        # try/except: a raise here is a genuine failure of this test's own
+        # precondition, not a "legitimate alternate rendering" to swallow.
+        mcp_result = call_tool(client, token, tool, args)
 
         records = audit.records()
         assert len(records) == 2, f"{name}: {records}"
@@ -142,7 +165,6 @@ def test_both_surfaces_write_the_same_record(tmp_path, name, payload, tool, args
         assert response.status_code == 403, f"{name}: {response.status_code}"
         body = response.json()
         assert body["rule"] == records[0]["rule"], f"{name}: {body} vs {records[0]}"
-        assert mcp_result is not None, f"{name}: MCP raised instead of denying"
         assert mcp_result.is_error is True, name
         mcp_text = mcp_result.content[0].text
         assert body["rule"] in mcp_text, f"{name}: {body['rule']!r} not in {mcp_text!r}"
@@ -159,6 +181,21 @@ def test_both_surfaces_write_the_same_record_when_allowed(tmp_path):
     task_state is asserted equal outright; task_state is asserted against
     the EXACT evolution a single, correctly-ordered taint tracker predicts,
     which is strictly more informative than raw equality would have been.
+
+    This is also the ONE place the RENDERED content itself is compared, not
+    only the audit record. EXECUTED is the one rendering where divergence
+    directly changes what a model sees on a successful call -- app.py's
+    JSON body carries `outcome.result.content` under "content"; mcp.py's
+    `render_call` renders the SAME `outcome.result.content` as the tool
+    result's text. Nothing upstream of rendering could ever produce a
+    divergence there (both come from the same ToolResult the spine
+    returned), which is exactly why only the RENDERING code path can
+    introduce one -- and exactly why a record-only comparison, which is
+    blind to rendering by construction, cannot see it. (MCP's
+    `CallToolResult` carries no separate row count anywhere -- `render_call`
+    never surfaces `outcome.result.rows` on any tool -- so there is nothing
+    on that side to compare a row count against; HTTP's `rows` field is
+    checked against the record it was built from instead.)
     """
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
@@ -189,6 +226,11 @@ def test_both_surfaces_write_the_same_record_when_allowed(tmp_path):
         "rows_returned_so_far": 0,
     }
 
+    body = response.json()
+    assert body["content"] == "doc-body"
+    assert body["content"] == result.content[0].text
+    assert body["rows"] == 0
+
 
 def test_both_surfaces_write_the_same_record_when_unauthenticated(tmp_path):
     """UNAUTHENTICATED, reached with a credential neither door can verify.
@@ -199,10 +241,21 @@ def test_both_surfaces_write_the_same_record_when_unauthenticated(tmp_path):
     entirely). A garbage token STRING, sent identically by both doors,
     sidesteps that difference: both land on the same
     `Spine._authenticate()` failure for the same reason.
+
+    The raised MCPError's CODE is checked, not merely that SOME MCPError was
+    raised -- `pytest.raises(MCPError)` alone cannot tell UNAUTHENTICATED
+    apart from AUDIT_UNAVAILABLE_ON_UNAUTHENTICATED (see
+    test_both_surfaces_write_nothing_when_the_audit_log_is_unavailable),
+    which raises the SAME exception type with a DIFFERENT code. mcp.py binds
+    the two to `types.INVALID_REQUEST` and `types.INTERNAL_ERROR`
+    respectively, exported as `UNAUTHENTICATED_CODE`/`FAULT_CODE`.
     """
+    from mcp.shared.exceptions import MCPError
+
     from tests.warden.test_app import build_with_mcp, invoke
     from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
+    from warden.broker.mcp import UNAUTHENTICATED_CODE
 
     signer = Signer.generate()
     bogus = "not-a-jwt-at-all"
@@ -212,13 +265,9 @@ def test_both_surfaces_write_the_same_record_when_unauthenticated(tmp_path):
     ):
         response = invoke(client, bogus, "read_document", {"doc_id": "a"})
         assert response.status_code == 401
-        try:
+        with pytest.raises(MCPError) as caught:
             call_tool(client, bogus, "read_document", {"doc_id": "a"})
-        except Exception:
-            # MCP renders UNAUTHENTICATED as a protocol error -- see the
-            # module docstring on mcp.py -- so this raises rather than
-            # returning a result. The record it wrote is what matters here.
-            pass
+        assert caught.value.code == UNAUTHENTICATED_CODE
 
         records = audit.records()
     assert len(records) == 2, records
@@ -232,7 +281,24 @@ def test_both_surfaces_write_the_same_record_after_a_durable_allow_whose_execute
     """EXECUTE_FAILED_AFTER_DURABLE_ALLOW. The allow record is written
     BEFORE execute() ever runs, so this still writes exactly one record per
     call -- same shape as EXECUTED -- and only what happens after execute()
-    differs (a 502 / a tool error, instead of content)."""
+    differs (a 502 / a tool error, instead of content).
+
+    render_call's AFTER_EXECUTE branch RETURNS a `CallToolResult(is_error=
+    True)` -- it does not raise -- so both renderings are available to
+    compare, the same as every CASES entry above. This is the security-
+    relevant rendering in the whole file: the "do not repeat this call"
+    warning is what stops a model from re-sending an email (or any other
+    already-executed action) that has no way to be un-sent, and it carries
+    the seq of the specific durable-allow record EACH call wrote -- not a
+    shared string, since the HTTP call and the MCP call each mint their OWN
+    allow record with its OWN seq. So each rendering is checked against ITS
+    OWN call's seq, not against each other directly -- a wrong seq on
+    either side (or a rendering that drops it and falls back to a generic
+    "nothing ran" message) fails this the same way a record disagreement
+    would.
+    """
+    from warden.broker.refusals import after_the_fact
+
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
@@ -251,15 +317,16 @@ def test_both_surfaces_write_the_same_record_after_a_durable_allow_whose_execute
     ) as (client, audit):
         http = invoke(client, token, "http_fetch", {"url": "http://x.internal/a"})
         assert http.status_code == 502
-        try:
-            call_tool(client, token, "http_fetch", {"url": "http://x.internal/a"})
-        except Exception:
-            pass
+        mcp_result = call_tool(client, token, "http_fetch", {"url": "http://x.internal/a"})
+        assert mcp_result.is_error is True
 
         records = audit.records()
     assert len(records) == 2, records
     assert _stripped(records[0]) == _stripped(records[1])
     assert records[0]["decision"] == "allow"
+
+    assert http.json()["message"] == after_the_fact(records[0]["seq"])
+    assert mcp_result.content[0].text == after_the_fact(records[1]["seq"])
 
 
 def test_both_surfaces_write_the_same_record_when_taint_rejects_the_read(tmp_path):
@@ -268,12 +335,14 @@ def test_both_surfaces_write_the_same_record_when_taint_rejects_the_read(tmp_pat
     guard against silently under-counting the row budget. Like
     EXECUTE_FAILED_AFTER_DURABLE_ALLOW, the allow record is durable before
     the taint update ever runs, so this too writes exactly one record per
-    call."""
+    call -- and renders the same AFTER_EXECUTE warning, checked the same way
+    (each call's own seq, not the two renderings against each other)."""
     from demo.mocks.seed_db import seed_customers
     from tests.support.catalog import demo_catalog
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
+    from warden.broker.refusals import after_the_fact
 
     signer = Signer.generate()
     token = token_for(signer)
@@ -301,15 +370,16 @@ def test_both_surfaces_write_the_same_record_when_taint_rejects_the_read(tmp_pat
     ) as (client, audit):
         http = invoke(client, token, "read_document", {"doc_id": "a"})
         assert http.status_code == 502
-        try:
-            call_tool(client, token, "read_document", {"doc_id": "a"})
-        except Exception:
-            pass
+        mcp_result = call_tool(client, token, "read_document", {"doc_id": "a"})
+        assert mcp_result.is_error is True
 
         records = audit.records()
     assert len(records) == 2, records
     assert _stripped(records[0]) == _stripped(records[1])
     assert records[0]["decision"] == "allow"
+
+    assert http.json()["message"] == after_the_fact(records[0]["seq"])
+    assert mcp_result.content[0].text == after_the_fact(records[1]["seq"])
 
 
 # --- The two kinds that write ZERO records, for two different reasons ------
@@ -322,12 +392,15 @@ def test_both_surfaces_write_nothing_on_a_describe_backend_fault(tmp_path):
     against it." So the parity claim here is not "the two records agree"
     (there are none) -- it is that NEITHER door quietly writes one anyway,
     which a renderer with its own opinion about what "unaudited" means could
-    still do."""
+    still do. Unlike AFTER_EXECUTE, there is no durable record to name, so
+    both renderings are the SAME static string (refusals.NOTHING_RAN) and
+    are compared directly, not per-call."""
     from warden.broker.config.catalog import CatalogEntry, ToolCatalog
     from warden.broker.config.schema import ArgSpec, ToolSchema
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
+    from warden.broker.refusals import NOTHING_RAN
 
     class Explodes:
         target_kind = "doc"
@@ -359,6 +432,9 @@ def test_both_surfaces_write_nothing_on_a_describe_backend_fault(tmp_path):
 
         assert audit.records() == []
 
+    assert http.json()["message"] == NOTHING_RAN
+    assert result.content[0].text == NOTHING_RAN
+
 
 AUDIT_UNAVAILABLE_CASES = [
     ("on_allow", {"allow": True, "deny_reasons": []}, False),
@@ -382,12 +458,22 @@ def test_both_surfaces_write_nothing_when_the_audit_log_is_unavailable(
     nothing gets written by EITHER door when the log cannot durably hold the
     record it is about to write -- not that two records agree, because
     there are none.
+
+    The raised MCPError's CODE is checked against `FAULT_CODE`
+    (`types.INTERNAL_ERROR`) specifically -- `pytest.raises(MCPError)` alone
+    cannot distinguish this from UNAUTHENTICATED (see
+    test_both_surfaces_write_the_same_record_when_unauthenticated), which
+    raises the same exception TYPE with `UNAUTHENTICATED_CODE`
+    (`types.INVALID_REQUEST`) instead. A caller reading a raw JSON-RPC error
+    code off the wire needs the two to actually differ, not merely both be
+    "some MCPError".
     """
     from mcp.shared.exceptions import MCPError
 
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
+    from warden.broker.mcp import FAULT_CODE
 
     signer = Signer.generate()
     token = "not-a-jwt-at-all" if unauthenticated else token_for(signer)
@@ -403,8 +489,9 @@ def test_both_surfaces_write_nothing_when_the_audit_log_is_unavailable(
         assert http.status_code == 503, f"{name}: {http.status_code}"
         assert http.json()["error"] == "audit_unavailable"
 
-        with pytest.raises(MCPError):
+        with pytest.raises(MCPError) as caught:
             call_tool(client, token, "read_document", {"doc_id": "a"})
+        assert caught.value.code == FAULT_CODE, f"{name}: {caught.value.code}"
 
         assert audit.records() == [], f"{name}: {audit.records()}"
 
@@ -445,6 +532,94 @@ def test_malformed_body_is_denied_over_http_only(tmp_path):
     assert records[0]["decision"] == "deny"
 
 
+def test_non_object_arguments_are_recorded_on_http_and_invisible_on_mcp(tmp_path):
+    """A REAL divergence between the doors, reachable today by any caller --
+    not the benign transport nicety `test_malformed_body_is_denied_over_
+    http_only`'s unreachability note is about. That note is correct and
+    airtight for `arguments: null` (which normalises to `{}`, never to the
+    `None` MALFORMED_BODY_DENIED needs) -- but a well-formed JSON-RPC
+    `tools/call` whose `arguments` is not an object AT ALL (a string, here)
+    is a different mistake, and any MCP client can make it.
+
+    HTTP: `_parse_args` rejects a non-dict `args` exactly like unparseable
+    JSON -- `args=None` reaches the spine, which denies and AUDITS it as
+    input.malformed (same Kind, same one-record shape, as the test above).
+
+    MCP: the SDK validates `CallToolRequestParams.arguments: dict[str, Any]
+    | None` with pydantic BEFORE any handler runs -- including
+    `on_call_tool`. A non-dict value never reaches the spine at all:
+    -32602 (INVALID_PARAMS), zero audit records. Not Kind.UNAUTHENTICATED's
+    protocol-error shape either -- this is a request-shape rejection one
+    layer further out than anything spine.py or mcp.py renders, and it is
+    not the same latent gap mcp.py's own module docstring already names
+    (the unaudited `Mcp-Param-*` header mismatch under
+    `_is_internal_schema_lookup`) -- that one is about HEADERS disagreeing
+    with a well-formed body; this one is the BODY itself being a shape the
+    spine can never see.
+
+    So: the same caller mistake is recorded on one door and leaves no trace
+    on the other -- exactly the divergence class this file exists to
+    surface. Fixing it would require routing the SDK's own pre-dispatch
+    rejection into the spine via `ServerMiddleware`, which is out of scope
+    for this task; pinning it here, so it is a documented fact rather than
+    folklore the next person has to rediscover, is the deliverable.
+    """
+    from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
+
+    from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    token = token_for(signer)
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        # HTTP: a non-dict "args" is audited as a denied, recorded attempt --
+        # the same one-record shape test_malformed_body_is_denied_over_http_
+        # only pins for an unparseable body.
+        http = client.post(
+            "/v1/tools/read_document/invoke",
+            json={"args": "not-a-dict"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert http.status_code == 403
+        assert http.json()["rule"] == "input.malformed"
+        after_http = audit.records()
+        assert len(after_http) == 1
+        assert after_http[0]["rule"] == "input.malformed"
+
+        # MCP: the SAME caller mistake, sent as a well-formed JSON-RPC
+        # tools/call with a non-dict `arguments` -- never reaches the spine.
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "read_document",
+                "arguments": "not-a-dict",
+                "_meta": {
+                    PROTOCOL_VERSION_META_KEY: LATEST_MODERN_VERSION,
+                    CLIENT_CAPABILITIES_META_KEY: {},
+                },
+            },
+        }
+        headers = {
+            "MCP-Protocol-Version": LATEST_MODERN_VERSION,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "read_document",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {token}",
+        }
+        mcp_response = client.post("/mcp", json=body, headers=headers)
+        assert mcp_response.status_code == 400
+        assert mcp_response.json()["error"]["code"] == -32602
+
+        # The divergence, stated as a fact: HTTP recorded the attempt: MCP
+        # added nothing at all.
+        assert audit.records() == after_http
+
+
 def test_listing_has_no_http_door_and_writes_no_record(tmp_path):
     """Kind.LISTED, documented rather than compared.
 
@@ -456,6 +631,15 @@ def test_listing_has_no_http_door_and_writes_no_record(tmp_path):
     `/v1/tools/{tool}/invoke`. What IS asserted here, on the one door that
     exists: an authenticated listing writes no audit record, matching
     `list_tools`'s own docstring ("usability, never enforcement").
+
+    The HTTP-route check compares the full SET of `/v1/`-prefixed routes
+    against `{"/v1/tools/{tool}/invoke"}`, not membership of one literal
+    string that happens never to match anything -- `"/v1/tools"` (no
+    trailing segment) is not a route this app has ever mounted, under any
+    version of app.py, so a membership check against exactly that string
+    would pass whether or not a NEW listing route showed up beside the
+    invoke route. Comparing the set catches any addition, not only that one
+    guessed spelling.
     """
     from tests.warden.test_app import build_with_mcp, token_for
     from tests.warden.test_mcp_surface import list_tools
@@ -466,9 +650,11 @@ def test_listing_has_no_http_door_and_writes_no_record(tmp_path):
         client,
         audit,
     ):
-        assert not any(
-            getattr(route, "path", "") == "/v1/tools" for route in client.app.routes
-        )
+        v1_routes = {
+            route.path for route in client.app.routes
+            if getattr(route, "path", "").startswith("/v1/")
+        }
+        assert v1_routes == {"/v1/tools/{tool}/invoke"}, v1_routes
         listing = list_tools(client, token_for(signer))
         assert listing.tools  # the token's allowed tools, non-empty
         assert audit.records() == []
@@ -500,37 +686,84 @@ def test_an_allowed_read_advances_the_budget_once_per_surface(tmp_path):
 
 
 # --- The concurrency mirror --------------------------------------------
+#
+# `call_tool()` reaches the app through the SDK's own `Client`, bridged onto
+# the app's event loop via `anyio`'s `BlockingPortal.call()` --  which BLOCKS
+# the calling thread for the whole round trip. Two `tg.start_soon(one)`
+# tasks that each call it therefore never truly race: the first has to
+# finish entirely before the second's request is even sent. Measured by
+# instrumenting a deliberately-slow OPA handler with entry/exit timestamps,
+# under both the plain `call_tool()` form AND a genuinely-concurrent
+# `asyncio.gather` submitted through the portal in one shot: zero overlap
+# either way, for the CURRENT (correct) code -- because `on_call_tool` has
+# no `await` between reading `params.arguments` and calling the fully
+# synchronous spine, so whichever task starts running first runs to
+# completion, uninterruptible, before the scheduler ever looks at the other
+# one. So this earlier finding was real, but the conclusion drawn from it
+# the first time round was not: "no overlap, ever" was read as "the test
+# cannot be made to interleave", when it actually only showed "the current,
+# correct code gives a genuine race no opening" -- which says nothing about
+# whether the TEST would notice if that stopped being true.
+#
+# The fix is to stop going through the portal at all. `on_call_tool` --
+# reached the same way test_the_registered_handlers_are_coroutine_functions
+# below reaches it, `server.app.get_request_handler("tools/call").handler`
+# -- is a plain async closure over `spine`, with no session or transport
+# state of its own. Calling it directly via `asyncio.gather`, on whatever
+# loop this test itself runs on, needs no portal and no blocking bridge, so
+# TWO genuinely concurrent `asyncio.Task`s reach it. Proven by mutation, not
+# assumed: with `Spine.handle_tool_call` made `async def` and a real
+# `await anyio.sleep(0.05)` inserted between the taint snapshot and the
+# durable write (mirroring test_app.py's own race exactly, and requiring the
+# two call sites in app.py/mcp.py to `await` it) --
+#   * test_app.py's OWN concurrency test fails: 200/200, budget bypassed.
+#   * the OLD (call_tool()-through-the-portal) form of this test: still
+#     PASSED -- it cannot see the regression, confirming the finding above.
+#   * the NEW (direct-handler, asyncio.gather) form below: FAILS --
+#     ['allow', 'allow'], the exact bypass. Reverted after confirming.
+
+
+def _call_tool_handler(client):
+    """The registered `on_call_tool` closure itself -- not a wrapper, not a
+    copy. Same accessor `test_the_registered_handlers_are_coroutine_functions`
+    uses; shared here because calling it directly (bypassing the SDK
+    `Client` and the blocking portal bridge) is what makes genuine
+    concurrent dispatch possible at all -- see the section comment above.
+    """
+    return client.app.state.mcp_session_manager.app.get_request_handler(
+        "tools/call"
+    ).handler
+
+
+@dataclasses.dataclass
+class _FakeRequest:
+    headers: dict
+
+
+def _call_context(token: str | None) -> ServerRequestContext:
+    """Just enough of a `ServerRequestContext` for `on_call_tool`'s own
+    reads (`_credential()`, via `_headers()`) -- the same construction
+    test_mcp_surface.py's `test_the_inline_lookup_is_answered_from_the_
+    catalog_not_with_an_empty_list` uses to drive a handler directly,
+    without a session or a real transport underneath it."""
+    return ServerRequestContext(
+        session=None,
+        lifespan_context=None,
+        protocol_version=LATEST_MODERN_VERSION,
+        method="tools/call",
+        request=_FakeRequest(
+            headers={} if token is None else {"authorization": f"Bearer {token}"}
+        ),
+    )
 
 
 async def test_concurrent_mcp_calls_for_one_task_do_not_exceed_the_row_bound(tmp_path):
-    """The mirror of test_app.py's own concurrency test, through the other
-    door. The invariant is that the spine contains no await, so a snapshot
-    and the read it authorises cannot be interleaved. A handler registered as
-    a plain `def` would run on a worker thread and break it -- which is a
-    one-word change away at all times.
-
-    Unlike test_app.py's own version, this does not need to hand-engineer a
-    forced suspension point to prove the race is closed. Traced empirically
-    (an OPA handler that timestamps its own entry/exit, with an artificial
-    delay): even when the two `tools/call` requests below are dispatched
-    genuinely concurrently -- via `asyncio.gather` on the app's own event
-    loop, submitted as one `client.portal.call`, bypassing `call_tool()`'s
-    blocking bridge entirely -- the second request's OPA call does not begin
-    until the first one's has returned. Zero overlap, every time. That is
-    the zero-await architecture holding even under real concurrent client
-    dispatch, not merely under this test's own sequencing: PolicyDecisionPoint
-    talks to OPA with a synchronous httpx.Client, by the same design choice,
-    so nothing yields the loop between one call's snapshot and its own
-    audit write regardless of how many other requests are queued behind it.
-    The simpler form below (two plain `call_tool()`s in a task group) is
-    therefore not a weaker stand-in for that experiment -- it observes the
-    same server-side serialisation, because the server provides no point at
-    which it could do otherwise.
+    """Two `tools/call` requests for ONE task_id, dispatched as two genuine
+    `asyncio.Task`s on one event loop -- not two sequential round trips that
+    happen to land on the same conclusion. See the section comment above for
+    what was measured and what closes the gap.
     """
-    import anyio
-
     from tests.warden.test_app import build_with_mcp, token_for
-    from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
 
     signer = Signer.generate()
@@ -553,22 +786,32 @@ async def test_concurrent_mcp_calls_for_one_task_do_not_exceed_the_row_bound(tmp
 
     # The stateful OPA goes in at construction, not swapped in afterwards.
     with build_with_mcp(tmp_path, signer, None, opa_handler=opa) as (client, audit):
-        results = []
+        handler = _call_tool_handler(client)
+        params = CallToolRequestParams(
+            name="query_customers", arguments={"filter": "id=8812"}
+        )
 
-        async def one():
-            results.append(call_tool(client, token, "query_customers", {"filter": "id=8812"}))
+        results = await asyncio.gather(
+            handler(_call_context(token), params),
+            handler(_call_context(token), params),
+        )
 
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(one)
-            tg.start_soon(one)
-
+    assert sorted(r.is_error for r in results) == [False, True]
     decisions = [r["decision"] for r in audit.records()]
     assert sorted(decisions) == ["allow", "deny"]
 
 
-def test_the_call_handler_is_a_coroutine_function(tmp_path):
+@pytest.mark.parametrize("method", ["tools/call", "tools/list"])
+def test_the_registered_handlers_are_coroutine_functions(tmp_path, method):
     """A sync handler runs on a worker thread, which puts the snapshot and
-    the read it authorises on different threads with nothing between them."""
+    the read it authorises on different threads with nothing between them.
+
+    Both handlers, not just `on_call_tool`: mcp.py's own module docstring
+    states the invariant for "Both handlers" together, and `on_list_tools`
+    calls `spine.list_tools` the same inline, no-await way -- a sync
+    `on_list_tools` would go unnoticed by a test that only ever checked the
+    other one.
+    """
     import inspect
 
     from tests.warden.test_app import build_with_mcp
@@ -580,6 +823,6 @@ def test_the_call_handler_is_a_coroutine_function(tmp_path):
         _,
     ):
         server = client.app.state.mcp_session_manager
-        entry = server.app.get_request_handler("tools/call")
-        assert entry is not None, "could not reach the registered handler"
-        assert inspect.iscoroutinefunction(entry.handler)
+        entry = server.app.get_request_handler(method)
+        assert entry is not None, f"could not reach the registered {method} handler"
+        assert inspect.iscoroutinefunction(entry.handler), method

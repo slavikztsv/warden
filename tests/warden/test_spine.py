@@ -81,6 +81,34 @@ def test_rendering_an_outcome_twice_has_no_side_effects(tmp_path):
     assert spine._taint.snapshot("4711") == before_state
 
 
+def test_task_state_is_read_only_even_for_an_id_no_token_ever_minted(tmp_path):
+    """task_state's own docstring calls it a read-only view "a diagnostic, an
+    operator question, a test" can ask about ANY task_id -- which, unlike
+    the serving path, may not be an id a minted token ever named. If this
+    read through TaintTracker.snapshot() (a defaultdict access) instead of
+    TaintTracker.peek(), every such question would permanently plant an
+    empty entry, falsifying "read-only" for exactly the callers this
+    accessor is written for."""
+    from tests.warden.test_app import build, token_for
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    client, _ = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    spine = client.app.state.spine
+
+    assert spine.task_state("nobody-minted-this-id") == {
+        "data_classes_held": [],
+        "rows_returned_so_far": 0,
+    }
+    assert "nobody-minted-this-id" not in spine._taint._tasks
+
+    # And a task_id a real call HAS touched still reports the true state --
+    # this accessor is read-only, not blind.
+    token = token_for(signer)
+    spine.handle_tool_call(token, "read_document", {"doc_id": "a"})
+    assert spine.task_state("4711")["data_classes_held"] == ["public"]
+
+
 def test_a_pdp_outage_denies_rather_than_faulting(tmp_path):
     """pdp.unavailable is POLICY_DENIED carrying that rule -- a 403, not a
     5xx. It is the one deny rule the policy bundle does not produce, and

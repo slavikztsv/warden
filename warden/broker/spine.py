@@ -316,8 +316,20 @@ class Spine:
         invites a caller who should not have one, and this accessor is
         legitimate on its own terms. The serving path still reads state only
         through handle_tool_call, which snapshots it once per call.
+
+        Reads through `TaintTracker.peek`, not `TaintTracker.snapshot` --
+        deliberately, and not interchangeably. `snapshot` creates a phantom
+        entry for a task_id it has never seen (fine on the serving path,
+        where the id always names a real task about to spend its budget, and
+        `record_read` would create the entry a moment later regardless).
+        This accessor takes an ARBITRARY string from a caller with no minted
+        token behind it at all -- an operator, a diagnostic -- so `snapshot`
+        here would leak one phantom entry per id it is ever asked about, for
+        the life of the process. `peek` returns the same shape without
+        creating anything, which is what makes "read-only" here a fact about
+        the code rather than a claim in a docstring.
         """
-        return self._taint.snapshot(task_id)
+        return self._taint.peek(task_id)
 
     def list_tools(self, credential: str | None) -> ListOutcome:
         """What this token may call. Usability, never enforcement.
