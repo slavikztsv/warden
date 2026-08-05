@@ -217,7 +217,21 @@ and add `clock=clock,` to the `create_app(...)` call inside it. Do the same for 
 
 - [ ] **Step 3: Convert the three tests**
 
-Replace the `import warden.broker.app as app_module` blocks in `test_expired_token_is_rejected` (~line 153), `test_expired_token_never_reaches_pdp_or_backend` (~line 696), and `test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound` (~line 883). Each currently looks like:
+There are **three patch sites, spanning four test functions**, because one of
+them is inside a shared helper:
+
+| Site | Holder | Covers |
+|---|---|---|
+| ~line 155 | `test_expired_token_is_rejected` | itself |
+| ~line 717 | `test_expired_token_never_reaches_pdp_or_backend` | itself |
+| ~line 904 | the helper `_unauthenticated_requests` | `test_every_unauthenticated_call_leaves_an_audit_record` and `test_unauthenticated_records_chain_with_real_decisions` |
+
+`test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound` does
+**not** touch the clock — an earlier draft of this plan said it did, from a
+script that walked back to the nearest `def test` and stepped over the
+non-test helper in between. Leave that test alone.
+
+Each site currently looks like:
 
 ```python
     import warden.broker.app as app_module
