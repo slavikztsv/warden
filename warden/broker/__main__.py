@@ -40,6 +40,23 @@ from warden.broker.taint import TaintTracker
 from warden.broker.wiring import BrokerComponents
 
 
+def _silence_telemetry() -> None:
+    """The MCP SDK installs an OpenTelemetry middleware as its outermost
+    layer. In an image that also carries the OTel SDK with the standard
+    environment variables set, the enforcement point would begin exporting
+    spans -- tool names and request ids -- to a collector. That is network
+    egress from the one process whose whole premise is being the only route
+    out, and it appears in no audit record. A no-op provider costs nothing
+    and closes it.
+    """
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace import NoOpTracerProvider
+    except ImportError:
+        return
+    trace.set_tracer_provider(NoOpTracerProvider())
+
+
 def build(config: BrokerConfig, *, client: httpx.Client | None = None):
     """Wires the enforcement point from a parsed config.
 
@@ -47,6 +64,7 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
     verifier, PDP, taint tracker and audit log as the tool API -- two
     surfaces, one set of controls.
     """
+    _silence_telemetry()
     client = client or httpx.Client(timeout=10.0)
     components = BrokerComponents(
         # Public key only. There is no Signer in this process. issuer is

@@ -17,6 +17,16 @@ dependencies = [
   "pyjwt[crypto]==2.13.0",
 ]
 
+# The MCP surface's dependencies, and only its. mcp pulls a second HTTP
+# stack (httpx2, alongside the pinned httpx) plus opentelemetry-api into
+# whatever process installs it, so a deployment that never enables the
+# surface never carries them. The broker raises at boot if [mcp] is enabled
+# and this extra is absent, rather than discovering it at the first request.
+[project.optional-dependencies]
+mcp = [
+  "mcp==2.0.0",
+]
+
 [project.scripts]
 warden = "warden.cli.main:main"
 

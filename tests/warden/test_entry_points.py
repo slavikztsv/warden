@@ -36,6 +36,16 @@ def test_the_product_carries_no_model_sdk():
         assert sdk not in joined
 
 
+def test_the_mcp_sdk_is_an_extra_not_a_dependency():
+    """The enforcement point is the one service a subverted agent can reach
+    on two ports. A second HTTP stack and a telemetry library belong to the
+    surface that needs them, not to every deployment."""
+    warden = project("warden")
+    joined = " ".join(warden["dependencies"])
+    assert "mcp" not in joined
+    assert any(d.startswith("mcp==") for d in warden["optional-dependencies"]["mcp"])
+
+
 def test_both_commands_run():
     """Resolved next to the running interpreter, not off PATH.
 
