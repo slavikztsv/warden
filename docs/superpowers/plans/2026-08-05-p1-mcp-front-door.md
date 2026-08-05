@@ -2061,6 +2061,206 @@ git commit -m "feat: serve tools/call from the same spine the tool API uses"
 
 ---
 
+### Task 11b: Refuse the MCP handshake era
+
+Added during execution, after Task 11's review measured what the two protocol
+eras actually differ by. The SDK routes on `MCP-Protocol-Version` alone: absent,
+or any of `HANDSHAKE_PROTOCOL_VERSIONS`, goes to a legacy transport that does
+**not** validate `Mcp-Method` against the request body and whose dispatcher
+emits `str(exc)` verbatim. That made the weaker leg the *default*, selectable by
+the party warden exists to contain, by omitting a header. It already produced
+one measured audit-evasion vector.
+
+**Files:**
+- Modify: `warden/broker/mcp.py` (an era gate in front of the mounted sub-app)
+- Modify: `warden/cli/replay.py` (render the new action shape)
+- Test: `tests/warden/test_mcp_surface.py` (rewrite four existing tests, add new)
+
+**Interfaces:**
+- Consumes: everything from Task 11.
+- Produces: the surface answers any non-modern request with JSON-RPC `-32022`
+  and an audited refusal. Tasks 12–14 must assume modern-era-only.
+
+- [ ] **Step 1: Write the failing tests**
+
+Four existing tests in `tests/warden/test_mcp_surface.py` assert that
+handshake-era requests are *served* with a record. Under this task they must be
+*refused*. Rewrite them, do not delete them — they become the era-gate's
+coverage:
+
+- `test_a_spoofed_routing_header_cannot_buy_an_unrecorded_probe`
+- `test_every_handshake_era_version_is_treated_as_a_caller`
+- `test_the_modern_era_rung_the_guard_rests_on_is_still_there` (keep as-is; it
+  drives the modern era)
+- `test_the_surface_serves_post_only` (keep as-is)
+
+Then add:
+
+```python
+UNSUPPORTED_PROTOCOL_VERSION = -32022
+
+
+def test_a_request_with_no_protocol_version_is_refused_and_recorded(tmp_path):
+    """Absent is the handshake era's own signature, and that era is the one
+    the SDK serves without validating Mcp-Method. An enforcement point does
+    not let the party it contains pick the weaker of two code paths."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = raw_post(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, {})
+        assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
+        assert "2026-07-28" in response.text
+        records = audit.records()
+        assert len(records) == 1
+        assert records[0]["action"] == {"type": "mcp_handshake"}
+        assert records[0]["rule"] == "mcp.unsupported_protocol"
+
+
+@pytest.mark.parametrize("version", sorted(HANDSHAKE_PROTOCOL_VERSIONS))
+def test_every_handshake_era_version_is_refused_and_recorded(tmp_path, version):
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = raw_post(
+            client,
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {"MCP-Protocol-Version": version},
+        )
+        assert response.json()["error"]["code"] == UNSUPPORTED_PROTOCOL_VERSION
+        assert len(audit.records()) == 1
+
+
+def test_an_unauthenticated_initialize_no_longer_discloses_capabilities(tmp_path):
+    """Measured before this task: HTTP 200 with a full InitializeResult and
+    zero audit records, to an unauthenticated caller."""
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        audit,
+    ):
+        response = raw_post(
+            client,
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {},
+        )
+        assert "serverInfo" not in response.text
+        assert "capabilities" not in response.text
+        assert len(audit.records()) == 1
+
+
+def test_the_sdk_client_still_works_end_to_end(tmp_path):
+    """The whole bet: a real modern client is unaffected. Every request it
+    sends -- server/discover included -- carries the modern version header."""
+    from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
+        client,
+        _,
+    ):
+        result = call_tool(client, token_for(signer), "read_document", {"doc_id": "a"})
+        assert result.is_error is False
+```
+
+- [ ] **Step 2: Run — expect the new ones to fail**
+
+Run: `.venv/bin/pytest tests/warden/test_mcp_surface.py -q`
+Expected: the new era-gate tests FAIL (nothing refuses yet); `test_the_sdk_client_still_works_end_to_end` PASSES already.
+
+- [ ] **Step 3: Add the era gate**
+
+It must run **before** the SDK's own routing, which reads the header off the raw
+ASGI scope — so it wraps the mounted sub-app rather than living in a handler.
+In `warden/broker/mcp.py`:
+
+```python
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS, LATEST_PROTOCOL_VERSION
+
+UNSUPPORTED_PROTOCOL_VERSION = -32022
+
+
+def _era_gate(inner, *, spine, policy_digest):
+    """Refuses every revision but the modern one, before the SDK routes.
+
+    The SDK serves two transports and picks between them on this one header:
+    absent, or any handshake-era version, gets a leg that does not validate
+    Mcp-Method against the body and whose dispatcher puts str(exc) on the
+    wire. Both of those are reachable by omitting a header, which makes the
+    weaker enforcement path the default and hands the choice to the caller.
+    An enforcement point cannot let the party it contains select which of its
+    own code paths handles the request.
+
+    Refusing is in-protocol rather than a dead end: -32022 carries the list of
+    versions this server does support, which is what the specification asks a
+    modern-only server to return.
+    """
+    async def gated(scope, receive, send):
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        version = headers.get("mcp-protocol-version")
+        if version is None or version in HANDSHAKE_PROTOCOL_VERSIONS:
+            spine.record_handshake_refusal("mcp.unsupported_protocol")
+            await _refuse_era(send)
+            return
+        await inner(scope, receive, send)
+
+    return gated
+```
+
+Write `_refuse_era` to send a JSON-RPC error response with HTTP 400, body
+`{"jsonrpc": "2.0", "id": None, "error": {"code": -32022, "message": ...,
+"data": {"supported": [LATEST_PROTOCOL_VERSION]}}}`.
+
+Add `Spine.record_handshake_refusal(rule: str) -> None` to
+`warden/broker/spine.py`, writing a sentinel record with
+`action={"type": "mcp_handshake"}` and the same sentinel principal fields
+`_refuse` uses. Auditing this follows `proxy.py`'s precedent — it audits a
+non-CONNECT probe as `proxy.method_not_allowed` — and it closes an
+unaudited-refusal path rather than opening one. Note in the docstring that this
+lets an unauthenticated caller drive audit writes, exactly as the proxy's
+equivalent does.
+
+Wire the gate where the sub-app is mounted:
+`Route(config.path, endpoint=_era_gate(sub, spine=spine, policy_digest=...), methods=["POST"])`.
+
+- [ ] **Step 4: Teach replay the new action**
+
+In `warden/cli/replay.py`'s `_describe`, alongside the `tool_list` branch:
+
+```python
+    if record["action"].get("type") == "mcp_handshake":
+        return "mcp_handshake()"
+```
+
+- [ ] **Step 5: Run everything**
+
+Run: `.venv/bin/pytest -q`
+Expected: all pass. `test_the_sdk_client_still_works_end_to_end` is the one that
+proves the bet — a real modern client is unaffected.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add warden/broker/mcp.py warden/broker/spine.py warden/cli/replay.py tests/warden/test_mcp_surface.py
+git commit -m "feat: refuse every MCP revision but the modern one, and record the refusal"
+```
+
+---
+
 ### Task 12: `tools/list` over MCP, and the list-is-not-enforcement test
 
 **Files:**
