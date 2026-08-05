@@ -101,7 +101,11 @@ def _cmd_config_check(args: argparse.Namespace) -> int:
     # the ✗ problems already printed below, not a traceback.
     try:
         problems = check_catalog(
-            Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
+            Path(args.catalog),
+            Path(args.data),
+            env=os.environ,
+            opa_url=args.opa,
+            mcp_enabled=args.mcp,
         )
         findings = check_catalog_findings(Path(args.catalog), env=os.environ)
     except (ConfigError, OSError) as exc:
@@ -170,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--catalog", required=True, help="path to your tools.toml")
     p_check.add_argument("--data", required=True, help="path to your policy data.json")
     p_check.add_argument("--opa", default=None)
+    p_check.add_argument(
+        "--mcp",
+        action="store_true",
+        help="also check what the MCP surface requires of each tool",
+    )
     p_check.set_defaults(func=_cmd_config_check)
 
     return parser

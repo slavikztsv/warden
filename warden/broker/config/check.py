@@ -62,6 +62,8 @@ import httpx
 
 from warden.broker.adapters.registry import TARGET_KIND_BY_ADAPTER
 from warden.broker.config.catalog import load_catalog
+from warden.broker.config.loader import ConfigError
+from warden.broker.schema_json import json_schema
 
 
 def _policy_tools(document: Mapping) -> dict:
@@ -102,6 +104,44 @@ def _arg_binding_problems(catalog, catalog_path: Path) -> list[str]:
     return problems
 
 
+def _mcp_problems(catalog, catalog_path) -> list[str]:
+    """What a tool must carry before it is advertised to a model.
+
+    Only reached when the surface is switched on, so a deployment that never
+    enables it sees none of this.
+    """
+    problems: list[str] = []
+    for tool in sorted(catalog.names()):
+        entry = catalog.entry(tool)
+        for field in ("description", "title"):
+            if not getattr(entry, field).strip():
+                problems.append(
+                    f"{tool}: no {field}; the MCP surface advertises this tool "
+                    f"to a model, which needs one to use it correctly"
+                )
+        try:
+            json_schema(entry.schema)
+        except ConfigError as exc:
+            problems.append(f"{tool}: cannot be advertised ({exc})")
+        for name, spec in entry.schema.args.items():
+            if spec.required and spec.null_is_absent:
+                problems.append(
+                    f"{tool}.{name}: required together with null_is_absent. "
+                    f"Clients drop null-valued properties before sending, so "
+                    f"an accepted null arrives as a missing required argument"
+                )
+        if entry.schema.unknown_args == "allow":
+            fields = getattr(entry.adapter, "_fields", None)
+            if fields:
+                problems.append(
+                    f"{tool}: unknown_args = \"allow\" on an adapter that "
+                    f"forwards only {sorted(fields)}. The advertised schema "
+                    f"would tell a model an argument is meaningful that is "
+                    f"then dropped on the way out"
+                )
+    return problems
+
+
 def _data_class_findings(catalog) -> list[str]:
     """Advisory, not a hard failure -- see this module's own docstring."""
     findings: list[str] = []
@@ -127,13 +167,20 @@ def check_catalog_findings(catalog_path: Path, env: Mapping[str, str]) -> list[s
 
 
 def check_catalog(
-    catalog_path: Path, data_path: Path, env: Mapping[str, str], *, opa_url: str | None = None
+    catalog_path: Path,
+    data_path: Path,
+    env: Mapping[str, str],
+    *,
+    opa_url: str | None = None,
+    mcp_enabled: bool = False,
 ) -> list[str]:
     problems: list[str] = []
     catalog = load_catalog(catalog_path, env, client=None)
     document = json.loads(Path(data_path).read_text())
 
     problems.extend(_arg_binding_problems(catalog, catalog_path))
+    if mcp_enabled:
+        problems.extend(_mcp_problems(catalog, catalog_path))
 
     declared = _policy_tools(document)
     if not declared:

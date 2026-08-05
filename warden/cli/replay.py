@@ -113,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--catalog", default=None, help="path to your tools.toml")
     parser.add_argument("--data", default=None, help="path to your policy data.json")
     parser.add_argument("--opa", default=None)
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="also check what the MCP surface requires of each tool",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "config":
@@ -144,7 +149,11 @@ def main(argv: list[str] | None = None) -> int:
         # rather than a traceback.
         try:
             problems = check_catalog(
-                Path(args.catalog), Path(args.data), env=os.environ, opa_url=args.opa
+                Path(args.catalog),
+                Path(args.data),
+                env=os.environ,
+                opa_url=args.opa,
+                mcp_enabled=args.mcp,
             )
             findings = check_catalog_findings(Path(args.catalog), env=os.environ)
         except (ConfigError, OSError) as exc:

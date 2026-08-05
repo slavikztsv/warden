@@ -385,3 +385,65 @@ def test_cli_replay_config_prints_the_finding_on_real_output(tmp_path, capsys):
 
     assert exit_code == 0
     assert "ℹ read_document: binding declares no data_class" in captured.err
+
+
+def test_a_missing_description_is_only_a_problem_when_mcp_is_on(tmp_path):
+    """A deployment that never turns the surface on is unaffected. One that
+    does cannot half-configure it: a tool with no description is a tool the
+    model will misuse."""
+    manifest = tmp_path / "tools.toml"
+    manifest.write_text(
+        '[tools.lookup]\n'
+        'kind = "docstore"\n'
+        '[tools.lookup.binding]\n'
+        'base_url = "http://example.invalid"\n'
+        '[tools.lookup.args]\n'
+        'doc_id = { type = "string", required = true }\n'
+    )
+    data = tmp_path / "data.json"
+    data.write_text('{"tools": {"lookup": {"target_kind": "doc"}}}')
+
+    assert check_catalog(manifest, data, env={}) == []
+    problems = check_catalog(manifest, data, env={}, mcp_enabled=True)
+    assert any("description" in p for p in problems)
+    assert any("title" in p for p in problems)
+
+
+def test_required_plus_null_is_absent_is_refused_under_mcp(tmp_path):
+    """Faithful as a schema, unsound on the wire: clients and serializers
+    drop null-valued properties, so an accepted {"body": null} arrives as {}
+    and is refused as missing-required."""
+    manifest = tmp_path / "tools.toml"
+    manifest.write_text(
+        '[tools.fetch]\n'
+        'kind = "http"\n'
+        'title = "Fetch"\n'
+        'description = "Fetch a URL."\n'
+        '[tools.fetch.binding]\n'
+        'data_class = "public"\n'
+        '[tools.fetch.args]\n'
+        'url = { type = "string", required = true }\n'
+        'body = { type = "string", required = true, null_is_absent = true }\n'
+    )
+    data = tmp_path / "data.json"
+    data.write_text('{"tools": {"fetch": {"target_kind": "http"}}}')
+    problems = check_catalog(manifest, data, env={}, mcp_enabled=True)
+    assert any("null_is_absent" in p and "required" in p for p in problems)
+
+
+def test_the_shipped_manifest_stays_clean_without_mcp(tmp_path):
+    """The demo's manifest declares no description or title yet. It must not
+    start failing the check it passes today."""
+    from demo.scenario.catalog import MANIFEST
+
+    data = Path("demo/scenario/data.json")
+    problems = check_catalog(
+        MANIFEST,
+        data,
+        env={
+            "DOCSTORE_URL": "http://example.invalid",
+            "DB_PATH": str(tmp_path / "x.db"),
+            "MAILER_URL": "http://example.invalid",
+        },
+    )
+    assert problems == []
