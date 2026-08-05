@@ -50,8 +50,12 @@ def write(tmp_path: Path, text: str) -> Path:
     return path
 
 
+def write_complete_config(tmp_path: Path) -> Path:
+    return write(tmp_path, COMPLETE)
+
+
 def test_loads_every_field(tmp_path):
-    config = load_broker_config(write(tmp_path, COMPLETE), env={})
+    config = load_broker_config(write_complete_config(tmp_path), env={})
     assert isinstance(config, BrokerConfig)
     assert config.listen == ("0.0.0.0", 8080)
     assert config.proxy_listen == ("0.0.0.0", 3128)
@@ -315,3 +319,52 @@ def test_control_a_boolean_ttl_is_rejected(tmp_path):
     text = CONTROL_COMPLETE.replace("ttl_seconds = 300", "ttl_seconds = true")
     with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
         load_control_config(write_control(tmp_path, text), env={})
+
+
+# --- [mcp]: optional, off by default -----------------------------------------
+#
+# Every existing warden.toml has no [mcp] table. _section() raises on a
+# missing section -- right for the six the broker cannot run without, wrong
+# for a surface that must stay off unless a deployment explicitly asks for
+# it. These confirm absence is structural (not a comment) and that a present
+# [mcp] is parsed and validated like everything else here.
+
+
+def test_mcp_is_absent_and_therefore_disabled(tmp_path):
+    """Every existing warden.toml has no [mcp]. Absent must mean off, and it
+    must be structural rather than a comment: _section() raises on a missing
+    section, so reading [mcp] through it would stop every one of these
+    configs from loading at all."""
+    config = load_broker_config(write_complete_config(tmp_path), env={})
+    assert config.mcp.enabled is False
+    assert config.mcp.path == "/mcp"
+
+
+def test_mcp_is_read_when_present(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text(
+        path.read_text()
+        + '\n[mcp]\nenabled = true\npath = "/tools/mcp"\nhost = "broker.internal"\n'
+    )
+    config = load_broker_config(path, env={})
+    assert config.mcp.enabled is True
+    assert config.mcp.path == "/tools/mcp"
+    assert config.mcp.host == "broker.internal"
+
+
+def test_a_non_boolean_enabled_is_refused(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text(path.read_text() + '\n[mcp]\nenabled = "yes"\n')
+    with pytest.raises(ConfigError, match="mcp.enabled"):
+        load_broker_config(path, env={})
+
+
+def test_a_malformed_mcp_section_names_itself(tmp_path):
+    """mcp = "not a table" must precede any [table] header: TOML scopes a
+    bare key=value to whichever table is currently open, so appending it
+    after write_complete_config's trailing [catalog] would make it
+    catalog.mcp rather than a top-level (and malformed) mcp key."""
+    path = write_complete_config(tmp_path)
+    path.write_text('mcp = "not a table"\n\n' + path.read_text())
+    with pytest.raises(ConfigError, match=r"\[mcp\]"):
+        load_broker_config(path, env={})

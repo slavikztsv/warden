@@ -26,6 +26,20 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class McpConfig:
+    """The MCP surface's wiring. Off unless a deployment says otherwise.
+
+    `host` is handed to the SDK's transport-security settings. Left unset,
+    the SDK infers a loopback host and turns on DNS-rebinding protection,
+    which answers 421 to every request arriving under a real hostname.
+    """
+
+    enabled: bool = False
+    path: str = "/mcp"
+    host: str = ""
+
+
+@dataclass(frozen=True)
 class BrokerConfig:
     listen: tuple[str, int]
     proxy_listen: tuple[str, int]
@@ -41,6 +55,7 @@ class BrokerConfig:
     # lives in ControlConfig only.
     issuer: str
     catalog_path: Path
+    mcp: McpConfig = McpConfig()
 
 
 def interpolate(value: str, env: Mapping[str, str]) -> str:
@@ -63,6 +78,32 @@ def _section(document: dict, name: str) -> dict:
     value = document.get(name)
     if not isinstance(value, dict):
         raise ConfigError(f"missing or malformed section [{name}]")
+    return value
+
+
+def _optional_section(document: dict, name: str) -> dict:
+    """A section that may legitimately be absent.
+
+    _section() raises on a missing table, which is right for the six the
+    broker cannot run without. A surface that is off by default is the
+    opposite case: every config written before it existed has no such table,
+    and all of them must keep loading.
+    """
+    value = document.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"malformed section [{name}]")
+    return value
+
+
+def _flag(section: dict, table: str, key: str) -> bool:
+    """A strict boolean. Duplicated from config/schema.py rather than
+    imported: schema.py imports ConfigError from here, so the other
+    direction is a cycle. Four lines is cheaper than restructuring both."""
+    value = section.get(key, False)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{table}.{key} must be true or false")
     return value
 
 
@@ -142,6 +183,7 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
     audit = _section(document, "audit")
     tokens = _section(document, "tokens")
     catalog = _section(document, "catalog")
+    mcp = _optional_section(document, "mcp")
 
     return BrokerConfig(
         listen=_address(broker, "broker", "listen", env),
@@ -153,6 +195,11 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
         audit_path=Path(_string(audit, "audit", "path", env)),
         issuer=_string(tokens, "tokens", "issuer", env),
         catalog_path=Path(_string(catalog, "catalog", "tools", env)),
+        mcp=McpConfig(
+            enabled=_flag(mcp, "mcp", "enabled"),
+            path=_string(mcp, "mcp", "path", env) if "path" in mcp else "/mcp",
+            host=_string(mcp, "mcp", "host", env) if "host" in mcp else "",
+        ),
     )
 
 
