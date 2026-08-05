@@ -217,3 +217,53 @@ body    = { type = "string", required = true }
 """
     with pytest.raises(ConfigError, match="send_email"):
         load_catalog(write(tmp_path, text), env={"MAILER_URL": "http://m"}, client=None)
+
+
+def test_an_unknown_tool_table_key_is_refused(tmp_path):
+    """A typo that silently disables a check is the failure the arg and
+    binding allowlists exist to prevent. The tool table itself had none."""
+    manifest = tmp_path / "tools.toml"
+    manifest.write_text(
+        '[tools.lookup]\n'
+        'kind = "docstore"\n'
+        'descriptoin = "a typo"\n'
+        '[tools.lookup.binding]\n'
+        'base_url = "http://example.invalid"\n'
+        '[tools.lookup.args]\n'
+        'doc_id = { type = "string", required = true }\n'
+    )
+    with pytest.raises(ConfigError, match="descriptoin"):
+        load_catalog(manifest, env={}, client=None)
+
+
+def test_description_and_title_reach_the_entry(tmp_path):
+    manifest = tmp_path / "tools.toml"
+    manifest.write_text(
+        '[tools.lookup]\n'
+        'kind = "docstore"\n'
+        'title = "Document lookup"\n'
+        'description = "Fetch one document by id."\n'
+        '[tools.lookup.binding]\n'
+        'base_url = "http://example.invalid"\n'
+        '[tools.lookup.args]\n'
+        'doc_id = { type = "string", required = true }\n'
+    )
+    catalog = load_catalog(manifest, env={}, client=None)
+    entry = catalog.entry("lookup")
+    assert entry.title == "Document lookup"
+    assert entry.description == "Fetch one document by id."
+
+
+def test_a_non_string_description_is_refused(tmp_path):
+    manifest = tmp_path / "tools.toml"
+    manifest.write_text(
+        '[tools.lookup]\n'
+        'kind = "docstore"\n'
+        'description = 42\n'
+        '[tools.lookup.binding]\n'
+        'base_url = "http://example.invalid"\n'
+        '[tools.lookup.args]\n'
+        'doc_id = { type = "string", required = true }\n'
+    )
+    with pytest.raises(ConfigError, match="description"):
+        load_catalog(manifest, env={}, client=None)

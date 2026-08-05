@@ -25,18 +25,48 @@ from warden.broker.config.loader import ConfigError, interpolate
 from warden.broker.config.schema import ToolSchema, parse_tool_schema
 
 
+# Every key a [tools.<tool>] table may carry. The [args] vocabulary and the
+# [binding] keys each have an allowlist already (schema.py's _ARG_KEYS,
+# _check_binding_keys below); the tool table itself had none, so a misspelt
+# key was read by nobody and reported by nobody. With a tool description now
+# reaching a model, a silently-dropped `descriptoin` is a tool the model
+# will misuse.
+_TOOL_KEYS = ("kind", "binding", "args", "unknown_args", "description", "title")
+
+
+def _check_tool_keys(tool: str, table: dict) -> None:
+    for key in table:
+        if key not in _TOOL_KEYS:
+            raise ConfigError(
+                f"tool {tool!r}: unknown key {key!r}; "
+                f"expected one of {sorted(_TOOL_KEYS)}"
+            )
+
+
+def _text(tool: str, table: dict, key: str) -> str:
+    value = table.get(key, "")
+    if not isinstance(value, str):
+        raise ConfigError(f"tool {tool!r}: {key} must be a string")
+    return value
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     kind: str
     target_kind: str
     schema: ToolSchema
     adapter: object
+    # Advertised to a model by the MCP surface, and unused by every other
+    # caller. Empty is legal here and rejected by `warden config check` only
+    # when that surface is switched on.
+    description: str = ""
+    title: str = ""
 
     # No __hash__ override needed here: ToolSchema.__hash__ (see schema.py)
     # is now well-defined, and `adapter` instances are plain objects with no
     # __eq__ of their own, so they keep object identity's default __hash__.
     # With every field hashable, the dataclass-generated __hash__ (frozen=True,
-    # eq=True) -- hash((kind, target_kind, schema, adapter)) -- just works.
+    # eq=True) -- hash((kind, target_kind, schema, adapter, description, title)) -- just works.
 
 
 class ToolCatalog:
@@ -172,6 +202,7 @@ def load_catalog(path: Path, env: Mapping[str, str], client) -> ToolCatalog:
     for tool, table in tools.items():
         if not isinstance(table, dict):
             raise ConfigError(f"{path}: tool {tool!r} must be a table")
+        _check_tool_keys(tool, table)
         kind = table.get("kind")
         if kind not in TARGET_KIND_BY_ADAPTER:
             raise ConfigError(
@@ -190,5 +221,7 @@ def load_catalog(path: Path, env: Mapping[str, str], client) -> ToolCatalog:
             target_kind=TARGET_KIND_BY_ADAPTER[kind],
             schema=parse_tool_schema(table, tool),
             adapter=build_adapter(kind, resolved_binding, client),
+            description=_text(tool, table, "description"),
+            title=_text(tool, table, "title"),
         )
     return ToolCatalog(entries)
