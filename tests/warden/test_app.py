@@ -1015,3 +1015,14 @@ def test_a_missing_required_arg_is_audited_not_a_silent_502(tmp_path):
     assert response.json()["rule"] == "input.malformed"
     assert audit.records()[-1]["rule"] == "input.malformed"
     assert audit.records()[-1]["decision"] == "deny"
+
+
+def test_a_denial_names_its_rule_in_a_header(tmp_path, signer):
+    """The README's integration diagram tells readers a deny returns 403 with
+    the rule in X-Warden-Rule. proxy.py does this; the tool API did not."""
+    client, _ = build(
+        tmp_path, signer, {"allow": False, "deny_reasons": ["rows.bounded"]}
+    )
+    response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+    assert response.status_code == 403
+    assert response.headers["X-Warden-Rule"] == "rows.bounded"

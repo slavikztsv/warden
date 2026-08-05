@@ -336,4 +336,7 @@ def _deny(audit, token, tool, args, target, state, rule, policy_digest) -> JSONR
             "message": f"Denied by policy rule {rule}.",
         },
         status_code=403,
+        # The rule, where a proxy-aware client can read it without parsing a
+        # body -- the same header broker/proxy.py sets on its own refusals.
+        headers={"X-Warden-Rule": rule},
     )
