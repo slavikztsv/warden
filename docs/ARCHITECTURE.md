@@ -67,6 +67,12 @@ against a fully compromised broker.
 
 - Every input reaching the agent — document text, tool results, model output —
   is untrusted. The agent runtime itself is treated as untrusted.
+- Shipping with `warden` does not move a component to the trusted side of this
+  boundary. `cli/mcp_shim.py` is built and distributed by the product, but it
+  runs inside the agent's own process tree, so it is treated exactly as
+  untrusted as the runtime it forwards for — it holds one short-lived task
+  token and nothing else, and a full compromise of it yields no more than
+  that token already grants.
 - Policy is evaluated outside the agent process, by an OPA server the agent has
   no route to.
 - The agent holds no long-lived credentials, and no signing key exists in any
@@ -89,6 +95,7 @@ against a fully compromised broker.
 | Component | Responsibility | Trust level | Failure impact |
 |---|---|---|---|
 | `broker/app.py` | Tool API on `:8080`. HTTP surface only: parses the request, calls `broker/spine.py`, renders whatever it returns | Thin, but still in the request path | A rendering bug can misreport a decision `spine.py` already made correctly |
+| `broker/mcp.py` | MCP front door, on the same `:8080` at a configured path, **off by default**. Like `broker/app.py` it only renders: calls `broker/spine.py`, renders whatever it returns. Unlike `broker/app.py`, it also fronts the SDK's own transport, so it carries the era gate refusing every protocol revision but the modern one and a duplicated version header | Thin, but still in the request path | A rendering bug can misreport a decision `spine.py` already made correctly |
 | `broker/spine.py` | Orders the whole decision, for every front door mounted on the broker: verify → snapshot → validate → describe → decide → audit → execute | TCB for enforcement | Total. Compromise invalidates every decision it makes |
 | `broker/proxy.py` | Forward proxy on `:3128`, the only egress path off `agent-net`. Authorizes `CONNECT` and then pipes bytes | TCB for enforcement | Egress becomes unavailable; no traffic is authorized |
 | `broker/identity.py` | Verifies Ed25519 task tokens. Loads the **public key only** | Trusted; holds no secret | Every call is refused as `unauthenticated` and recorded |
@@ -100,6 +107,7 @@ against a fully compromised broker.
 | `broker/config/` | Loads `warden.toml` and the deployment's `tools.toml`; cross-checks catalog against policy data | Trusted config | Boot fails loudly before a socket is opened |
 | `broker-control` | The only process holding the private key, and the only one that can mint. Never on `agent-net`: it sits on `backend-net`, plus a host-published port for the orchestrator | TCB for identity | No new tasks can start; running tasks are unaffected |
 | Agent runtime | Reads text, proposes tool calls. Holds a model key in the demo, never a backend credential | **Untrusted** | None — it has no authority the broker does not grant per call |
+| `cli/mcp_shim.py` | Stdio forwarder to `broker/mcp.py`, run **inside the agent's own process tree**, not the broker's. Holds one short-lived task token and nothing else — no signing key, no catalog, no policy, no decision | **Untrusted, deliberately — not part of the TCB** | Bounded by the held token's own scope and TTL; a full compromise yields exactly the authority that token already carried, and nothing more |
 
 **Secrets.** The private key is `/data/agent.key`, loaded by `broker-control`
 alone. The broker loads `/data/agent.pub` and nothing else. Model API keys are
