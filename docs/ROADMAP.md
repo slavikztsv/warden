@@ -343,6 +343,53 @@ document can.
 
 ---
 
+## Carried out of P1
+
+P1 (the MCP front door) shipped with these known, triaged items. Each was raised
+by a review, judged not to block the merge, and left deliberately. None is a
+defect in what the branch claims; they are the honest remainder.
+
+**Type and naming debt on the enforcement path.** `Spine.__init__`'s
+collaborators are unannotated, a step down from the typed `create_app` they
+replaced, in what is now the TCB's central class. The module-level
+`UNAUTHENTICATED` rule string and `Kind.UNAUTHENTICATED` collide by name and
+arrive in one import line in `app.py`. `loader.py`'s `_flag(section, table, key)`
+and `schema.py`'s `_bool(table, key, where)` use `table` to mean different things
+— deliberate duplication (the import cycle is real), confusing parameter names.
+`check.py`'s `_mcp_problems` takes a `catalog_path` it never uses.
+
+**One coupling that is safe for a reason living in another module.** The MCP
+surface answers the SDK's internal schema lookup from the *unscoped* catalog,
+pre-authentication and unrecorded. That is safe only because
+`warden/broker/schema_json.py` emits no `x-mcp-header` opt-ins, so the SDK can
+never derive a rejection from it — measured, not assumed. Nothing fails if that
+changes. A comment in `schema_json.py` naming the consequence would make the
+coupling greppable.
+
+**Malformed-envelope rejections are not recorded.** A request refused for its
+*shape* rather than its content — a bad `Accept`, a non-JSON `Content-Type`, a
+routing-header mismatch — is rejected by the SDK before any warden handler runs,
+with no audit record. Refusals of a named protocol revision *are* recorded, and
+no document claims the envelope cases are. Closing it needs `ServerMiddleware`.
+
+**Test-suite remainder.** The `inputSchema` property fixture covers seven of
+eight reachable `(type, non_empty, null_is_absent)` combinations; the eighth was
+verified correct by hand rather than by the suite. One totality test files
+`Kind.LISTED` under protocol errors, where it does not belong. One test reaches
+through two objects into a private `_catalog`. The stdio shim has no automated
+test of the literal `stdio_server()` path — the residual is SDK-owned file-
+descriptor diversion and JSON framing, with every hardening rule exercised before
+it.
+
+**Nothing guards the cross-references.** When the decision sequence moved from
+`broker/app.py` to `broker/spine.py`, six source comments and one generated
+diagram kept pointing at the old home. All are fixed, but the repo's stale-path
+scan reads `.py` and `.md` only — it cannot see `.svg`, and it cannot use
+`broker/app.py` as a needle because that file legitimately still exists. A scan
+that could catch the next one needs to cover generated assets and prose.
+
+---
+
 ## Explicitly out of scope
 
 Named so they read as decisions rather than oversights.
