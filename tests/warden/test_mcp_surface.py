@@ -29,7 +29,10 @@ mcp = pytest.importorskip("mcp", reason="requires the warden[mcp] extra")
 # aborts the whole module before this line runs otherwise, and mcp_types is
 # one of mcp==2.0.0's own pinned dependencies, so it is never absent when
 # "mcp" is present.
-from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS  # noqa: E402
+from mcp_types.version import (  # noqa: E402
+    HANDSHAKE_PROTOCOL_VERSIONS,
+    MODERN_PROTOCOL_VERSIONS,
+)
 
 UNSUPPORTED_PROTOCOL_VERSION = -32022
 
@@ -681,28 +684,31 @@ def raw_post(client, body, headers):
     return client.post("/mcp", json=body, headers=headers)
 
 
-def modern_list(routed_method="tools/list"):
-    """A 2026-07-28 `tools/list` envelope and its headers, built by hand.
+def modern_list(routed_method="tools/list", version=None):
+    """A modern-era `tools/list` envelope and its headers, built by hand.
 
     `routed_method` is what the `Mcp-Method` header claims, which the caller
-    can make disagree with the body on purpose.
+    can make disagree with the body on purpose. `version` defaults to
+    `LATEST_MODERN_VERSION`; a caller may pin it to any other member of
+    `MODERN_PROTOCOL_VERSIONS` to prove that version is served too.
     """
     from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
     from mcp_types.version import LATEST_MODERN_VERSION
 
+    version = version or LATEST_MODERN_VERSION
     body = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/list",
         "params": {
             "_meta": {
-                PROTOCOL_VERSION_META_KEY: LATEST_MODERN_VERSION,
+                PROTOCOL_VERSION_META_KEY: version,
                 CLIENT_CAPABILITIES_META_KEY: {},
             }
         },
     }
     headers = {
-        "MCP-Protocol-Version": LATEST_MODERN_VERSION,
+        "MCP-Protocol-Version": version,
         "Mcp-Method": routed_method,
         "Accept": "application/json, text/event-stream",
     }
@@ -1126,3 +1132,97 @@ def test_the_inline_lookup_is_answered_from_the_catalog_not_with_an_empty_list(
     # The internal lookup asked the spine nothing; the forged one did.
     assert len(listed) == 1
     assert [r["rule"] for r in records] == ["unauthenticated"]
+
+
+# --- Task 12: the filter is usability, never enforcement -------------------
+
+
+def test_a_tool_withheld_from_the_listing_is_still_refused_by_rule_when_called(
+    tmp_path,
+):
+    """The whole reason `list_tools` is allowed to filter at all.
+
+    A token minted without "send_email" in `allowed_tools` has it withheld
+    from `tools/list` -- but a caller that ignores the listing and calls it
+    anyway does not meet a 404-shaped nothing. The call reaches the same
+    spine as any other tool call, `tools.allowed` denies it by rule exactly
+    as `test_a_denial_is_a_tool_error_naming_the_rule` proves for a
+    different rule, and the attempt leaves an audit record naming it. If
+    tools/list's filter were ever mistaken for enforcement -- e.g. the
+    surface silently refusing an unlisted name before it reached the spine
+    at all -- this would still pass on a passthrough that skipped the audit
+    write, so all three parts (listing, error shape, record) are asserted
+    together against the one call.
+    """
+    from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    # Named explicitly rather than relying on token_for's default staying
+    # this shape: the precondition this test needs is that "send_email" is
+    # NOT granted, and the catalog's other three tools are.
+    token = token_for(
+        signer, allowed_tools=["read_document", "query_customers", "http_fetch"]
+    )
+    with build_with_mcp(
+        tmp_path, signer, {"allow": False, "deny_reasons": ["tools.allowed"]}
+    ) as (client, audit):
+        listing = list_tools(client, token)
+        # (a) tools/list does not offer it.
+        assert "send_email" not in {tool.name for tool in listing.tools}
+
+        result = call_tool(
+            client,
+            token,
+            "send_email",
+            {"to": ["a@example.invalid"], "subject": "s", "body": "b"},
+        )
+        records = audit.records()
+
+    # (b) A tool-execution error naming the rule -- not a protocol error
+    # (nothing above raised), and not a silent empty result.
+    assert result.is_error is True
+    assert "tools.allowed" in result.content[0].text
+    # (c) One audit record for the attempt, naming the same rule. The
+    # listing above wrote nothing (usability, never enforcement), so this
+    # is the only record.
+    assert [r["rule"] for r in records] == ["tools.allowed"]
+    assert [r["decision"] for r in records] == ["deny"]
+
+
+@pytest.mark.parametrize("version", sorted(MODERN_PROTOCOL_VERSIONS))
+def test_every_modern_era_version_is_served(tmp_path, version):
+    """The surface serves exactly one protocol era -- the half of that claim
+    `test_every_handshake_era_version_is_refused_and_recorded` does not
+    cover.
+
+    That test already proves every member of HANDSHAKE_PROTOCOL_VERSIONS is
+    refused with -32022. This proves the complementary half: every member
+    of MODERN_PROTOCOL_VERSIONS reaches the spine rather than being refused
+    by `_EraGate` -- drawn from `mcp_types.version`, not hardcoded, so the
+    day the SDK adds a second modern revision this test says whether it is
+    actually served instead of silently passing either way.
+
+    Sent unauthenticated on purpose: that is what makes "served" observable
+    without a token. `_EraGate` refuses an unserved version with -32022 and
+    records rule "mcp.unsupported_protocol" before the SDK's own routing
+    ever runs. A version it lets through instead reaches the spine, which
+    then refuses it for lack of a credential -- -32600, rule
+    "unauthenticated" (the same pair
+    `test_the_modern_era_rung_the_guard_rests_on_is_still_there` pins for
+    LATEST_MODERN_VERSION alone). Reaching THAT refusal, for every version
+    in the modern set, is the proof the era gate let each one through.
+    """
+    from tests.warden.test_app import build_with_mcp
+    from warden.broker.identity import Signer
+
+    signer = Signer.generate()
+    body, headers = modern_list(version=version)
+    with build_with_mcp(
+        tmp_path / version, signer, {"allow": True, "deny_reasons": []}
+    ) as (client, audit):
+        response = raw_post(client, body, headers)
+        records = audit.records()
+
+    assert response.json()["error"]["code"] == -32600, version
+    assert [r["rule"] for r in records] == ["unauthenticated"], version
