@@ -258,6 +258,25 @@ def test_audit_write_failure_refuses_the_action(tmp_path, signer):
     assert calls == []
 
 
+def test_audit_write_failure_on_a_deny_is_reported_not_hidden(tmp_path, signer):
+    """The deny path's own 503. _write_deny_record catches OSError and returns
+    audit_unavailable, and every one of the five deny call sites funnels
+    through it -- so a log that cannot be written must not become a quiet 403
+    that looks like an ordinary refusal."""
+    client, audit = build(
+        tmp_path, signer, {"allow": False, "deny_reasons": ["rows.bounded"]}
+    )
+
+    def explode(**kwargs):
+        raise OSError("disk full")
+
+    audit.append = explode
+    response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+    assert response.status_code == 503
+    assert response.json()["error"] == "audit_unavailable"
+    assert "disk full" in response.json()["message"]
+
+
 def test_control_plane_mints_a_usable_token(signer):
     client = TestClient(create_control_app(signer=signer))
     response = client.post(
