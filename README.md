@@ -566,9 +566,13 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   reserves its estimate before it runs and reconciles the true count
   afterwards, so concurrent reads for one task cannot both pass the same
   budget — ten simultaneous readers against a 50-row budget get five allows
-  and five refusals, and a test pins it. But the store holding those
-  reservations is in-process: two brokers still do not share one, so scaling
-  out needs the shared store that is not built yet.
+  and five refusals, and a test pins it. A shared store now exists too
+  (`[task_state].backend = "redis"`), and two brokers pointed at one Redis
+  share one budget exactly. **The default is still in-process, and one worker
+  is still the supported deployment**, because the *audit chain* is not
+  shared: `seq` is allocated under a process-local lock, so a second writer
+  breaks the chain rather than joining it. The budget stopped being the thing
+  that blocks scaling out; it is not yet the case that nothing does.
 - **Containment comes from the network layout, not from the broker.** The
   isolated network and the split keypair are what make the agent unable to go
   around the enforcement point, and CI proves it on every push: a dedicated job

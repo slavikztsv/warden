@@ -32,13 +32,20 @@ from warden.broker.taint_redis import (  # noqa: E402
 URL = os.environ.get("WARDEN_TEST_REDIS_URL", "redis://127.0.0.1:6399/0")
 
 
+# Checked ONCE, at import, rather than per test. Doing it per test meant
+# every one of the ~30 cases paid a connect timeout when no server was
+# running, which turned a 12-second suite into a 67-second one for anyone
+# without Redis -- and a slow suite is one people stop running.
+try:
+    connect(URL, socket_timeout_seconds=2).ping()
+except Exception as _exc:  # pragma: no cover - environment-dependent
+    pytest.skip(
+        f"no Redis at {URL}: {_exc}", allow_module_level=True
+    )
+
+
 def _client():
-    client = connect(URL, socket_timeout_seconds=2)
-    try:
-        client.ping()
-    except Exception as exc:
-        pytest.skip(f"no Redis at {URL}: {exc}")
-    return client
+    return connect(URL, socket_timeout_seconds=2)
 
 
 @pytest.fixture

@@ -24,11 +24,24 @@ against anything real.
 
 ### Required
 
-- Run the broker with **one worker**. The row budget lives in that process, so
-  two brokers keep two budgets rather than sharing one. *Within* a process it
-  is locked and charged atomically, so this is a limit on scaling out, not a
-  race between concurrent requests — see
-  [THREAT_MODEL.md](THREAT_MODEL.md).
+- Run the broker with **one worker** — still, and now for a different reason.
+  The row budget can be shared (`[task_state].backend = "redis"`, below), and
+  two brokers pointed at one server share it exactly. The **audit chain**
+  cannot: `seq` is allocated under a process-local lock, so a second writer
+  against one log breaks the chain instead of joining it. Until that is
+  fixed, one worker is the supported deployment whichever backend you choose.
+- **Optional: share the row budget between brokers.** Install
+  `warden[redis]`, run a Redis they can both reach, and set:
+
+  ```toml
+  [task_state]
+  backend = "redis"
+  url     = "${REDIS_URL}"      # interpolated, so no password in this file
+  ```
+
+  `memory` is the default and needs no Redis at all. A store the broker
+  cannot reach refuses the call and records the refusal — it never guesses a
+  budget.
 - Size `[broker] worker_threads` (default 16) for the deployment. It is the
   broker's concurrency limit: how many tool calls and `CONNECT`
   authorizations can be in flight at once. One pool serves both surfaces, so

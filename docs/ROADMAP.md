@@ -231,7 +231,7 @@ The load-bearing one. Everything in the "production" definition depends on it.
 | | Work | Size |
 |---|---|---|
 | A1 | Extract a `TaskStateStore` interface; keep the in-memory one as the default for single-process runs and tests. **Done** — `TaintTracker` is gone; the interface is five methods, and `charge_id`/`now` are caller-supplied so A2's Lua script can implement it unchanged | S |
-| A2 | Redis implementation with an atomic reserve-then-increment (one Lua script). **Open, and narrower than this line said** — the check does NOT move into the script; see below | M |
+| A2 | Redis implementation with an atomic reserve-then-increment (one Lua script). **Done** — and narrower than this line said: the check does NOT move into the script. Selected by `[task_state].backend`, memory still the default. Two brokers now share one budget; four workers still need B6 and a process model | M |
 | A3 | Change budget semantics from *count what was returned* to **reserve the estimate, then reconcile the actual**. **Done** — and it covers `data_classes_held` too, which this table never mentioned and which had the identical hole | M |
 | A4 | Release a reservation when `execute()` fails, so a backend outage does not consume a task's budget. **Done** — and the data class is deliberately NOT released with it | S |
 | A5 | TTL eviction keyed on token expiry, closing the unbounded-growth leak. **Done** — plus a second, shorter clock: a per-reservation deadline, so a broker killed mid-call self-heals in seconds rather than at task end | S |
@@ -241,8 +241,24 @@ The load-bearing one. Everything in the "production" definition depends on it.
 simultaneous reads at one `task_id` and asserts the budget is honoured exactly
 once, and the `report` scenario's numbers reproduced unchanged under all four.
 
-**The concurrency test exists and the numbers are unchanged; the four workers
-are what A2 still owes.** Ten simultaneous reads at one `task_id` against a
+**A2 has landed, and § A is now complete — but this exit criterion is not,
+and the difference is worth stating rather than blurring.** Two brokers share
+one budget: ten charges alternating across two independent clients are handed
+a distinct prefix and commit one total, and pointing them at different
+databases is what breaks it. What still stands between that and *four workers
+behind a load balancer* is **B6** — `seq` is allocated under a process-local
+lock, so two brokers writing one audit file break the chain rather than
+share it — and a **process model that does not exist**: no `healthz`, no
+`readyz`, no `SO_REUSEPORT`, and `__main__.py` binds the proxy inside the same
+`asyncio.run` as uvicorn. § A was one of three things this line needs.
+
+Two of A2's five decisions were found by a spike failing rather than by
+argument, which is why it was built against a live server before its design
+was written down. The sharpest: `EXPIREAT` runs on Redis's wall clock while
+`expires_at` is on the caller's injected clock, so the first version deleted
+the key on every charge.
+
+**The concurrency test exists and the numbers are unchanged.** Ten simultaneous reads at one `task_id` against a
 50-row budget produce five allows and five `rows.bounded` refusals, asserted as
 a prefix rather than a count, and the mutation that reverts the charge to a
 plain read allows all ten. Sequential runs are arithmetically identical to the

@@ -101,7 +101,7 @@ against a fully compromised broker.
 | `broker/identity.py` | Verifies Ed25519 task tokens. Loads the **public key only** | Trusted; holds no secret | Every call is refused as `unauthenticated` and recorded |
 | `broker/pdp.py` | Posts the input document to OPA and maps `deny_reasons` to a single reported rule | Trusted transport + fail-closed mapping | Denies everything as `pdp.unavailable` |
 | OPA server | Evaluates `authz.rego` against `data.json`. Pure decision function — holds no state | Trusted decision point | Denies everything (via `pdp.unavailable`) |
-| `broker/taint.py` | Per-task data classes held and rows charged. In-memory, evicted on a TTL | Trusted state | Budgets and taint reset; data-flow rules stop firing correctly |
+| `broker/taint.py`, `broker/taint_redis.py` | Per-task data classes held and rows charged, evicted on a TTL. In-process by default; one Redis hash per task when `[task_state].backend = "redis"`, which is what lets two brokers share one budget | Trusted state | Budgets and taint reset; data-flow rules stop firing correctly. An unreachable shared store refuses the call and records the refusal rather than guessing |
 | `broker/audit.py` | Append-only hash-chained decision log at `/data/audit.jsonl` | Trusted record | Tool API returns 503 and **nothing executes** |
 | `broker/adapters/` | Two jobs per tool: `describe()` turns args into a policy target; `execute()` acts. Both read the same validated args | Transport, not decision | The individual tool fails (502); the recorded allow stands |
 | `broker/config/` | Loads `warden.toml` and the deployment's `tools.toml`; cross-checks catalog against policy data | Trusted config | Boot fails loudly before a socket is opened |
@@ -282,11 +282,11 @@ what the *task* is carrying, which is a property no single request contains.
 |---|---|
 | Scope | Per `task_id`, from the token. A new `task_id` is a new budget |
 | Granularity | Task-level, not per string — summarising or re-encoding does not launder a data class |
-| Storage | In-memory in the broker process |
+| Storage | In-memory in the broker process by default; one Redis hash per task when `[task_state].backend = "redis"` |
 | What the number means | Rows **charged**: settled reads plus reservations still in flight. A reserved-but-unused row counts until reconciliation, deliberately |
 | Expiry | Two clocks. A reservation expires after `max_in_flight_seconds` (60), so a broker killed mid-call self-heals. A whole task expires `ttl_grace_seconds` (3600) after its last token's `exp` |
 | Concurrency | Safe within a process, by an atomic charge rather than by the handler happening not to suspend — which is what let A6 move the sequence onto a threadpool without touching it |
-| Distributed | Not supported. Two brokers share no store, so horizontal scaling still needs one that is not built |
+| Distributed | Supported for the BUDGET: `[task_state].backend = "redis"` puts it in one Redis, and two brokers then share it exactly. Not yet supported overall — the audit chain's `seq` is still process-local (B6), so one worker remains the supported deployment |
 
 ---
 
