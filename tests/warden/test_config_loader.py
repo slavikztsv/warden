@@ -281,19 +281,27 @@ def test_control_a_missing_tokens_section_names_itself(tmp_path):
         load_control_config(write_control(tmp_path, text), env={})
 
 
-def test_control_a_missing_audit_section_names_itself(tmp_path):
+def test_control_a_missing_audit_section_names_the_section(tmp_path):
     """B7: the control plane writes a mint record, so it needs a log to write
     it into, and it must not start without one.
 
-    MANDATORY rather than optional-and-off, unlike [mcp] and [task_state]:
-    _optional_section's own docstring scopes itself to "a surface that is off
-    by default". Recording what was granted is not a surface -- it is the
-    property that makes the log able to answer "what was task 4711 allowed to
-    do", and a control plane that silently does not have it is the exact
-    failure B7 exists to remove.
+    The assertion is the SECTION message, not merely that "audit" appears
+    somewhere in the error, and that precision was earned by mutation. Swapping
+    `_section` for `_optional_section` here leaves the boot failure intact --
+    `_string` then raises "audit.path must be a string" against the empty dict,
+    because `ControlConfig.audit_path` has no default to fall back to -- so a
+    `match="audit"` version of this test passed against the exact change it
+    names. What `_section` buys is the DIAGNOSIS: "missing or malformed section
+    [audit]" sends an operator to the section they forgot, where the other
+    message sends them to a key inside a table that is not there.
+
+    The variant that would genuinely lose the property is
+    `audit_path: Path | None = None` -- a control plane that starts and mints
+    without recording. Nothing here is one line away from that, and this test
+    is why.
     """
     text = CONTROL_COMPLETE.replace('[audit]\npath = "/data/audit.jsonl"\n', "")
-    with pytest.raises(ConfigError, match=re.escape("audit")):
+    with pytest.raises(ConfigError, match=re.escape("missing or malformed section [audit]")):
         load_control_config(write_control(tmp_path, text), env={})
 
 

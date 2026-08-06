@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from warden.broker.audit import AuditLog
 from warden.broker.control import MINT_UNAVAILABLE_MESSAGE, create_control_app
 from warden.broker.identity import ISSUER, Signer, Verifier
+from warden.broker.record_fields import args_digest, empty_task_state
 
 GRANT = {
     "agent_id": "triage-bot",
@@ -145,6 +146,11 @@ def test_a_mint_record_carries_these_exact_fields(tmp_path):
     assert record["rule"] == "mint.unconditional"
     # Not "sha256:none": the bundle does not exist, it was not merely unread.
     assert record["policy_bundle_digest"] == "none"
+    # A REAL digest, unlike the two sentinels around it: there were arguments,
+    # and this is what they were. Asserted because a mutation that appended to
+    # it left every other assertion in this test green -- the one field the
+    # first version of this test forgot.
+    assert record["args_digest"] == args_digest(GRANT)
     assert record["task_state"] == {"data_classes_held": [], "rows_charged_so_far": 0}
     assert record["target"] == {
         "kind": "token",
@@ -363,3 +369,30 @@ def test_the_shipped_control_toml_names_the_brokers_audit_log(tmp_path):
         return re.search(r'path\s*=\s*"([^"]+)"', section).group(1)
 
     assert audit_path(control) == audit_path(broker)
+
+
+# --- the shared record vocabulary --------------------------------------------
+
+
+def test_empty_task_state_is_a_fresh_dict_per_call():
+    """record_fields.empty_task_state's docstring warns about this, and until
+    B7's mutation pass nothing enforced it.
+
+    AuditLog.append does `record = dict(body)` -- a SHALLOW copy -- so a shared
+    module-level constant would make every record built from it alias one
+    object. Nothing keeps those return values today, which is exactly why the
+    hazard is worth a test rather than a comment: the next caller to keep one
+    would not know it was holding a landmine, and B7 just added the second
+    caller.
+
+    Measured: replacing the dict literal with a module constant left all 832
+    tests green.
+    """
+    first, second = empty_task_state(), empty_task_state()
+    assert first == second
+    assert first is not second
+    assert first["data_classes_held"] is not second["data_classes_held"]
+
+    first["data_classes_held"].append("pii")
+    first["rows_charged_so_far"] = 5001
+    assert empty_task_state() == {"data_classes_held": [], "rows_charged_so_far": 0}
