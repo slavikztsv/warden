@@ -308,6 +308,98 @@ door that now sits beside it — off by default, and it brokers tools without
 containing anything, exactly like the tool API it fronts. See
 [limitations](#known-limitations).
 
+### Brokering tools over MCP
+
+A third front door, in the same process, rendering the same decision as the tool
+API above. It exists so an agent whose code you do not own can call brokered
+tools. **Three steps, and the third is the interesting one.**
+
+**1. Turn it on.** The SDK is an optional extra, and the section is absent by
+default:
+
+```bash
+pip install -e './warden[mcp]'                 # pulls httpx2 + opentelemetry-api
+```
+
+```toml
+[mcp]
+enabled = true
+path    = "/mcp"                               # under [broker].listen, so :8080/mcp
+host    = "broker.example"                     # name the host you are reached on
+```
+
+Leave `host` unset and the SDK infers a loopback host, turns DNS-rebinding
+protection on, and answers **421** to every request arriving under a real
+hostname. Enabling `[mcp]` without the extra installed is a boot-time
+`ConfigError`, not a runtime surprise.
+
+**Then run the check, because MCP demands more of a catalog than the tool API
+does:**
+
+```bash
+warden config check --catalog tools.toml --data data.json --mcp
+```
+
+Without `--mcp` a tool needs no `description` or `title` — the tool API never
+reads either. With it, both are mandatory on every tool, because the surface
+advertises them to a model. **The demo's own catalog declares neither, so it
+fails this check as shipped** — that is the check working, not a bug.
+
+**2. Point an agent at it.** The surface needs two things: the endpoint, and the
+task token as a bearer credential. Exact config layout is per-client; the facts
+are the same everywhere:
+
+```jsonc
+{ "url": "https://broker.example:8080/mcp",
+  "headers": { "Authorization": "Bearer <task token>" } }
+```
+
+For a **local** agent that wants stdio rather than HTTP, `warden mcp` forwards
+one to the other, launched inside the agent's own process tree:
+
+```bash
+warden mcp --broker https://broker.example:8080/mcp --token-file ~/.warden/token
+```
+
+`--broker` is the full endpoint URL including the mount path, not just a host.
+The token is re-read from that file before every forwarded call, so renewing it
+does not need a restart. Plain `http://` is refused unless you pass
+`--allow-http`, which is for loopback development only.
+
+> [!IMPORTANT]
+> **The client must speak MCP revision `2026-07-28`.** Every older revision is
+> refused with `-32022` before authentication, not served with reduced
+> functionality — its transport does not check a request's routing header
+> against its body and puts exception text on the wire, so serving it would let
+> the caller pick the weaker of two enforcement paths.
+> [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-mcp-front-door) has the rest.
+
+**3. Know what the agent sees.** `tools/list` returns only what the token
+grants, with a JSON Schema generated from the same `[args]` the broker enforces
+— so a token granting one tool of four advertises exactly one:
+
+```jsonc
+{ "name": "read_document",
+  "inputSchema": { "type": "object",
+                   "properties": { "doc_id": { "type": "string", "minLength": 1 } },
+                   "required": ["doc_id"], "additionalProperties": false } }
+```
+
+That filter is **convenience, never enforcement.** Call a tool the listing
+withheld and it is still refused by rule, and still recorded.
+
+**A refusal comes back as a tool error the model can read**, not a transport
+fault:
+
+```
+Denied by policy rule rows.bounded.
+```
+
+That is the whole reason this surface renders denials the way it does. An agent
+that can read a refusal adapts and finishes its task — six of the seven
+scenarios above still delivered their email *after* being refused. One that
+gets a transport fault retries the identical call.
+
 ### Using it with your own tools
 
 <p align="center">
