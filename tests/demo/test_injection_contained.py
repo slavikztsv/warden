@@ -31,7 +31,7 @@ from warden.broker.audit import AuditLog
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import InMemoryTaskStateStore
 
 pytestmark = pytest.mark.integration
 
@@ -137,7 +137,7 @@ def stack(tmp_path, opa_url, monkeypatch):
     app = create_app(
         verifier=Verifier(signer.public_key_pem()),
         pdp=PolicyDecisionPoint(opa_url, client=httpx.Client(timeout=5.0)),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=audit,
         catalog=demo_catalog(
             docstore_url="http://docstore.internal",

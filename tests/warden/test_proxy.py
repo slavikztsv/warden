@@ -15,7 +15,7 @@ from warden.broker.proxy import (
     proxy_token,
     serve_proxy,
 )
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import InMemoryTaskStateStore
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def deps(tmp_path, opa_payload):
         "pdp": PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(handler))
         ),
-        "taint": TaintTracker(),
+        "task_state": InMemoryTaskStateStore(),
         "audit": AuditLog(tmp_path / "audit.jsonl"),
         "policy_digest": "sha256:test",
     }

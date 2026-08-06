@@ -232,7 +232,7 @@ def test_describe_shows_the_recipient_for_mail():
 # --- The real demo sequence -------------------------------------------------
 #
 # Eight records for task 4711, built through the actual AuditLog and
-# TaintTracker (not hand-rolled dicts), so every hash link and every
+# InMemoryTaskStateStore (not hand-rolled dicts), so every hash link and every
 # task_state snapshot is exactly what the real broker and proxy would
 # produce. Mirrors demo/agent/cassettes/support-triage.json — the ticket read,
 # the poisoned kb article, the targeted customer lookup, the blocked bulk
@@ -244,30 +244,52 @@ def test_describe_shows_the_recipient_for_mail():
 
 def _build_demo_records(path) -> list[dict]:
     from warden.broker.audit import AuditLog
-    from warden.broker.taint import TaintTracker
+    from warden.broker.taint import InMemoryTaskStateStore
 
     log = AuditLog(path)
-    taint = TaintTracker()
+    task_state = InMemoryTaskStateStore()
+    # Fixed, because nothing here is testing expiry: one `now` for every
+    # charge and settle keeps a reservation from being pruned by the call
+    # that took it.
+    NOW = 1_000
     common = dict(
         task_id="4711", agent_id="triage-bot", purpose="support-triage",
         policy_bundle_digest="sha256:demo",
     )
 
+    charges = iter(range(1, 10_000))
+
     def tool_call(tool, target, decision, rule, data_class=None, rows=0):
-        state = taint.snapshot("4711")
+        """One brokered call, driven through the real charge/settle cycle.
+
+        Charge then settle, exactly as the spine does, so the task_state each
+        record carries is the pre-charge view the real broker would write --
+        and so a denial leaves no trace, which is what makes the taint marker
+        land between the right two records.
+        """
+        charge_id = f"c{next(charges)}"
+        state = task_state.charge(
+            "4711", charge_id=charge_id, rows=target.get("estimated_rows", 0),
+            data_class=data_class if decision == "allow" else None,
+            now=NOW, expires_at=NOW + 3600,
+        )
         log.append(
             action={"type": "tool_call", "tool": tool}, target=target,
             args_digest="sha256:none", decision=decision, rule=rule,
             task_state=state, **common,
         )
         if decision == "allow":
-            taint.record_read("4711", data_class=data_class, rows=rows)
+            task_state.reconcile(
+                "4711", charge_id, rows=rows, data_class=data_class, now=NOW
+            )
+        else:
+            task_state.release("4711", charge_id, now=NOW)
 
     def connect(target, decision, rule):
-        # authorize_connect() snapshots and audits but never calls
-        # record_read: a tunnel authorization doesn't itself consume or
-        # return data, so it cannot taint the task.
-        state = taint.snapshot("4711")
+        # authorize_connect() peeks and audits but never charges: a tunnel
+        # authorization doesn't itself consume or return data, so it cannot
+        # taint the task and has no price to reserve.
+        state = task_state.peek("4711", now=NOW)
         log.append(
             action={"type": "egress", "tool": "CONNECT"}, target=target,
             args_digest="sha256:none", decision=decision, rule=rule,

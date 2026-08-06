@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 
 from warden.broker.audit import AuditLog
 from warden.broker.identity import TokenInvalid, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import TaskStateStore
 
 NO_TOKEN = "unauthenticated"
 
@@ -74,7 +75,7 @@ def authorize_connect(
     token_str: str,
     verifier: Verifier,
     pdp: PolicyDecisionPoint,
-    taint: TaintTracker,
+    task_state: TaskStateStore,
     audit: AuditLog,
     policy_digest: str,
 ) -> tuple[bool, str]:
@@ -110,7 +111,19 @@ def authorize_connect(
         )
         return False, NO_TOKEN
 
-    state = taint.snapshot(token.task_id)
+    # peek, not charge: a CONNECT reserves nothing. Its target carries
+    # estimated_rows 0 and there is no tool binding behind it, so there is no
+    # price to hold and nothing to settle afterwards -- this reads the budget
+    # and the classes a task already carries, and spends neither.
+    #
+    # Reading without creating also matters more here than anywhere else: a
+    # CONNECT is what a probe looks like, and it can name any task_id at all.
+    # A read that planted an entry would leak one per id probed.
+    #
+    # Wall clock, for the same reason `verifier.verify(token_str)` above uses
+    # one: this function is handed no clock, and the only thing `now` affects
+    # on a read is whether an expired reservation is still counted.
+    state = task_state.peek(token.task_id, now=int(time.time()))
     decision = pdp.decide(
         {
             "principal": {

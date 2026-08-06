@@ -36,7 +36,7 @@ from warden.broker.identity import Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
 from warden.broker.proxy import serve_proxy
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import InMemoryTaskStateStore
 from warden.broker.wiring import BrokerComponents
 
 
@@ -119,7 +119,13 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         pdp=PolicyDecisionPoint(
             config.opa_url, decision_path=config.decision_path, client=client
         ),
-        taint=TaintTracker(),
+        # One store, shared by the tool API and the proxy, which is what makes
+        # a task's budget one budget rather than two. In-process for now: A2
+        # swaps this for the Redis implementation of the same interface, and
+        # that is the whole of what "more than one worker" needs from here.
+        task_state=InMemoryTaskStateStore(
+            max_in_flight_seconds=config.task_state.max_in_flight_seconds
+        ),
         audit=AuditLog(config.audit_path),
         # Computed once at startup, never lazily per request: a missing or
         # unreadable bundle must crash before the first decision, not be
@@ -135,8 +141,11 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         # broker service's `environment:`.
         catalog=load_catalog(config.catalog_path, os.environ, client),
         # Not in components: BrokerComponents feeds serve_proxy too, which has
-        # no MCP surface and would raise TypeError on the extra keyword.
+        # no MCP surface and would raise TypeError on the extra keyword. The
+        # grace below is out for the same reason -- the proxy charges nothing,
+        # so it has no reservation whose task lifetime this would set.
         mcp=config.mcp,
+        state_grace_seconds=config.task_state.ttl_grace_seconds,
         **components.as_app_kwargs(),
     )
     return app, components

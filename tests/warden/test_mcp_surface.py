@@ -644,7 +644,7 @@ def test_the_mcp_config_is_not_one_of_the_shared_components():
     assert "mcp" in inspect.signature(create_app).parameters
     assert "mcp" not in BrokerComponents.__dataclass_fields__
     components = BrokerComponents(
-        verifier=None, pdp=None, taint=None, audit=None, policy_digest="d"
+        verifier=None, pdp=None, task_state=None, audit=None, policy_digest="d"
     )
     assert "mcp" not in components.as_app_kwargs()
     assert "mcp" not in components.as_proxy_kwargs()

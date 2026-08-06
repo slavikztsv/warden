@@ -68,7 +68,7 @@ from warden.broker.config.catalog import ToolCatalog
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import InMemoryTaskStateStore
 from warden.cli.replay import render_replay
 
 W = 76
@@ -271,7 +271,7 @@ class NarratedPDP:
         target = input_doc["target"]
 
         stage("⑤", "THE BROKER ADDS WHAT ONLY IT KNOWS")
-        show("rows read so far this task", state["rows_charged_so_far"])
+        show("rows charged so far this task", state["rows_charged_so_far"])
         show("data classes held", state["data_classes_held"] or "[] (nothing sensitive yet)")
         if target["kind"] == "db":
             show("rows this query would return", target["estimated_rows"])
@@ -394,23 +394,41 @@ class NarratedBackends:
         return result
 
 
-class NarratedTaint:
-    """Wraps the taint tracker so state changes are announced."""
+class NarratedTaskState:
+    """Wraps the task-state store so state changes are announced.
 
-    def __init__(self, inner: TaintTracker) -> None:
+    Narrates on `reconcile`, which is where a call's estimate is swapped for
+    what it really read. `charge` is deliberately silent: it fires on every
+    call including the refused ones, and announcing a reservation that a
+    denial hands straight back would tell the reader a task was tainted when
+    it was not.
+    """
+
+    def __init__(self, inner) -> None:
         self._inner = inner
 
-    def snapshot(self, task_id):
-        return self._inner.snapshot(task_id)
+    def charge(self, task_id, **kwargs):
+        return self._inner.charge(task_id, **kwargs)
 
-    def record_read(self, task_id, *, data_class, rows):
-        before = self._inner.snapshot(task_id)
-        self._inner.record_read(task_id, data_class=data_class, rows=rows)
-        after = self._inner.snapshot(task_id)
+    def release(self, task_id, charge_id, **kwargs):
+        return self._inner.release(task_id, charge_id, **kwargs)
+
+    def abandon(self, task_id, charge_id, **kwargs):
+        return self._inner.abandon(task_id, charge_id, **kwargs)
+
+    def peek(self, task_id, **kwargs):
+        return self._inner.peek(task_id, **kwargs)
+
+    def reconcile(self, task_id, charge_id, *, rows, data_class, now):
+        before = self._inner.peek(task_id, now=now)
+        self._inner.reconcile(
+            task_id, charge_id, rows=rows, data_class=data_class, now=now
+        )
+        after = self._inner.peek(task_id, now=now)
         if before != after:
             stage("⑩", "THE TASK'S STATE CHANGES")
             show("data classes held", f"{before['data_classes_held']} → {after['data_classes_held']}")
-            show("rows read", f"{before['rows_charged_so_far']} → {after['rows_charged_so_far']}")
+            show("rows charged", f"{before['rows_charged_so_far']} → {after['rows_charged_so_far']}")
             if "pii" in after["data_classes_held"] and "pii" not in before["data_classes_held"]:
                 why(
                     "This is the pivotal line of the whole run. From here on the "
@@ -946,7 +964,7 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
         app = create_app(
             verifier=Verifier(signer.public_key_pem()),
             pdp=pdp,
-            taint=NarratedTaint(TaintTracker()),
+            task_state=NarratedTaskState(InMemoryTaskStateStore()),
             audit=audit,
             catalog=NarratedBackends(
                 demo_catalog(

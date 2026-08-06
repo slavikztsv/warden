@@ -41,7 +41,7 @@ from warden.broker.spine import (
     Outcome,
     Spine,
 )
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import TaskStateStore
 
 # The top-level packages `warden[mcp]` installs, or that installing it pulls
 # in transitively. `httpx2` is the transitive case: `pyproject.toml`'s `mcp`
@@ -149,7 +149,7 @@ def create_app(
     *,
     verifier: Verifier,
     pdp: PolicyDecisionPoint,
-    taint: TaintTracker,
+    task_state: TaskStateStore,
     audit: AuditLog,
     catalog: ToolCatalog,
     policy_digest: str,
@@ -161,6 +161,10 @@ def create_app(
     # broker still reporting healthy. The proxy has no MCP surface and must
     # not be handed the config for one.
     mcp: McpConfig | None = None,
+    # Out of BrokerComponents for the same reason `mcp` is, and additionally
+    # because the proxy has nothing to apply it to: a CONNECT charges nothing,
+    # so there is no reservation whose task lifetime this would set.
+    state_grace_seconds: int = 3600,
 ) -> FastAPI:
     app = FastAPI(title="warden broker")
     # Captured before anything can replace it, so the check below is against
@@ -169,11 +173,12 @@ def create_app(
     spine = Spine(
         verifier=verifier,
         pdp=pdp,
-        taint=taint,
+        task_state=task_state,
         audit=audit,
         catalog=catalog,
         policy_digest=policy_digest,
         clock=clock or now,
+        state_grace_seconds=state_grace_seconds,
     )
     # Reachable by any surface mounted onto this app later. There is exactly
     # one spine per app, which is what makes two front doors incapable of

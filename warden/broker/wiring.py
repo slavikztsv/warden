@@ -16,13 +16,14 @@ from dataclasses import dataclass
 class BrokerComponents:
     verifier: object
     pdp: object
-    taint: object
+    task_state: object
     audit: object
     policy_digest: str
 
     def as_app_kwargs(self) -> dict:
         return {
-            "verifier": self.verifier, "pdp": self.pdp, "taint": self.taint,
+            "verifier": self.verifier, "pdp": self.pdp,
+            "task_state": self.task_state,
             "audit": self.audit, "policy_digest": self.policy_digest,
         }
 

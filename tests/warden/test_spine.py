@@ -26,6 +26,12 @@ def test_every_kind_has_an_http_rendering():
         Kind.DESCRIBE_BACKEND_FAULT: 502,
         Kind.EXECUTE_FAILED_AFTER_DURABLE_ALLOW: 502,
         Kind.TAINT_REJECTED_AFTER_EXECUTE: 502,
+        # Split on whether the ACTION happened, which is what picks the
+        # status: before, nothing ran and a caller may retry (503); after,
+        # the durable allow stands and a retry would spend the budget twice
+        # (502).
+        Kind.STATE_UNAVAILABLE_BEFORE_EXECUTE: 503,
+        Kind.STATE_UNAVAILABLE_AFTER_EXECUTE: 502,
         Kind.POLICY_DENIED: 403,
         Kind.UNKNOWN_TOOL_DENIED: 403,
         Kind.MALFORMED_BODY_DENIED: 403,
@@ -72,23 +78,23 @@ def test_rendering_an_outcome_twice_has_no_side_effects(tmp_path):
     assert outcome.kind is Kind.EXECUTED
 
     before_records = len(audit.records())
-    before_state = spine._taint.snapshot("4711")
+    before_state = spine.task_state("4711")
 
     _render(outcome)
     _render(outcome)
 
     assert len(audit.records()) == before_records
-    assert spine._taint.snapshot("4711") == before_state
+    assert spine.task_state("4711") == before_state
 
 
 def test_task_state_is_read_only_even_for_an_id_no_token_ever_minted(tmp_path):
     """task_state's own docstring calls it a read-only view "a diagnostic, an
     operator question, a test" can ask about ANY task_id -- which, unlike
     the serving path, may not be an id a minted token ever named. If this
-    read through TaintTracker.snapshot() (a defaultdict access) instead of
-    TaintTracker.peek(), every such question would permanently plant an
-    empty entry, falsifying "read-only" for exactly the callers this
-    accessor is written for."""
+    read through any of the store's other methods -- all of which create the
+    entry they are about to spend from -- every such question would
+    permanently plant an empty entry, falsifying "read-only" for exactly the
+    callers this accessor is written for."""
     from tests.warden.test_app import build, token_for
     from warden.broker.identity import Signer
 
@@ -100,7 +106,7 @@ def test_task_state_is_read_only_even_for_an_id_no_token_ever_minted(tmp_path):
         "data_classes_held": [],
         "rows_charged_so_far": 0,
     }
-    assert "nobody-minted-this-id" not in spine._taint._tasks
+    assert "nobody-minted-this-id" not in spine._state._tasks
 
     # And a task_id a real call HAS touched still reports the true state --
     # this accessor is read-only, not blind.

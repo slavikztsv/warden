@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import time
 
 import httpx
 import pytest
@@ -15,7 +16,7 @@ from warden.broker.audit import AuditLog
 from warden.broker.control import create_control_app
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
-from warden.broker.taint import TaintTracker
+from warden.broker.taint import InMemoryTaskStateStore
 
 
 @pytest.fixture
@@ -34,13 +35,18 @@ class Clock:
         return self.value
 
 
-def build(tmp_path, signer, opa_payload, backend_handler=None, clock=None):
+def build(tmp_path, signer, opa_payload, backend_handler=None, clock=None,
+          opa_handler=None, task_state=None, seed_rows=120):
     db = tmp_path / "customers.db"
-    seed_customers(db, count=120)
+    seed_customers(db, count=seed_rows)
 
-    def opa_handler(request):
-        return httpx.Response(200, json={"result": opa_payload})
-
+    # `opa_handler` overrides `opa_payload` for the cases that need the stub
+    # to answer differently per call -- to apply R5's real arithmetic to the
+    # task_state it was handed, or to capture what the spine sent. Mirrors
+    # build_with_mcp, which already takes one.
+    opa_handler = opa_handler or (
+        lambda request: httpx.Response(200, json={"result": opa_payload})
+    )
     backend_handler = backend_handler or (lambda request: httpx.Response(200, text="doc-body"))
     audit = AuditLog(tmp_path / "audit.jsonl")
     app = create_app(
@@ -48,7 +54,7 @@ def build(tmp_path, signer, opa_payload, backend_handler=None, clock=None):
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=TaintTracker(),
+        task_state=task_state or InMemoryTaskStateStore(),
         audit=audit,
         catalog=demo_catalog(
             docstore_url="http://docstore.internal",
@@ -111,7 +117,7 @@ def build_with_mcp(
             "http://opa:8181",
             client=httpx.Client(transport=httpx.MockTransport(opa_handler)),
         ),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=audit,
         catalog=catalog
         or demo_catalog(
@@ -146,7 +152,7 @@ def app_with_catalog(tmp_path, catalog, clock=None):
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
@@ -290,7 +296,7 @@ def test_reading_customers_taints_the_task_for_later_calls(tmp_path, signer):
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=AuditLog(tmp_path / "audit.jsonl"),
         catalog=demo_catalog(
             docstore_url="http://docstore.internal",
@@ -518,7 +524,7 @@ def test_execute_guard_catches_any_exception_not_just_httpx_errors(tmp_path, sig
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
@@ -655,7 +661,7 @@ def test_genuine_backend_fault_during_describe_is_not_blamed_on_the_agent(tmp_pa
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
@@ -671,11 +677,17 @@ def test_genuine_backend_fault_during_describe_is_not_blamed_on_the_agent(tmp_pa
 def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, signer):
     """Finding 5: a backend that reports a negative row count must not be
     silently clamped to zero, which would under-count a security budget
-    rows.bounded relies on. taint.py's ValueError is the intended signal
-    (Task 5's review explicitly chose reject over clamp) and it must
-    surface here, not be swallowed. The already-durable allow record
-    stands; the taint state itself is left untouched by the rejected
-    update."""
+    rows.bounded relies on. The rejection is the intended signal (Task 5's
+    review explicitly chose reject over clamp) and it must surface here, not
+    be swallowed. The already-durable allow record stands.
+
+    What the rejection COSTS changed in P2·A, deliberately. It used to leave
+    task state untouched, so a buggy adapter's read was free. The reservation
+    is now settled at describe()'s estimate instead -- a read costs what was
+    AUTHORISED rather than costing nothing -- and the class the call declared
+    is committed, because the adapter did reach the source. Here the estimate
+    is 0 (read_document is a docstore fetch, not a row read), so the visible
+    change is the class."""
     db = tmp_path / "customers.db"
     seed_customers(db, count=5)
 
@@ -698,14 +710,14 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
 
     catalog.execute = execute_with_bogus_rows
 
-    taint = TaintTracker()
+    task_state = InMemoryTaskStateStore()
     audit = AuditLog(tmp_path / "audit.jsonl")
     app = create_app(
         verifier=Verifier(signer.public_key_pem()),
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=taint,
+        task_state=task_state,
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
@@ -721,9 +733,12 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
     assert len(records) == 1
     assert records[0]["decision"] == "allow"
 
-    state = taint.snapshot("4711")  # token_for()'s default task_id
+    state = task_state.peek("4711", now=int(time.time()))  # token_for()'s default task_id
+    # Settled at the estimate, which for a docstore fetch is 0 -- NOT left
+    # dangling as a live reservation, which would hold budget until its
+    # deadline for a call that has already returned.
     assert state["rows_charged_so_far"] == 0
-    assert state["data_classes_held"] == []
+    assert state["data_classes_held"] == ["public"]
 
 
 # --- Beyond-the-brief verification ---
@@ -774,7 +789,7 @@ def _build_with_spies(tmp_path, signer, clock=None):
     app = create_app(
         verifier=Verifier(signer.public_key_pem()),
         pdp=pdp,
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=audit,
         catalog=catalog,
         policy_digest="sha256:test",
@@ -836,7 +851,7 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=TaintTracker(),
+        task_state=InMemoryTaskStateStore(),
         audit=AuditLog(tmp_path / "audit.jsonl"),
         catalog=demo_catalog(
             docstore_url="http://docstore.internal",
@@ -928,13 +943,13 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
         return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
 
     audit = AuditLog(tmp_path / "audit.jsonl")
-    taint = TaintTracker()
+    task_state = InMemoryTaskStateStore()
     app = create_app(
         verifier=Verifier(signer.public_key_pem()),
         pdp=PolicyDecisionPoint(
             "http://opa:8181", client=httpx.Client(transport=httpx.MockTransport(opa_handler))
         ),
-        taint=taint,
+        task_state=task_state,
         audit=audit,
         catalog=demo_catalog(
             docstore_url="http://docstore.internal",
@@ -965,7 +980,9 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
 
     # The property that actually matters, independent of which call "won":
     # the recorded total must never exceed the configured bound.
-    final_rows = taint.snapshot("4711")["rows_charged_so_far"]  # token_for()'s default task_id
+    final_rows = task_state.peek(  # token_for()'s default task_id
+        "4711", now=int(time.time())
+    )["rows_charged_so_far"]
     assert final_rows <= max_rows
     assert len(audit.records()) == 2
 
@@ -1271,3 +1288,129 @@ def test_both_doors_render_one_outcome_with_the_same_words(tmp_path, signer):
         # door puts in its tool error too.
         assert body["message"] == "Denied by policy rule rows.bounded."
         assert body["rule"] == "rows.bounded"
+
+
+# --- What a charge means: the P2·A semantics, end to end --------------------
+#
+# Each of these pins one half of the reserve-then-reconcile contract through
+# the whole spine, not at the store. They are the tests whose mutations are
+# recorded in the commit message: swap release for abandon on the deny path,
+# or abandon for release on the failure path, and exactly one of them reddens.
+
+
+class ExplodingStore:
+    """A store that fails where the test points it, delegating the rest.
+
+    A2's Redis store can be unreachable, and the spine's answer to that is
+    settled here rather than discovered later: refuse before the action,
+    report the durable allow after it.
+    """
+
+    def __init__(self, *, fail_on: str) -> None:
+        self._real = InMemoryTaskStateStore()
+        self._fail_on = fail_on
+
+    def __getattr__(self, name):
+        if name == self._fail_on:
+            def boom(*args, **kwargs):
+                raise RuntimeError("state store unreachable")
+            return boom
+        return getattr(self._real, name)
+
+
+def test_a_denied_call_taints_nothing(tmp_path, signer):
+    """A refused call must leave NO trace in task state.
+
+    Otherwise one denied PII read poisons a task for the rest of its life --
+    and an agent could trip that deliberately, turning a refusal into a way
+    to disable its own later egress.
+    """
+    client, _ = build(tmp_path, signer, {"allow": False, "deny_reasons": ["rows.bounded"]})
+    token = token_for(signer)
+    response = invoke(client, token, "query_customers", {"filter": "all"})
+    assert response.status_code == 403
+
+    assert client.app.state.spine.task_state("4711") == {
+        "data_classes_held": [], "rows_charged_so_far": 0,
+    }
+
+
+def test_a_failed_execute_keeps_the_class_and_releases_the_rows(tmp_path, signer):
+    """The two halves settle in OPPOSITE directions, and each is the
+    fail-closed one.
+
+    The adapter reached the source and may have received bytes before
+    failing, so the taint stands. The budget must not pay for a backend
+    outage, so the rows go back.
+    """
+    def backend(request):
+        raise httpx.ConnectError("backend down")
+
+    client, _ = build(tmp_path, signer, {"allow": True, "deny_reasons": []},
+                      backend_handler=backend)
+    token = token_for(signer)
+    response = invoke(client, token, "read_document", {"doc_id": "a"})
+    assert response.status_code == 502
+
+    state = client.app.state.spine.task_state("4711")
+    assert state["rows_charged_so_far"] == 0, "a backend outage spent the budget"
+    assert state["data_classes_held"] == ["public"], "the taint was forgotten"
+
+
+def test_a_first_pii_read_cannot_deny_itself(tmp_path, signer):
+    """charge() returns the state BEFORE its own charge, and this is what
+    that buys.
+
+    If it returned the state after, a task's very first PII read would arrive
+    at the PDP already holding "pii" -- and for an http-target tool,
+    egress.pii_sink would refuse the very call that produced the class.
+    """
+    seen = []
+
+    def opa_handler(request):
+        seen.append(json.loads(request.content)["input"]["task_state"])
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    client, _ = build(tmp_path, signer, None, opa_handler=opa_handler)
+    token = token_for(signer)
+    invoke(client, token, "query_customers", {"filter": "id=8812"})
+
+    assert seen[0] == {"data_classes_held": [], "rows_charged_so_far": 0}
+    # And the class really was charged -- the call is not simply classless.
+    assert client.app.state.spine.task_state("4711")["data_classes_held"] == ["pii"]
+
+
+def test_a_store_failure_before_execute_refuses_and_does_not_act(tmp_path, signer):
+    """A broker that cannot read the state a decision needs must refuse, and
+    must not act. Nothing is recorded, for the same reason a describe()
+    fault records nothing: it is not the agent's doing."""
+    executed = []
+
+    def backend(request):
+        executed.append(request.url)
+        return httpx.Response(200, text="doc-body")
+
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []},
+                          backend_handler=backend,
+                          task_state=ExplodingStore(fail_on="charge"))
+    response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "audit_unavailable"
+    assert executed == [], "the tool ran despite the broker refusing the call"
+    assert audit.records() == []
+
+
+def test_a_store_failure_after_execute_reports_the_durable_allow(tmp_path, signer):
+    """The mirror image: the action HAS happened and the allow is durable, so
+    the caller is told not to retry and handed the seq of the record that
+    already exists."""
+    client, audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []},
+                          task_state=ExplodingStore(fail_on="reconcile"))
+    response = invoke(client, token_for(signer), "read_document", {"doc_id": "a"})
+
+    assert response.status_code == 502
+    records = audit.records()
+    assert len(records) == 1 and records[0]["decision"] == "allow"
+    from warden.broker.refusals import after_the_fact
+    assert response.json()["message"] == after_the_fact(records[0]["seq"])

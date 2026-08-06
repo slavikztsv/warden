@@ -332,11 +332,11 @@ def test_wiring_is_typed_so_a_new_component_cannot_break_the_proxy():
 
     app_params = set(inspect.signature(create_app).parameters)
     proxy_params = set(inspect.signature(authorize_connect).parameters)
-    stub = BrokerComponents(verifier=None, pdp=None, taint=None, audit=None,
+    stub = BrokerComponents(verifier=None, pdp=None, task_state=None, audit=None,
                             policy_digest="sha256:x")
     # Exactly the shared components, no more and no less -- a subset check
     # alone would pass just as happily if either method returned {}.
-    expected = {"verifier", "pdp", "taint", "audit", "policy_digest"}
+    expected = {"verifier", "pdp", "task_state", "audit", "policy_digest"}
     assert set(stub.as_app_kwargs()) == expected
     assert set(stub.as_proxy_kwargs()) == expected
     assert expected <= app_params

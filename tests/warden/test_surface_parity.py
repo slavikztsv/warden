@@ -116,6 +116,18 @@ def _stripped(record: dict) -> dict:
     return {k: v for k, v in record.items() if k not in VOLATILE}
 
 
+def _stripped_state(record: dict) -> dict:
+    """`_stripped`, minus task_state.
+
+    For the kinds where one door's call legitimately changes what the next
+    door's call starts from -- see the module docstring's note on EXECUTED.
+    Since P2·A that set includes the two post-execute faults: both settle
+    their charge in a way that commits the class the call declared, because
+    in both the adapter really did reach the source.
+    """
+    return {k: v for k, v in record.items() if k not in VOLATILE | {"task_state"}}
+
+
 # --- The core comparison: one record per call, on both doors ---------------
 #
 # Every case below reaches a branch of Spine.handle_tool_call that writes
@@ -341,8 +353,21 @@ def test_both_surfaces_write_the_same_record_after_a_durable_allow_whose_execute
 
         records = audit.records()
     assert len(records) == 2, records
-    assert _stripped(records[0]) == _stripped(records[1])
+    # task_state excluded for the reason the module docstring gives for
+    # EXECUTED, which since P2·A applies to this kind too: the call's charge
+    # is settled in a way that COMMITS the class it declared, because the
+    # adapter really did reach the source. So the second door's pre-call
+    # state is the first door's plus that class -- one task's state, shared
+    # across both doors and correctly advancing, which is the property this
+    # file exists to hold them to.
+    assert _stripped_state(records[0]) == _stripped_state(records[1])
     assert records[0]["decision"] == "allow"
+    assert records[0]["task_state"] == {
+        "data_classes_held": [], "rows_charged_so_far": 0,
+    }
+    assert records[1]["task_state"] == {
+        "data_classes_held": ["public"], "rows_charged_so_far": 0,
+    }
 
     assert http.json()["message"] == after_the_fact(records[0]["seq"])
     assert mcp_result.content[0].text == after_the_fact(records[1]["seq"])
@@ -394,8 +419,21 @@ def test_both_surfaces_write_the_same_record_when_taint_rejects_the_read(tmp_pat
 
         records = audit.records()
     assert len(records) == 2, records
-    assert _stripped(records[0]) == _stripped(records[1])
+    # task_state excluded for the reason the module docstring gives for
+    # EXECUTED, which since P2·A applies to this kind too: the call's charge
+    # is settled in a way that COMMITS the class it declared, because the
+    # adapter really did reach the source. So the second door's pre-call
+    # state is the first door's plus that class -- one task's state, shared
+    # across both doors and correctly advancing, which is the property this
+    # file exists to hold them to.
+    assert _stripped_state(records[0]) == _stripped_state(records[1])
     assert records[0]["decision"] == "allow"
+    assert records[0]["task_state"] == {
+        "data_classes_held": [], "rows_charged_so_far": 0,
+    }
+    assert records[1]["task_state"] == {
+        "data_classes_held": ["public"], "rows_charged_so_far": 0,
+    }
 
     assert http.json()["message"] == after_the_fact(records[0]["seq"])
     assert mcp_result.content[0].text == after_the_fact(records[1]["seq"])
@@ -683,6 +721,11 @@ def test_explicit_null_args_is_denied_on_http_and_can_execute_on_mcp(tmp_path):
 
     class NoArgsAdapter:
         target_kind = "doc"
+        # Required by the Adapter protocol since P2·A: the spine charges a
+        # call's declared class before execute() runs, so it is read from the
+        # adapter rather than from the result. A double without it makes the
+        # catalog raise AttributeError on every call to this tool.
+        data_class = "public"
 
         def describe(self, args):
             return ToolTarget(kind="doc", path="/x")

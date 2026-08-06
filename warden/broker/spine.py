@@ -5,12 +5,18 @@ knows about HTTP or any wire protocol: it returns an Outcome, and a surface
 renders it. That is what stops two front doors onto one broker from
 disagreeing about what a call was.
 
-The sequence is SYNCHRONOUS on purpose, and it is a security property rather
-than a style choice. Between taking the task-state snapshot and recording
-what a call read, nothing may suspend -- two calls for one task that
-interleave there both read the same starting budget and both pass. Inside an
-async handler that invariant is held by hand, and a comment is the only thing
-holding it. A function containing no `await` cannot break it at all.
+The sequence is SYNCHRONOUS, and it used to be the thing that made the row
+budget safe: between reading task state and recording what a call read,
+nothing could suspend, so two calls for one task could not both read the same
+starting budget and both pass. That was a property of the call graph rather
+than of the state, and A6 (an async spine) and a second worker each dissolve
+it.
+
+It is no longer load-bearing. A call now CHARGES its estimate through
+TaskStateStore before the decision, and the store's own atomicity is what
+orders concurrent callers -- see warden/broker/taint.py. The synchrony here
+is a fact about today's implementation, not a control, and A6 may remove it
+without removing anything that protects the budget.
 
 Every side effect lives here: the audit write, the execution, the taint
 update. Rendering an Outcome is therefore pure and repeatable. A renderer
@@ -30,12 +36,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
 from warden.broker.adapters.base import ToolResult, ToolTarget, UnknownTool
 from warden.broker.identity import TaskToken, TokenInvalid
+from warden.broker.taint import TaskStateStore
 
 UNAUTHENTICATED = "unauthenticated"
 MALFORMED = "input.malformed"
@@ -57,6 +65,12 @@ class Kind(str, Enum):
     AUDIT_UNAVAILABLE_ON_DENY = "audit_unavailable_on_deny"
     EXECUTE_FAILED_AFTER_DURABLE_ALLOW = "execute_failed_after_durable_allow"
     TAINT_REJECTED_AFTER_EXECUTE = "taint_rejected_after_execute"
+    # Named for WHETHER THE ACTION HAPPENED, not for which store method
+    # failed, because that is exactly what decides the rendering. The first
+    # covers both peek and charge, and every path it covers has acted on
+    # nothing.
+    STATE_UNAVAILABLE_BEFORE_EXECUTE = "state_unavailable_before_execute"
+    STATE_UNAVAILABLE_AFTER_EXECUTE = "state_unavailable_after_execute"
 
 
 DENIED = frozenset({
@@ -67,10 +81,16 @@ DENIED = frozenset({
     Kind.DESCRIBE_CLIENT_ERROR_DENIED,
 })
 
+# "This broker could not make a durable enough record, or could not read the
+# state a decision needs, so it refused." Every member acted on nothing.
+# STATE_UNAVAILABLE_BEFORE_EXECUTE joins them rather than getting a status of
+# its own: to a caller the situation is identical -- a dependency the
+# enforcement point needs is unreachable, nothing happened, try later.
 AUDIT_UNAVAILABLE = frozenset({
     Kind.AUDIT_UNAVAILABLE_ON_UNAUTHENTICATED,
     Kind.AUDIT_UNAVAILABLE_ON_ALLOW,
     Kind.AUDIT_UNAVAILABLE_ON_DENY,
+    Kind.STATE_UNAVAILABLE_BEFORE_EXECUTE,
 })
 
 # Three faults with three different audit consequences, kept apart on
@@ -81,6 +101,7 @@ FAULT = frozenset({
     Kind.DESCRIBE_BACKEND_FAULT,
     Kind.EXECUTE_FAILED_AFTER_DURABLE_ALLOW,
     Kind.TAINT_REJECTED_AFTER_EXECUTE,
+    Kind.STATE_UNAVAILABLE_AFTER_EXECUTE,
 })
 
 
@@ -128,15 +149,16 @@ class Spine:
         *,
         verifier,
         pdp,
-        taint,
+        task_state: TaskStateStore,
         audit,
         catalog,
         policy_digest: str,
         clock: Callable[[], int],
+        state_grace_seconds: int = 3600,
     ) -> None:
         self._verifier = verifier
         self._pdp = pdp
-        self._taint = taint
+        self._state = task_state
         self._audit = audit
         self._catalog = catalog
         self._digest = policy_digest
@@ -146,6 +168,12 @@ class Spine:
         # on the broker -- each of which would need its own patch point.
         # One clock, every surface, one patch point.
         self._clock = clock
+        # How long a task's whole state outlives the expiry of the last token
+        # that touched it. Held here rather than in the store because it is a
+        # fact about tokens, not about storage; the store's own
+        # max_in_flight_seconds is the opposite -- a recovery mechanism with
+        # no token in it.
+        self._state_grace = state_grace_seconds
 
     def _authenticate(self, credential: str | None):
         if credential is None:
@@ -190,16 +218,16 @@ class Spine:
                 {"type": "tool_call", "tool": tool}, message, Outcome
             )
 
-        # After every suspension point the caller could have had, and before
-        # anything reads it. One snapshot feeds the policy input, the audit
-        # record and every deny record; it is never re-read.
-        state = self._taint.snapshot(token.task_id)
+        # One clock read for the whole call. Every store operation below --
+        # the charge, whatever settles it, any peek -- must agree about what
+        # "now" is, or a call could prune the very reservation it just took.
+        now = self._clock()
 
         if args is None:
             # A body that did not parse. Audited against the literal empty
             # dict, because there are no arguments to digest.
-            return self._deny(
-                token, tool, {}, ToolTarget(kind="malformed"), state,
+            return self._deny_before_charge(
+                token, tool, {}, ToolTarget(kind="malformed"), now,
                 MALFORMED, Kind.MALFORMED_BODY_DENIED,
             )
 
@@ -213,18 +241,29 @@ class Spine:
             # character-by-character by one stage and as the original whole
             # string by the other, so the decision and the action would be
             # judging two different things.
-            return self._deny(
-                token, tool, args, ToolTarget(kind="malformed"), state,
+            return self._deny_before_charge(
+                token, tool, args, ToolTarget(kind="malformed"), now,
                 MALFORMED, Kind.SCHEMA_INVALID_DENIED,
             )
 
         try:
             target = self._catalog.describe(tool, args)
+            # Fetched HERE, inside describe()'s own guard, and deliberately
+            # not down beside the charge. Both are questions put to the
+            # catalog about a call that has not happened yet, and both fail
+            # the same way: a catalog or adapter defect is a server bug, so
+            # the bare `except Exception` below reports it as a fault that
+            # acted on nothing. Asking for it inside the store's try/except
+            # instead would report an adapter with no data_class as "the
+            # state store is unreachable, try again later" -- a diagnosis
+            # that sends an operator to the wrong system, and a 503 that
+            # invites a retry of a call that will fail identically forever.
+            data_class = self._catalog.data_class(tool)
         except UnknownTool:
             # Order matters: UnknownTool is a plain Exception subclass, so
             # this clause must stay above both of the ones below.
-            return self._deny(
-                token, tool, args, ToolTarget(kind="unknown"), state,
+            return self._deny_before_charge(
+                token, tool, args, ToolTarget(kind="unknown"), now,
                 CAPABILITY, Kind.UNKNOWN_TOOL_DENIED,
             )
         except (ValueError, KeyError, TypeError, IndexError):
@@ -232,8 +271,8 @@ class Spine:
             # exactly these four and was widened on purpose: KeyError is not
             # a ValueError, and sending it to the branch below produced a
             # fault with no record -- an agent probing with no trace.
-            return self._deny(
-                token, tool, args, ToolTarget(kind="malformed"), state,
+            return self._deny_before_charge(
+                token, tool, args, ToolTarget(kind="malformed"), now,
                 MALFORMED, Kind.DESCRIBE_CLIENT_ERROR_DENIED,
             )
         except Exception as exc:
@@ -241,6 +280,36 @@ class Spine:
             # because of anything the caller did, so nothing is recorded
             # against it.
             return Outcome(kind=Kind.DESCRIBE_BACKEND_FAULT, message=str(exc))
+
+        # Charged BEFORE the decision, because the decision has to price this
+        # call against everything else in flight for the same task. What comes
+        # back is the state as it was BEFORE this charge, and that is what
+        # feeds both the policy input and the audit record -- which is also
+        # why a task's first PII read cannot deny itself under
+        # egress.pii_sink.
+        #
+        # This does not weaken "the decision is written down before anything
+        # happens". A reservation is bookkeeping: invisible to the world
+        # except as strictness against this task's own budget, and released
+        # on every path below that does not act.
+        charge_id = uuid.uuid4().hex
+        try:
+            state = self._state.charge(
+                token.task_id,
+                charge_id=charge_id,
+                rows=target.estimated_rows,
+                data_class=data_class,
+                now=now,
+                expires_at=token.exp + self._state_grace,
+            )
+        except Exception as exc:
+            # Nothing has happened, so nothing is recorded -- the same reason
+            # DESCRIBE_BACKEND_FAULT records nothing. A store this process
+            # cannot reach is not the agent's doing, and a broker that cannot
+            # read the state a decision needs must refuse rather than guess.
+            return Outcome(
+                kind=Kind.STATE_UNAVAILABLE_BEFORE_EXECUTE, message=str(exc)
+            )
 
         decision = self._pdp.decide({
             "principal": {
@@ -260,6 +329,11 @@ class Spine:
         })
 
         if not decision.allow:
+            # Rows AND class: nothing ran and nothing was read, so a refused
+            # call must leave no trace in task state. Keeping the class here
+            # would let one denied PII read poison a task for the rest of its
+            # life, which an agent could trip deliberately.
+            self._settle(self._state.release, token.task_id, charge_id, now)
             return self._deny(
                 token, tool, args, target, state, decision.rule, Kind.POLICY_DENIED
             )
@@ -270,7 +344,8 @@ class Spine:
             )
         except OSError as exc:
             # If it cannot be logged, it cannot be done. execute() must not
-            # run below.
+            # run below, so the reservation is released rather than abandoned.
+            self._settle(self._state.release, token.task_id, charge_id, now)
             return Outcome(kind=Kind.AUDIT_UNAVAILABLE_ON_ALLOW, message=str(exc))
 
         try:
@@ -280,23 +355,45 @@ class Spine:
             # escape this call site or the log asserts an authorised action
             # while a caller sees a bare crash. No second record is written:
             # the allow stands as the account of what was authorised.
+            #
+            # abandon, not release, and the asymmetry is the point: the
+            # adapter reached the source and may have received bytes before
+            # failing, so the taint stands, while the budget does not pay for
+            # a backend outage.
+            self._settle(
+                self._state.abandon, token.task_id, charge_id, now,
+                data_class=data_class,
+            )
             return Outcome(
                 kind=Kind.EXECUTE_FAILED_AFTER_DURABLE_ALLOW,
                 message=str(exc),
                 audit_seq=record["seq"],
             )
 
+        # A negative count is an adapter defect. It now costs what was
+        # AUTHORISED rather than costing nothing, which is what leaving the
+        # state untouched used to mean: the reservation is settled at the
+        # estimate, and the caller is told, exactly as before.
+        rejected = result.rows < 0
         try:
-            self._taint.record_read(
-                token.task_id, data_class=result.data_class, rows=result.rows
+            self._state.reconcile(
+                token.task_id,
+                charge_id,
+                rows=target.estimated_rows if rejected else result.rows,
+                data_class=result.data_class,
+                now=now,
             )
-        except ValueError as exc:
-            # taint.py rejects a negative row count rather than silently
-            # under-counting a budget. Honour that: report it, leave the
-            # state untouched, and do not write a second record.
+        except Exception as exc:
+            return Outcome(
+                kind=Kind.STATE_UNAVAILABLE_AFTER_EXECUTE,
+                message=str(exc),
+                audit_seq=record["seq"],
+            )
+
+        if rejected:
             return Outcome(
                 kind=Kind.TAINT_REJECTED_AFTER_EXECUTE,
-                message=str(exc),
+                message=f"rows must be non-negative, got {result.rows}",
                 audit_seq=record["seq"],
             )
 
@@ -317,19 +414,21 @@ class Spine:
         legitimate on its own terms. The serving path still reads state only
         through handle_tool_call, which snapshots it once per call.
 
-        Reads through `TaintTracker.peek`, not `TaintTracker.snapshot` --
-        deliberately, and not interchangeably. `snapshot` creates a phantom
-        entry for a task_id it has never seen (fine on the serving path,
-        where the id always names a real task about to spend its budget, and
-        `record_read` would create the entry a moment later regardless).
-        This accessor takes an ARBITRARY string from a caller with no minted
-        token behind it at all -- an operator, a diagnostic -- so `snapshot`
-        here would leak one phantom entry per id it is ever asked about, for
-        the life of the process. `peek` returns the same shape without
-        creating anything, which is what makes "read-only" here a fact about
-        the code rather than a claim in a docstring.
+        Reads through the store's `peek`, which is the only method on it that
+        creates nothing. This accessor takes an ARBITRARY string from a caller
+        with no minted token behind it at all -- an operator, a diagnostic --
+        so a read that planted an entry would leak one per id it is ever asked
+        about, for the life of the process. `peek` returns the same shape
+        `charge` does without creating anything, which is what makes
+        "read-only" here a fact about the code rather than a claim in a
+        docstring.
+
+        What it reports is the CHARGED total: rows settled plus rows reserved
+        by calls still in flight. An operator watching this during concurrent
+        activity will see it move up and back down, and that is the number
+        policy is judging, not an artefact.
         """
-        return self._taint.peek(task_id)
+        return self._state.peek(task_id, now=self._clock())
 
     def list_tools(self, credential: str | None) -> ListOutcome:
         """What this token may call. Usability, never enforcement.
@@ -429,6 +528,40 @@ class Spine:
                 kind=Kind.AUDIT_UNAVAILABLE_ON_UNAUTHENTICATED, message=str(exc)
             )
         return factory(kind=Kind.UNAUTHENTICATED, message=message)
+
+    def _settle(self, operation, task_id: str, charge_id: str, now: int, **extra) -> None:
+        """Release or abandon a charge, swallowing a store failure.
+
+        Deliberately unlike the charge itself, which refuses. A settle that
+        cannot be written leaves a reservation behind, and a reservation's
+        deadline already collects one -- so failing the call here would turn a
+        bounded, self-healing over-charge into an error the caller can do
+        nothing with, on a path where the outcome has already been decided.
+        """
+        try:
+            operation(task_id, charge_id, now=now, **extra)
+        except Exception:
+            pass
+
+    def _deny_before_charge(
+        self, token, tool, args, target, now, rule, kind
+    ) -> Outcome:
+        """A denial reached before there was an estimate to charge.
+
+        Reads task state at the point of denial rather than up front. The
+        invariant the old single snapshot protected -- the decision and the
+        record must never see different state -- is preserved and narrowed:
+        on the charge path there is exactly one read, `charge`'s return,
+        feeding both. Here there is no decision at all, only a record, so one
+        `peek` is the whole of it. No path reads task state twice.
+        """
+        try:
+            state = self._state.peek(token.task_id, now=now)
+        except Exception as exc:
+            return Outcome(
+                kind=Kind.STATE_UNAVAILABLE_BEFORE_EXECUTE, message=str(exc)
+            )
+        return self._deny(token, tool, args, target, state, rule, kind)
 
     def _deny(self, token, tool, args, target, state, rule, kind) -> Outcome:
         try:
