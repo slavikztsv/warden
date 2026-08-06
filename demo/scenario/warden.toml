@@ -32,3 +32,22 @@ issuer = "warden-broker"
 
 [catalog]
 tools = "/config/tools.toml"
+
+# Optional, and both values below are the defaults -- written out rather than
+# omitted because they are the two knobs that change what a row budget MEANS,
+# and a knob nobody can find is a knob nobody sets.
+#
+# max_in_flight_seconds is the deadline on one call's reservation. A call is
+# charged describe()'s row estimate before it runs, and that charge is
+# collected if nothing settles it -- which is what stops a broker killed
+# mid-call from leaking budget forever. It must exceed the slowest execute();
+# 60 is six times the 10s timeout on the shared HTTP client every network
+# adapter uses.
+#
+# ttl_grace_seconds is how long a task's whole state outlives the expiry of
+# the last token that touched it. Task state deliberately survives token
+# renewal -- renewing must not reset a budget -- so this is the only thing
+# that can ever evict it. A task silent for longer than this starts clean.
+[task_state]
+max_in_flight_seconds = 60
+ttl_grace_seconds     = 3600

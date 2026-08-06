@@ -369,3 +369,68 @@ def test_a_malformed_mcp_section_names_itself(tmp_path):
     path.write_text('mcp = "not a table"\n\n' + path.read_text())
     with pytest.raises(ConfigError, match=r"\[mcp\]"):
         load_broker_config(path, env={})
+
+
+# --- [task_state]: optional, with defaults -----------------------------------
+#
+# Optional for the same structural reason [mcp] is: every warden.toml written
+# before P2·A has no such table, and _section() would stop all of them from
+# loading. Unlike [mcp] the defaults here are live rather than off -- there is
+# no "disabled" state for task state, only a choice of two clocks.
+
+
+def test_task_state_defaults_when_the_section_is_absent(tmp_path):
+    config = load_broker_config(write_complete_config(tmp_path), env={})
+    assert config.task_state.max_in_flight_seconds == 60
+    assert config.task_state.ttl_grace_seconds == 3600
+
+
+def test_task_state_is_read_when_present(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text(
+        path.read_text()
+        + "\n[task_state]\nmax_in_flight_seconds = 90\nttl_grace_seconds = 120\n"
+    )
+    config = load_broker_config(path, env={})
+    assert config.task_state.max_in_flight_seconds == 90
+    assert config.task_state.ttl_grace_seconds == 120
+
+
+def test_one_task_state_key_may_be_set_without_the_other(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text(path.read_text() + "\n[task_state]\nttl_grace_seconds = 7200\n")
+    config = load_broker_config(path, env={})
+    assert config.task_state.max_in_flight_seconds == 60
+    assert config.task_state.ttl_grace_seconds == 7200
+
+
+def test_a_non_integer_task_state_value_is_refused(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text(path.read_text() + '\n[task_state]\nmax_in_flight_seconds = "soon"\n')
+    with pytest.raises(ConfigError, match=re.escape("task_state.max_in_flight_seconds")):
+        load_broker_config(path, env={})
+
+
+def test_a_non_positive_in_flight_deadline_is_refused(tmp_path):
+    """Zero or less means every reservation is already expired when it is
+    taken, so a charge would be collected by the same call that made it and
+    the budget would never hold anything. Refuse at boot rather than serve a
+    broker whose row budget silently does nothing."""
+    path = write_complete_config(tmp_path)
+    path.write_text(path.read_text() + "\n[task_state]\nmax_in_flight_seconds = 0\n")
+    with pytest.raises(ConfigError, match=re.escape("task_state.max_in_flight_seconds")):
+        load_broker_config(path, env={})
+
+
+def test_a_negative_grace_is_refused(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text(path.read_text() + "\n[task_state]\nttl_grace_seconds = -1\n")
+    with pytest.raises(ConfigError, match=re.escape("task_state.ttl_grace_seconds")):
+        load_broker_config(path, env={})
+
+
+def test_a_malformed_task_state_section_names_itself(tmp_path):
+    path = write_complete_config(tmp_path)
+    path.write_text('task_state = "not a table"\n\n' + path.read_text())
+    with pytest.raises(ConfigError, match=r"\[task_state\]"):
+        load_broker_config(path, env={})

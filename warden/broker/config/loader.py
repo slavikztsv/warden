@@ -50,6 +50,32 @@ class McpConfig:
 
 
 @dataclass(frozen=True)
+class TaskStateConfig:
+    """Two independent clocks, and conflating them is the mistake this type
+    exists to prevent.
+
+    `max_in_flight_seconds` bounds ONE call. It is the deadline on a
+    reservation, and it exists to collect a charge whose broker died before it
+    could settle. It MUST exceed the slowest `execute()`, or a live call's
+    reservation is collected while it is still running and its budget is
+    handed to a concurrent caller. The default is six times the shared
+    `httpx.Client(timeout=10.0)` in broker/__main__.py that bounds every
+    HTTP-shaped adapter.
+
+    `ttl_grace_seconds` bounds a whole TASK, and exists only because task
+    state deliberately survives token renewal -- so eviction can key off
+    nothing but the last token's expiry, plus a grace. A task silent for
+    longer than that loses its budget and its held classes, and an
+    orchestrator re-minting the same task_id afterwards gets a clean task.
+    Raise it to keep state longer and pay in memory; C3 (revocation) is the
+    control for ending a task NOW, not this.
+    """
+
+    max_in_flight_seconds: int = 60
+    ttl_grace_seconds: int = 3600
+
+
+@dataclass(frozen=True)
 class BrokerConfig:
     listen: tuple[str, int]
     proxy_listen: tuple[str, int]
@@ -66,6 +92,7 @@ class BrokerConfig:
     issuer: str
     catalog_path: Path
     mcp: McpConfig = McpConfig()
+    task_state: TaskStateConfig = TaskStateConfig()
 
 
 def interpolate(value: str, env: Mapping[str, str]) -> str:
@@ -135,6 +162,30 @@ def _integer(section: dict, table: str, key: str) -> int:
     return value
 
 
+def _positive(
+    section: dict, table: str, key: str, default: int, *, allow_zero: bool = False
+) -> int:
+    """An optional integer duration, defaulted, and refused if it is not a
+    duration a broker can serve with.
+
+    A zero or negative `max_in_flight_seconds` means every reservation is
+    already expired the instant it is taken, so a charge is collected by the
+    same call that made it and the row budget silently holds nothing --
+    exactly the class of quiet weakening this loader exists to turn into a
+    boot failure. Zero IS meaningful for the grace, though: it means task
+    state dies with the token that last touched it.
+    """
+    if key not in section:
+        return default
+    value = _integer(section, table, key)
+    if value < 0 or (value == 0 and not allow_zero):
+        raise ConfigError(
+            f"{table}.{key} must be "
+            f"{'zero or greater' if allow_zero else 'greater than zero'}, got {value}"
+        )
+    return value
+
+
 def _address(section: dict, table: str, key: str, env: Mapping[str, str]) -> tuple[str, int]:
     raw = _string(section, table, key, env)
     host, separator, port = raw.rpartition(":")
@@ -194,6 +245,7 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
     tokens = _section(document, "tokens")
     catalog = _section(document, "catalog")
     mcp = _optional_section(document, "mcp")
+    task_state = _optional_section(document, "task_state")
 
     return BrokerConfig(
         listen=_address(broker, "broker", "listen", env),
@@ -209,6 +261,14 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
             enabled=_flag(mcp, "mcp", "enabled"),
             path=_string(mcp, "mcp", "path", env) if "path" in mcp else "/mcp",
             host=_string(mcp, "mcp", "host", env) if "host" in mcp else "",
+        ),
+        task_state=TaskStateConfig(
+            max_in_flight_seconds=_positive(
+                task_state, "task_state", "max_in_flight_seconds", 60
+            ),
+            ttl_grace_seconds=_positive(
+                task_state, "task_state", "ttl_grace_seconds", 3600, allow_zero=True
+            ),
         ),
     )
 
