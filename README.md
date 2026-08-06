@@ -546,7 +546,8 @@ in [*Before the Tool Call*](https://arxiv.org/html/2603.20953v1) (2026), which
 otherwise reaches the same design, and `report` shows why they matter: **4
 refusals on volume, then 37 on scope.**
 
-**What it does not do:** one worker only, in-memory state that does not survive
+**What it does not do:** one worker only (no process model — the shared state
+is no longer the blocker), in-memory state by default that does not survive
 a restart, no managed service, no UI — and an MCP front door that exists but
 ships off by default, brokering tools without containing anything. See
 [limitations](#known-limitations).
@@ -568,11 +569,17 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   budget — ten simultaneous readers against a 50-row budget get five allows
   and five refusals, and a test pins it. A shared store now exists too
   (`[task_state].backend = "redis"`), and two brokers pointed at one Redis
-  share one budget exactly. **The default is still in-process, and one worker
-  is still the supported deployment**, because the *audit chain* is not
-  shared: `seq` is allocated under a process-local lock, so a second writer
-  breaks the chain rather than joining it. The budget stopped being the thing
-  that blocks scaling out; it is not yet the case that nothing does.
+  share one budget exactly. The *audit chain* is now shared too: `seq` and
+  `prev_hash` are allocated under an `flock` on the log file, so a second
+  process joins the chain instead of breaking it — measured before that
+  change, four processes writing 800 records produced 451 distinct sequence
+  numbers and a chain that failed verification at seq 52. **The default is
+  still in-process, and one worker is still the supported deployment**, but
+  the reason is now the *process model* rather than either piece of state:
+  there is no `/healthz`, no `/readyz`, no `SO_REUSEPORT`, and the proxy binds
+  inside the same event loop as the HTTP server, so nothing supports starting
+  a second worker. Two of the three things blocking scale-out are gone; the
+  third has not been started.
 - **Containment comes from the network layout, not from the broker.** The
   isolated network and the split keypair are what make the agent unable to go
   around the enforcement point, and CI proves it on every push: a dedicated job

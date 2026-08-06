@@ -283,18 +283,42 @@ Every row must be made to **fail** before it counts as passing. A row nothing
 has reddened is an intention, not a proof — the A2 spec asserted "a settle
 cannot resurrect an evicted task" as passing when nothing tested it.
 
-| # | Claim | Mutation that must redden it |
-|---|---|---|
-| 1 | Two processes appending to one log produce one dense, intact chain | Remove the `flock` → duplicate seqs, `verify_chain` False |
-| 2 | The head is read from the file, not from memory | Reinstate a head cache → interleaved writers break the chain |
-| 3 | A record wider than the initial window is still found | Fix the window at 4 KiB → tail read raises on a large `target` |
-| 4 | The last *complete* line is the head, not the first boundary | Cut at `find` instead of `rfind` → empty buffer, append fails |
-| 5 | A held lock times out rather than hanging | Make the acquire unbounded → the test hangs instead of raising |
-| 6 | The timeout is an `OSError`, so the spine refuses and records | Raise a bare `Exception` → the spine 500s instead of refusing |
-| 7 | A torn trailing line refuses the append | Skip the malformed-tail guard → an unverifiable chain is extended |
-| 8 | `append` never re-reads the whole log | Read `records()` for the head → the call-count assertion fires |
-| 9 | A failed write consumes no sequence number | Advance a counter before the write → the next append skips a seq |
-| 10 | The record body is unchanged | Any body change → the frozen golden chain stops verifying |
+**All ten reddened, then greened again.** Two rows were wrong as first
+written, and both are corrected below rather than quietly restated — a proof
+table that gets edited to match whatever happened proves nothing.
+
+| # | Claim | Mutation | Reddens |
+|---|---|---|---|
+| 1 | Two processes appending to one log produce one dense, intact chain | Remove the `flock` | `…two_processes_appending…` |
+| 2 | The head is read from the file, not from memory | Reinstate a head cache | `…head_is_read_from_the_file…` |
+| 3 | A record wider than the initial window is still found | Fix the window at 4 KiB | `…wider_than_the_tail_window…` |
+| 4 | The last *complete* line is the head, not the first boundary | `rfind` → `find` | 4 tests — **see below** |
+| 5 | A held lock times out rather than hanging | Make the acquire unbounded | `…held_lock_times_out…` |
+| 6 | The timeout is an `OSError`, so the spine refuses and records | Raise `RuntimeError` instead | `…held_lock_times_out…` |
+| 7 | A torn trailing line refuses the append | Drop `JSONDecodeError` from the guard | `…torn_trailing_line…` |
+| 8 | `append` never re-reads the whole log | Read `records()` for the head | `…does_not_re_read_the_log` |
+| 9 | A failed write consumes no sequence number | Advance a counter before the write | `…consumes_no_sequence_number` |
+| 10 | The record body has exactly fourteen named fields | Add a field to the body | `…has_exactly_these_fields` — **new, see below** |
+
+**Row 4 needs four appends, and three is not enough.** The obvious selector —
+`test_chain_verifies_when_untouched`, which appends three records — passes
+against the mutation. `find` and `rfind` only disagree once the stripped
+window holds two newlines, i.e. from the *fourth* append onward, because the
+third append reads a two-record file. This is the same shape of blind spot as
+using threads to test a multi-process bug: the test looked like it covered the
+property and did not.
+
+**Row 10 was false as written, and finding that out was the point.** It
+claimed a body change would stop the frozen golden chain from verifying. It
+does not: that file is *read*, never written, and `verify_chain` hashes
+whatever keys a stored record carries — deliberately, so an injected field
+cannot hide from it. Measured: adding a `writer` field to every record body
+**passed all 809 tests**. Nothing in the suite pinned the shape of the one
+artifact ROADMAP F3 calls an interface other people will depend on.
+`test_a_written_record_has_exactly_these_fields` now does, with a hardcoded
+key list — derived from `_BODY_FIELDS` it would pass whenever both halves
+changed together, which is the one thing it must not do. B7 is the next change
+that will want to add to this record, and it should have to say so.
 
 ---
 

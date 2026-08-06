@@ -24,12 +24,26 @@ against anything real.
 
 ### Required
 
-- Run the broker with **one worker** — still, and now for a different reason.
-  The row budget can be shared (`[task_state].backend = "redis"`, below), and
-  two brokers pointed at one server share it exactly. The **audit chain**
-  cannot: `seq` is allocated under a process-local lock, so a second writer
-  against one log breaks the chain instead of joining it. Until that is
-  fixed, one worker is the supported deployment whichever backend you choose.
+- Run the broker with **one worker** — still, and now for a third reason,
+  because the first two are gone. The row budget can be shared
+  (`[task_state].backend = "redis"`, below), and two brokers pointed at one
+  server share it exactly. The **audit chain** can now be shared too: `seq`
+  and `prev_hash` are allocated under an `flock` on the log file itself, so a
+  second process appending to one log joins the chain rather than breaking it
+  (measured before that change — four processes, 200 appends each: 800
+  records, 451 distinct seqs, chain broken at seq 52).
+
+  What remains is the **process model**, and it is not a small remainder.
+  There is no `/healthz`, no `/readyz`, no `SO_REUSEPORT`, and the broker
+  binds its proxy inside the same `asyncio.run` as its HTTP server — so there
+  is no supported way to *start* a second worker, whatever the log and the
+  budget now permit. One worker is still the supported deployment. Phase 3 is
+  the gate, not B6.
+
+  One further limit, if you are tempted: `flock` is per-kernel. Two brokers on
+  one host sharing a bind mount are covered; two brokers on two hosts sharing
+  one log over NFS are **not**, and that is not a shape to reach for — a
+  shipped log sink (ROADMAP B5) is the answer there, not a shared file.
 - **Optional: share the row budget between brokers.** Install
   `warden[redis]`, run a Redis they can both reach, and set:
 

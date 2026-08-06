@@ -245,12 +245,19 @@ once, and the `report` scenario's numbers reproduced unchanged under all four.
 and the difference is worth stating rather than blurring.** Two brokers share
 one budget: ten charges alternating across two independent clients are handed
 a distinct prefix and commit one total, and pointing them at different
-databases is what breaks it. What still stands between that and *four workers
-behind a load balancer* is **B6** — `seq` is allocated under a process-local
-lock, so two brokers writing one audit file break the chain rather than
-share it — and a **process model that does not exist**: no `healthz`, no
-`readyz`, no `SO_REUSEPORT`, and `__main__.py` binds the proxy inside the same
-`asyncio.run` as uvicorn. § A was one of three things this line needs.
+databases is what breaks it. What stood between that and *four workers behind a
+load balancer* was **B6** and a **process model that does not exist**. § A was
+one of three things this line needs.
+
+**B6 has since landed, so it is now one of two, and the remaining one is the
+one nobody has started.** Two brokers writing one audit file now share the
+chain: `seq` and `prev_hash` are allocated under an `flock` on the log itself,
+measured against four processes that previously turned 800 records into 451
+sequence numbers and a chain broken at seq 52. The process model has not
+moved — still no `healthz`, no `readyz`, no `SO_REUSEPORT`, and `__main__.py`
+still binds the proxy inside the same `asyncio.run` as uvicorn. Both pieces of
+*state* are now shareable and there is still no supported way to start the
+second worker that would share them, which is Phase 3's job and not § B's.
 
 Two of A2's five decisions were found by a spike failing rather than by
 argument, which is why it was built against a live server before its design
@@ -328,8 +335,8 @@ directions: either half reading the other's spelling denies `input.malformed`.
 | B3 | Segment rotation with an anchor record carrying the previous segment's head hash, so a rotated chain still verifies end to end | M |
 | B4 | Teach `warden verify-chain` about segments | S |
 | B5 | A pluggable sink: the file, plus structured stdout for a log shipper, plus an optional append-only external store | M |
-| B6 | Multi-writer sequencing — either a dedicated writer, or move seq allocation into the same store as A2 | M |
-| B7 | Audit the **mint**. Today nothing records what authority was granted, so the log cannot answer "what was task 4711 allowed to do" — only what it tried | S |
+| B6 | ~~Multi-writer sequencing — either a dedicated writer, or move seq allocation into the same store as A2~~. **Done, and neither of those.** Both lose to the same fact: the chain is *content*-linked, so handing out a number is not the hard part. A Redis `INCR` cannot supply `prev_hash` at all; a Redis CAS on the head that succeeds and then dies before its file write leaves a `prev_hash` whose record **nobody has** — unrepairable by replay, backup or anything else. `seq` and `prev_hash` are now allocated under an `flock` on the log file itself: the only lock whose scope is exactly the resource, and the only one the kernel releases when the holder dies | M |
+| B7 | Audit the **mint**. Today nothing records what authority was granted, so the log cannot answer "what was task 4711 allowed to do" — only what it tried. **Unblocked by B6, and it was never independent of it** — see below | S |
 
 **Exit:** a million-record log appends in constant time, verifies across rotation,
 and B7's record appears in `warden replay` above the first tool call.
@@ -337,6 +344,24 @@ and B7's record appears in `warden replay` above the first tool call.
 B7 is small and disproportionately valuable. The audit log's whole pitch is that
 it says what was authorised rather than what was reported afterwards, and the
 grant itself is currently the one authorisation it does not contain.
+
+**B7 was listed here as independent, and it was not.** The mint does not happen
+in the broker: it happens in [control_main.py](../warden/broker/control_main.py),
+a separate process deliberately kept off `agent-net`, which already shares
+`./data:/data` with the broker. A mint record written into the same log is
+therefore a *second writer by construction* — so B7 done before B6 would not
+merely have needed it, it would have **created** the exact corruption B6 exists
+to remove, and in the worst shape available: the control plane writes once per
+task against the broker's constant traffic, so the breakage would have been
+rare, intermittent, and indistinguishable from tampering. B7 is size S after
+B6. Before it, it was a way to break the chain.
+
+**B3 is cheaper after B6, not before**, which is also the reverse of how the
+sequencing question was posed. Deriving the head from the file instead of from
+process memory is exactly what a rotated segment needs — whoever appends next
+reads the anchor record the rotation wrote, and no process holds a stale head
+for rotation to invalidate. Doing B3 first would have meant two writers
+rotating one segment set: strictly worse than two writers on one file.
 
 ### C · A control plane that can face a network
 

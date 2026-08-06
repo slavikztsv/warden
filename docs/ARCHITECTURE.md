@@ -286,7 +286,7 @@ what the *task* is carrying, which is a property no single request contains.
 | What the number means | Rows **charged**: settled reads plus reservations still in flight. A reserved-but-unused row counts until reconciliation, deliberately |
 | Expiry | Two clocks. A reservation expires after `max_in_flight_seconds` (60), so a broker killed mid-call self-heals. A whole task expires `ttl_grace_seconds` (3600) after its last token's `exp` |
 | Concurrency | Safe within a process, by an atomic charge rather than by the handler happening not to suspend — which is what let A6 move the sequence onto a threadpool without touching it |
-| Distributed | Supported for the BUDGET: `[task_state].backend = "redis"` puts it in one Redis, and two brokers then share it exactly. Not yet supported overall — the audit chain's `seq` is still process-local (B6), so one worker remains the supported deployment |
+| Distributed | Supported for the BUDGET (`[task_state].backend = "redis"`, two brokers sharing one Redis share it exactly) and now for the AUDIT CHAIN too: `seq` and `prev_hash` are allocated under an `flock` on the log file, so a second process on the same host joins the chain rather than breaking it. Still not supported overall — there is no process model (no `/healthz`, no `/readyz`, no `SO_REUSEPORT`, and the proxy binds inside the server's own event loop), so one worker remains the supported deployment. `flock` is per-kernel, so one host, not a shared network filesystem |
 
 ---
 

@@ -212,6 +212,49 @@ def test_written_lines_are_key_sorted(tmp_path):
     assert nested == sorted(nested), nested
 
 
+def test_a_written_record_has_exactly_these_fields(tmp_path):
+    """The record body is an INTERFACE, and nothing was pinning its shape.
+
+    Found by mutation while proving B6: adding a `writer` field to every
+    record body passed all 809 tests. The frozen golden chain does not catch
+    it -- that file is READ, never written -- and `verify_chain` hashes
+    whatever keys a stored record happens to carry, precisely so an injected
+    field cannot hide from it. Both behaviours are right; neither is a guard
+    on what `append` produces.
+
+    That matters now rather than in the abstract. The record shape is one of
+    the three interfaces ROADMAP F3 says other people will depend on, and B7
+    (audit the mint) is the next change that will want to add to it. This
+    makes doing so a deliberate act with a test to update, not a silent one.
+
+    Hardcoded on purpose. Deriving the expectation from `_BODY_FIELDS` would
+    make a field added to both halves pass, which is the one thing this must
+    not do.
+    """
+    log = AuditLog(tmp_path / "audit.jsonl")
+    record = _append(log)
+    assert sorted(record) == [
+        "action",
+        "agent_id",
+        "args_digest",
+        "decision",
+        "hash",
+        "policy_bundle_digest",
+        "prev_hash",
+        "purpose",
+        "rule",
+        "seq",
+        "target",
+        "task_id",
+        "task_state",
+        "ts",
+    ]
+    # And what is on DISK, not just what was returned -- they are different
+    # dicts, and only one of them is the artifact anybody audits.
+    written = json.loads((tmp_path / "audit.jsonl").read_text().strip())
+    assert sorted(written) == sorted(record)
+
+
 # --------------------------------------------------------------------------
 # B6. Multi-writer sequencing.
 #

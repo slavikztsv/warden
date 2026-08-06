@@ -84,12 +84,22 @@ quietly fixed. Each is a real property of the system as shipped.
   introduce an async HTTP client anywhere in the sequence, or run a second
   worker, and it reopened silently.
 
-  What remains is narrower and structural rather than fragile. The store
-  holding the reservations is in-process, so **two workers still share no
-  budget** — a second worker reopens the race, and single-worker deployment
-  remains a requirement until a shared store ships. But no change to the
-  spine's own concurrency can reopen it, because the ordering is now the
+  What remains is narrower and structural rather than fragile. No change to
+  the spine's own concurrency can reopen it, because the ordering is now the
   store's atomicity rather than the absence of an `await`.
+
+  **Both of the shared-state requirements this paragraph used to name have
+  since shipped, and single-worker deployment is still a requirement — for a
+  reason that is not about state at all.** A2 put the reservations in Redis
+  (`[task_state].backend = "redis"`), so two brokers pointed at one server
+  share one budget exactly; B6 put `seq` and `prev_hash` under an `flock` on
+  the audit log, so two brokers appending to one file share the chain instead
+  of breaking it. What has not shipped is the **process model**: there is no
+  `/healthz`, no `/readyz`, no `SO_REUSEPORT`, and `__main__.py` binds the
+  proxy inside the same `asyncio.run` as uvicorn. The default is also still
+  in-process for the budget, so a deployment that does not opt into Redis has
+  the original property unchanged. Read the requirement as "nothing supports
+  starting a second worker", not "a second worker would corrupt state".
 
   That prediction has since been cashed. A6 moved the whole sequence off the
   event loop onto a threadpool — both front doors and the proxy's
