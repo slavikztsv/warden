@@ -709,7 +709,7 @@ suite somewhere.
 | 13 | The mint record renders, above the first tool call | `test_replay_renders_a_mint` + `test_the_mint_record_is_rendered_first` |
 | 14 | The grant line names the tools | `test_replay_shows_what_the_mint_granted` |
 | 15 | A tool-less record does not crash the step reader | `test_steps_from_survives_a_record_with_no_tool` |
-| 16 | The matrix names the mint the same way replay does | the same test's `steps[0]["target"] == "2 tools"`, plus `test_target_label_names_each_kind`'s `token` case |
+| 16 | The matrix names the mint the same way replay does | `test_the_matrix_records_each_decision_not_only_the_totals`'s `token` case, and row 15's `steps[0]["target"] == "2 tools"` |
 | 17 | The demo narrates a mint as a mint, not as stage ⑧ | `test_narrated_audit_narrates_a_mint_differently` |
 | 18 | The demo opens its log before it mints, so the grant is seq 1 | `test_the_demo_opens_its_log_before_it_mints` — a **source-order** assertion, see below |
 | 19 | `NarratedAudit` and `NarratedPDP` are exercised through a real spine | `test_the_narrated_audit_forwards_every_method_the_spine_uses` |
@@ -751,6 +751,14 @@ it was. Move that line back down and **nothing else fails**: the chain still
 verifies, the counts still agree, the demo still reports 8 records, and the
 replay block simply stops leading with the grant. The end-to-end version needs
 a booted OPA; this is what CI can hold.
+
+**Two things the mutation pass found have no automated catcher, and saying so
+is the point of having run it.** Reverting the narrowed `records == calls`
+comparison to the total reddens *nothing* — only the manual gate sees it, and
+only on a run that actually mints. And re-wrapping `NarratedAudit` in
+`test_explain_wrappers.py` reddens nothing either, because an unwrapped seam is
+invisible until the interface it wraps grows: that test is a forward guard, not
+a behavioural assertion, which is exactly what its own docstring claims.
 
 **Manual, outside the table:** `warden-demo explain --quiet-why` must report
 **8 records, 3 refusals, 1 record read** after commit 2, and `--matrix` must
