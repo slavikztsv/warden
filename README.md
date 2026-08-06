@@ -569,9 +569,15 @@ than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account
   and five refusals, and a test pins it. But the store holding those
   reservations is in-process: two brokers still do not share one, so scaling
   out needs the shared store that is not built yet.
-- **Containment comes from the network layout, and CI never tests it.** The
-  isolated network and the split keypair need Docker to exercise. Treat that part
-  as reviewed by eye, not proven by a test.
+- **Containment comes from the network layout, not from the broker.** The
+  isolated network and the split keypair are what make the agent unable to go
+  around the enforcement point, and CI proves it on every push: a dedicated job
+  brings up the protected profile under Docker and asserts eight bypasses all
+  fail — direct egress, the sinkhole, a backend reached around the broker, a
+  raw socket, and minting a token from the agent's network — then two that must
+  succeed. What it does **not** cover is a deployment that does not reproduce
+  that layout; on a laptop, where the agent shares a host with the control
+  plane, the argument does not hold. See [THREAT_MODEL.md](docs/THREAT_MODEL.md).
 - **Nothing checks who calls the control plane.** Whatever reaches it can mint
   any token it likes. What makes that acceptable is that nothing on the agent's
   network can reach it at all: an argument about wiring, not a check in code.

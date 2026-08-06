@@ -268,8 +268,9 @@ agent holds no credentials and has exactly one reachable host — the broker:
 ./tests/demo/test_isolation.sh
 ```
 
-This requires Docker. It is not run by CI — see the limitations in
-[THREAT_MODEL.md](THREAT_MODEL.md).
+This requires Docker, and CI runs it too — in its own job, so a containment
+failure reads as a containment failure rather than as a red unit test. What it
+proves, and what it does not, is in [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Driving it by hand
 

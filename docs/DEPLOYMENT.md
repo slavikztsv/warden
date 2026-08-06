@@ -168,7 +168,7 @@ the shipped `data.json` instead of a mock.
 | Audit integrity | `.venv/bin/warden verify-chain --audit tests/golden/audit-4711.jsonl` | `chain intact: 7 records`; exit 1 on tampering |
 | Config coherence | `.venv/bin/warden config check --catalog demo/scenario/tools.toml --data demo/scenario/data.json` | Every catalogued tool has a policy target kind, and vice versa |
 | MCP config coherence | `.venv/bin/warden config check --catalog … --data … --mcp` | The above, plus a `description` and a `title` on every tool. Run before `[mcp].enabled = true` |
-| Containment | `./tests/demo/test_isolation.sh` | `agent-net` has no gateway and exactly one reachable host. **Requires Docker; not run by CI** |
+| Containment | `./tests/demo/test_isolation.sh` | `agent-net` has no gateway and exactly one reachable host. **Requires Docker. Run by CI** in its own job, so a containment failure reads as a containment failure rather than a red unit test |
 
 **The exploit is a regression test.** `tests/demo/test_injection_contained.py`
 runs the real attack on every commit, so the security property is verified

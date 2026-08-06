@@ -364,6 +364,10 @@ the README's table if it ships.
 | E4 | A deployment checklist that fails closed: a `warden config check` extension that refuses a purpose declaring `egress_allow` without an explicit `pii_approved_sinks`, turning today's silent weakening into a boot error | S |
 
 **Exit:** the README's "reviewed by eye, not proven by a test" bullet is deleted
+— **met.** E2 was marked done when the job started passing, but the three docs
+that told readers CI *never* ran it (README, DEPLOYMENT, DEMO) went on saying so
+for four commits. A claim that understates the product is still a claim that
+does not match the run behind it
 because it stopped being true.
 
 E2 is the highest value-per-hour item in this entire document. The single most
