@@ -930,6 +930,14 @@ def test_the_matrix_records_each_decision_not_only_the_totals():
     assert _target_label(
         {"kind": "mail", "recipients": ["customer:8812"]}
     ) == "customer:8812"
+    # B7's mint record. Without this branch it takes the `str(kind)` fallback
+    # below and the matrix prints `mint(token)` -- a grant rendered as a tool
+    # call against a resource named "token", in the same column as real calls,
+    # and a second name for what warden/cli/replay.py calls `mint(4 tools)`.
+    assert _target_label(
+        {"kind": "token", "allowed_tools": ["read_document", "send_email"]}
+    ) == "2 tools"
+    assert _target_label({"kind": "token", "allowed_tools": ["read_document"]}) == "1 tool"
     # A target the label function has never seen must degrade to something
     # printable rather than raising inside a run that is being logged.
     assert _target_label({"kind": "future"}) == "future"

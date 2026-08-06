@@ -65,9 +65,11 @@ from tools.opa_version import resolve_opa
 from warden.broker.app import create_app
 from warden.broker.audit import AuditLog
 from warden.broker.config.catalog import ToolCatalog
+from warden.broker.control import record_mint
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
+from warden.broker.record_fields import args_digest
 from warden.broker.taint import InMemoryTaskStateStore
 from warden.cli.replay import render_replay
 
@@ -326,6 +328,30 @@ class NarratedAudit:
 
     def append(self, **fields):
         record = self._inner.append(**fields)
+        if fields.get("action", {}).get("type") == "mint":
+            # A GRANT, not a decision. Deliberately no stage() call: the mint
+            # happens inside stage ⓪ and the stage sequence must stay monotonic,
+            # so this is a `show` under the stage that is already open.
+            #
+            # This branch is not optional politeness. Nothing forces it --
+            # append() reads only seq/decision/rule/prev_hash/hash and a mint
+            # record carries all five -- so without it the demo prints
+            # "⑧ THE DECISION IS RECORDED — BEFORE ANYTHING RUNS" inside stage
+            # ⓪, before stage ① exists, under a `why` claiming "this write
+            # happens before the action executes" about a mint after which
+            # nothing executes. And --quiet-why would not hide it: only why()
+            # is gated on SHOW_WHY; stage() and show() are not.
+            show("recorded as", f"seq {record['seq']}  hash {record['hash'][:16]}…")
+            why(
+                "The grant goes into the chain before the token is handed over. "
+                "Without this record the log can say what the agent TRIED and "
+                "not what it was ALLOWED to do — every refusal below would be "
+                "measured against authority the log had never seen. In the "
+                "container deployment this is written by broker-control, a "
+                "different process sharing this one file; here it is the same "
+                "process, and the record is identical either way."
+            )
+            return record
         stage("⑧", "THE DECISION IS RECORDED — BEFORE ANYTHING RUNS")
         show("seq", record["seq"])
         show("decision", f"{record['decision']}  (rule: {record['rule']})")
@@ -920,11 +946,18 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
         show("policy bundle", f"warden/policies/ + demo/scenario/data.json  digest {policy_bundle_digest([POLICY_BUNDLE, POLICY_DATA])[:22]}…", 5)
         show("policy engine", f"real OPA server at {opa_url}", 5)
         show("customer database", f"{db.name}, 10,312 synthetic records", 5)
-        show("audit log", "empty, hash chain starts at 64 zeroes", 5)
+        show("audit log", "empty — the hash chain starts at 64 zeroes, and the "
+             "first record written into it is the token grant below", 5)
         show("scenario", f"{task[0]} — {task[1]['trips']}", 5)
         show("model", _model_name(llm), 5)
 
         stage("⓪", "THE ORCHESTRATOR MINTS A TASK TOKEN")
+        # The log is opened HERE, before the mint, and not down beside the app.
+        # P2/B7: the grant is the first thing written into the chain, so there
+        # has to be a chain to write it into. Nothing else moved -- AuditLog's
+        # constructor deliberately reads nothing (see its own comment), so
+        # opening it early costs nothing and observes nothing.
+        audit = NarratedAudit(AuditLog(tmp / "audit.jsonl"))
         signer = Signer.generate()
         # A scenario may narrow the grant. Nothing else about the system changes
         # when it does -- not the policy, not the broker, not the agent's code --
@@ -941,10 +974,16 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
         }
         token = signer.mint(**grant)
         claims = Verifier(signer.public_key_pem()).verify(token)
+        # The same function warden/broker/control.py's mint route calls, with
+        # the same arguments, so the demo cannot drift from the product: one
+        # place builds a mint record. `grant` carries the same six keys
+        # TokenRequest does, which is the only reason the two callers' digests
+        # are comparable at all.
         show("purpose", claims.purpose)
         show("allowed tools", list(claims.allowed_tools))
         show("counterparties", list(claims.counterparties))
         show("expires in", f"{claims.exp - int(time.time())} seconds")
+        record_mint(audit, token=claims, request_digest=args_digest(grant))
         why(
             "This is the initiator's job — a ticket webhook, a queue consumer, an "
             "admin UI. It declares what the task is FOR and the authority that "
@@ -971,8 +1010,8 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
             )
         gate()
 
-        # real components, wrapped for narration only
-        audit = NarratedAudit(AuditLog(tmp / "audit.jsonl"))
+        # real components, wrapped for narration only. `audit` is the one
+        # opened at stage ⓪ above, which already holds the grant at seq 1.
         pdp = NarratedPDP(PolicyDecisionPoint(opa_url, client=httpx.Client(timeout=5.0)))
         app = create_app(
             verifier=Verifier(signer.public_key_pem()),
@@ -1019,6 +1058,8 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
         hr()
         leaked = sum(len(b) for b in sinkhole.RECEIVED)
         denied = sum(1 for record in records if record["decision"] == "deny")
+        brokered = sum(1 for r in records if r["action"]["type"] == "tool_call")
+        mints = sum(1 for r in records if r["action"]["type"] == "mint")
         show("tool calls made", dispatcher.calls, 2)
         show("tool calls refused", denied, 2)
         show("customer records read", f"{dispatcher.rows:,}", 2)
@@ -1062,10 +1103,26 @@ def _run_protected(tmp: Path, db: Path, llm, task: tuple[str, dict]) -> dict:
             # Printed beside the call count on purpose: every brokered call
             # writes a record before it acts, so these two numbers must agree.
             # If they ever diverge, a call reached the broker and left no trace.
+            #
+            # Compared over TOOL-CALL records, not over every record, since
+            # P2/B7 put a mint in this chain -- the count shown is still the
+            # honest total. The old form asserted len(records) == calls, which
+            # was true only while the agent was the only writer: a mint made it
+            # print "8 — MISMATCH vs 7 calls", an audit trail that LOOKS broken
+            # in the headline table, which is the inverse of what B7 is for.
+            # (It is stated over the writers this demo has. spine.py records an
+            # unauthenticated probe as a tool_call too, and this demo never
+            # produces one.)
+            #
+            # Narrowing gives something up, so the mint gets its own check
+            # rather than becoming invisible: without `mints == 1` a duplicated
+            # or missing grant would both read as healthy here, and the grant is
+            # the record this release added.
             "audit records": (
                 f"{len(records)}, chain {'intact' if chain_ok else 'BROKEN'}"
-                if len(records) == dispatcher.calls
-                else f"{len(records)} — MISMATCH vs {dispatcher.calls} calls"
+                if brokered == dispatcher.calls and mints == 1
+                else f"{len(records)} — MISMATCH: {brokered} tool-call records "
+                     f"and {mints} grants vs {dispatcher.calls} calls"
             ),
         }
     finally:
@@ -1152,6 +1209,14 @@ def _target_label(target: dict) -> str:
         return f"{target.get('host', '')}{target.get('path', '')}"
     if kind == "mail":
         return ", ".join(target.get("recipients") or [])
+    if kind == "token":
+        # A mint record (P2/B7). Without this it falls to `str(kind)` below and
+        # the matrix prints `mint(token)` -- a grant rendered as a tool call
+        # against a resource named "token", in the same column as real calls,
+        # and a second name for a record warden/cli/replay.py already calls
+        # `mint(4 tools)`. Measured before the branch existed.
+        tools = target.get("allowed_tools") or []
+        return f"{len(tools)} tool{'' if len(tools) == 1 else 's'}"
     return str(kind)
 
 
@@ -1216,8 +1281,10 @@ def _steps_from(scratch: Path) -> list[dict]:
     """The per-call decisions a protected run recorded, if it got that far.
 
     "43 refused" is a summary; which calls, against what, and under which rule
-    is the part a reader can check. Returns [] when the run failed before the
-    broker wrote anything, which is a fact about the run, not an error.
+    is the part a reader can check. Returns [] when nothing was written at all,
+    which is a fact about the run, not an error -- since P2/B7 a run that got
+    as far as minting has one record even if no call was ever brokered, so an
+    empty list now means the run died before stage ⓪.
     """
     audit_file = scratch / "audit.jsonl"
     if not audit_file.exists():
@@ -1225,7 +1292,13 @@ def _steps_from(scratch: Path) -> list[dict]:
     return [
         {
             "n": record["seq"],
-            "tool": record["action"]["tool"],
+            # `.get`, with the type as the fallback. Three record types carry
+            # no tool -- tool_list, mcp_handshake and B7's mint -- and the
+            # unguarded subscript here was a KeyError for all three, not just
+            # the new one. Worse, --matrix caught it in the `except Exception`
+            # around the row and then called this function AGAIN inside that
+            # handler, where the second KeyError was uncaught.
+            "tool": record["action"].get("tool") or record["action"]["type"],
             "target": _target_label(record["target"]),
             "decision": record["decision"],
             "rule": record["rule"],

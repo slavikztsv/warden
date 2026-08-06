@@ -139,7 +139,7 @@ injected instruction enter the model's context.
   PII into internal systems             121                 0  ←
   mail to undeclared recipients           0                 0
   emails delivered                        1                 1
-  audit records                        none   7, chain intact  ←
+  audit records                        none   8, chain intact  ←
 ```
 
 Same model output on both sides, so the broker is the only variable. The

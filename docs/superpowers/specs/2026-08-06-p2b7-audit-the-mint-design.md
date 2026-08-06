@@ -709,9 +709,11 @@ suite somewhere.
 | 13 | The mint record renders, above the first tool call | `test_replay_renders_a_mint` + `test_the_mint_record_is_rendered_first` |
 | 14 | The grant line names the tools | `test_replay_shows_what_the_mint_granted` |
 | 15 | A tool-less record does not crash the step reader | `test_steps_from_survives_a_record_with_no_tool` |
-| 16 | The matrix names the mint the same way replay does | `test_the_matrix_step_line_for_a_mint` (`_target_label` + the rendered step) |
+| 16 | The matrix names the mint the same way replay does | the same test's `steps[0]["target"] == "2 tools"`, plus `test_target_label_names_each_kind`'s `token` case |
 | 17 | The demo narrates a mint as a mint, not as stage ⑧ | `test_narrated_audit_narrates_a_mint_differently` |
-| 18 | The demo's replay leads with the mint | `test_the_demo_replay_leads_with_the_mint` — `explain.py:1016-1018`'s block, the demo-side twin of row 13 |
+| 18 | The demo opens its log before it mints, so the grant is seq 1 | `test_the_demo_opens_its_log_before_it_mints` — a **source-order** assertion, see below |
+| 19 | `NarratedAudit` and `NarratedPDP` are exercised through a real spine | `test_the_narrated_audit_forwards_every_method_the_spine_uses` |
+| 20 | `empty_task_state` returns a fresh dict per call | `test_empty_task_state_is_a_fresh_dict_per_call` |
 
 Rows 3 and 13 in the first draft were each **wrong about their own catcher**,
 which is this project's newest recorded trap and it fired immediately:
@@ -741,9 +743,20 @@ Row 4 exists because rows 1 and 2 both pass against a record whose `rule` says
 somewhere. The field *set* and the *chain* are insensitive to values; only an
 explicit assertion pins them.
 
+Row 18 is a **source-order** assertion, and it is the honest shape for what it
+covers. "The mint appears above the first tool call" is a fact about `seq`, and
+`seq` follows file order — so the demo's mint leads only because its `AuditLog`
+is opened *before* stage ⓪ rather than beside the app thirty lines later, where
+it was. Move that line back down and **nothing else fails**: the chain still
+verifies, the counts still agree, the demo still reports 8 records, and the
+replay block simply stops leading with the grant. The end-to-end version needs
+a booted OPA; this is what CI can hold.
+
 **Manual, outside the table:** `warden-demo explain --quiet-why` must report
 **8 records, 3 refusals, 1 record read** after commit 2, and `--matrix` must
-run to completion. Neither is in CI; both are in the gate list.
+run to completion. Neither is in CI, and CI does not run `warden-demo` at all;
+both are in the gate list. The proof table's own rule is that every row is a
+failing-first test, so a gate run does not get to be a row.
 
 ---
 
