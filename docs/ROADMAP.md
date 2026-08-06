@@ -98,7 +98,9 @@ across anything slow: the store's atomic charge is the whole of the ordering.
 A6 may now make the spine async without removing a control, because the control
 is no longer the synchrony.
 
-**A6 then did the second, and the ceiling above is gone.** Every call site —
+**A6 then did the second, and the ceiling above is gone — measured, not
+asserted: eight concurrent tool calls against a backend taking 200ms each
+finished in 1.66s before and 0.23s after.** Every call site —
 both front doors' spine calls and the proxy's `authorize_connect` — now awaits
 the still-synchronous sequence on a pool the broker owns, so a slow adapter no
 longer stalls the loop that every other request and every `CONNECT` shares.
