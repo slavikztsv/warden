@@ -102,13 +102,37 @@ the run that produced it. *Also rejected:* pulling in B2 (`fsync`) and B3
 in particular trades durability against exactly the latency this document is
 trying to reduce — it deserves its own argument, not a ride-along.
 
-### 2 · The chain head is cached, and read once at construction
+### 2 · The chain head is cached, and read once — on the first append
 
-`AuditLog.__init__` reads the log once and keeps `(seq, prev_hash)`. `append()`
-computes from the cached pair and advances it **after** the write returns.
-`records()` and `verify_chain()` are untouched: they still read the file, which
-is what makes them an independent check on the thing that wrote it rather than
-a restatement of it.
+`AuditLog` keeps `(seq, prev_hash)`. The **first** `append()` populates it by
+reading the log; every append after that computes from the cached pair and
+advances it **after** the write returns. `records()` and `verify_chain()` are
+untouched: they still read the file, which is what makes them an independent
+check on the thing that wrote it rather than a restatement of it.
+
+**Lazily on first append, and NOT eagerly in `__init__`** — this is the one
+place where the obvious design is wrong, so it is recorded rather than left to
+be rediscovered. `warden verify-chain` exists to be pointed at a *corrupt* log
+and report `chain BROKEN: malformed record` with exit 1, and
+[`replay.py:189`](../../../warden/cli/replay.py) constructs the `AuditLog`
+**before** the guard at [`replay.py:213-221`](../../../warden/cli/replay.py)
+that produces that verdict. A constructor that parsed the file would raise
+first, and the one tool whose whole job is inspecting broken chains would
+traceback instead of reporting one.
+
+Deferring to the first append costs one read per process — exactly what happens
+today — and keeps `__init__` total: no file IO, no new failure mode, and every
+read-only consumer (`verify-chain`, `replay`, the demo's record dump)
+unaffected. The measured win is untouched, because the win was never the first
+append; it was the four-thousandth.
+
+*Rejected:* reading eagerly at construction, which is what the roadmap's "after
+one read at boot" wording suggests. It would additionally have turned a corrupt
+log into a boot failure — a real improvement over today's unhandled
+`JSONDecodeError` at first use — but not at the price of breaking
+`verify-chain`. Refusing to start on an unreadable log is worth doing as a
+startup preflight, where it can be done without giving `AuditLog`'s constructor
+a second job.
 
 **Advancing after the write, never before, is the load-bearing detail.** If the
 write raises, the cache still describes what is actually on disk, so the next
@@ -118,15 +142,14 @@ append — a corruption whose cause is one call removed from its symptom.
 
 The single-writer assumption is unchanged. It is the assumption
 [`audit.py:47-52`](../../../warden/broker/audit.py) already encodes in a
-`threading.Lock`, and B6 is what lifts it. Caching adds no new one.
+`threading.Lock`, and B6 is what lifts it. Caching adds no new one. The cache
+is populated under that same lock, so the first-append read cannot race a
+concurrent second append.
 
-**Reading at construction rather than lazily is deliberate**, and it changes a
-failure mode for the better: a corrupt log now refuses to boot instead of
-escaping as a 500 at first use. That follows
-[`loader.py:7-10`](../../../warden/broker/config/loader.py) — *"A broker that
-starts with a half-understood config writes audit records claiming a policy it
-is not enforcing, and that is worse than not starting."* An audit log it cannot
-parse is the same case.
+**No failure mode changes.** A corrupt log still raises `json.JSONDecodeError`
+from the first append, exactly as it does today, so
+[`replay.py:198-211`](../../../warden/cli/replay.py)'s reasoning about which
+errors surface from where stays true verbatim.
 
 *Rejected:* seeking to the last line instead of caching. It is O(1) too, but it
 keeps a file read on the serving path, so it stays vulnerable to the same
@@ -272,13 +295,13 @@ to make impossible.
 
 | File | Change |
 |---|---|
-| `warden/broker/audit.py` | `_head` cached at construction, advanced after a successful write. `records()`/`verify_chain()` untouched |
+| `warden/broker/audit.py` | `_head` cached on first append, advanced after a successful write. `__init__`, `records()` and `verify_chain()` untouched |
 | `warden/broker/app.py` | Owns the executor; `authenticate` and `handle_tool_call` awaited through it |
 | `warden/broker/mcp.py` | `on_list_tools` and `on_call_tool` awaited through the same executor; the docstring's claim about the SDK threadpooling sync handlers is corrected — `runner.py:217` awaits handlers unconditionally |
 | `warden/broker/proxy.py` | `authorize_connect` awaited through the executor |
 | `warden/broker/config/loader.py` | `[broker] worker_threads`, optional, default 16, `_positive` |
 | `warden/broker/wiring.py`, `__main__.py` | Construct the executor, thread it to both surfaces, shut it down with the server |
-| `tests/warden/test_audit.py` | Constant-time append; the cache is not advanced by a failed write; a corrupt log refuses at construction |
+| `tests/warden/test_audit.py` | Constant-time append; the cache is not advanced by a failed write |
 | `tests/warden/test_mcp_surface.py` | The thread assertion inverted (decision 5) |
 | `tests/warden/test_app.py`, `test_proxy.py` | The offload is observable; the exit criterion still holds through both surfaces |
 | `README.md`, `docs/ARCHITECTURE.md`, `docs/THREAT_MODEL.md`, `docs/DEPLOYMENT.md`, `docs/ROADMAP.md` | The ceiling is gone; the one-worker requirement is **not**, and its stated reason is corrected |
@@ -299,9 +322,10 @@ when its guard is removed is not a test.
 
 | Property | Test | Mutation that must turn it red |
 |---|---|---|
-| The append does not re-read the log | Spy on `records()`; N appends after construction must call it **zero** times | Restore `_head()` to calling `records()` |
+| The append does not re-read the log | Spy on `records()`; after the first append, N more must call it **zero** times | Restore `_head()` to calling `records()` |
 | A failed write does not advance the cache | Make the write raise; assert the next append still links to the true head | Advance the cache before the write instead of after |
-| A corrupt log refuses at boot | Construct over a malformed line; assert it raises there, not at first append | Read the head lazily |
+| `verify-chain` still reports a corrupt log rather than crashing | The existing `tests/demo/test_cli.py` case asserting `malformed record` and exit 1 | Read the head in `__init__` |
+| A reopened log still continues the chain | The existing reopen test — the cache must start empty, not at genesis | Initialise the cache to `(0, GENESIS_HASH)` instead of "unread" |
 | The chain still verifies under concurrency | The existing 25-thread append test | — (this one must *not* move) |
 | The spine runs off the loop thread | Both surfaces: assert the spine's thread is not the loop's | Call the spine directly instead of through the executor |
 | The executor is the broker's own, not the default | Assert the offloaded call runs on a thread from the configured pool | Use `asyncio.to_thread` |
