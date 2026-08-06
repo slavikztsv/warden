@@ -24,7 +24,24 @@ jobs:
         # is installed. `python -m pytest` masked this locally: `-m` inserts
         # the CWD onto sys.path, an accident of that invocation form, not
         # something CI's `pytest -v` benefits from.
-        run: pip install -e ./warden -e ./demo -e ./tools && pip install pytest==9.1.1 pytest-asyncio==1.4.0
+        #
+        # `./warden[mcp]`, not bare `./warden`: the MCP surface's tests guard
+        # with `pytest.importorskip("mcp")`, which is right for an optional
+        # extra and wrong for CI. Without the extra those three modules skip
+        # at import, their tests are never collected, and the job reports
+        # success having exercised none of the front door -- 638 items instead
+        # of 722. `jsonschema` is named explicitly rather than inherited: the
+        # generated-schema property test imports it directly, and relying on
+        # it arriving as a transitive of `mcp` is what turned this step red
+        # the first time.
+        run: pip install -e './warden[mcp]' -e ./demo -e ./tools && pip install pytest==9.1.1 pytest-asyncio==1.4.0 jsonschema==4.26.0
+      - name: The MCP extra resolved
+        # A guard on the step above, not a test of the product. If any of
+        # these stops resolving, the three MCP test modules go back to
+        # skipping silently and `pytest` still exits 0 -- pytest has no
+        # "fail on skip", so the check has to live here. Red now beats green
+        # over an unexercised surface.
+        run: python -c "import mcp, mcp_types, httpx2, jsonschema; print(mcp.__name__, mcp_types.__name__, httpx2.__name__, jsonschema.__name__)"
       - name: Policy unit tests
         # Two paths, not one: Task 22 moved data.json to demo/scenario/, and
         # authz_test.rego's "shipped-configuration tests" section evaluates
