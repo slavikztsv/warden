@@ -27,6 +27,24 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+class TaskStateUnavailable(OSError):
+    """The store could not be reached.
+
+    Part of the INTERFACE, not of any one implementation, which is why it
+    lives here beside the Protocol rather than in the Redis module. A second
+    implementation must not have to invent its own.
+
+    Derives from OSError deliberately. `redis.exceptions.TimeoutError` does
+    not -- verified -- so without this an outage would fall through
+    broker/proxy.py's `except OSError` into its `except Exception`, and be
+    answered with a bare 403 in the one component whose stated reason for
+    existing is that denying without recording is the failure mode it cannot
+    have.
+
+    The in-memory store never raises it: a dict cannot be unreachable.
+    """
+
+
 @dataclass
 class _Reservation:
     """One call's charge, in flight.

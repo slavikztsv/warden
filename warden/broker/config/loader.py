@@ -73,6 +73,21 @@ class TaskStateConfig:
 
     max_in_flight_seconds: int = 60
     ttl_grace_seconds: int = 3600
+    # "memory" (the default) or "redis". Memory stays the default so every
+    # config written before this existed keeps loading, and so the demo runs
+    # with no Redis at all.
+    backend: str = "memory"
+    # Required when backend = "redis", and interpolated, so a password stays
+    # out of the mounted TOML and an unset ${REDIS_URL} fails at boot rather
+    # than at the first request.
+    url: str = ""
+    # Bounded on purpose. redis-py defaults this to None -- no timeout -- so a
+    # hung Redis would block the calling thread forever, and since A6 those
+    # threads are a pool of 16 shared with the egress proxy. An
+    # unreachable-but-not-refusing server would exhaust the broker rather than
+    # fail it. Must stay below max_in_flight_seconds: a store call that could
+    # outlive the reservation it is taking is a contradiction.
+    socket_timeout_seconds: int = 2
 
 
 @dataclass(frozen=True)
@@ -276,14 +291,40 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
             path=_string(mcp, "mcp", "path", env) if "path" in mcp else "/mcp",
             host=_string(mcp, "mcp", "host", env) if "host" in mcp else "",
         ),
-        task_state=TaskStateConfig(
-            max_in_flight_seconds=_positive(
-                task_state, "task_state", "max_in_flight_seconds", 60
-            ),
-            ttl_grace_seconds=_positive(
-                task_state, "task_state", "ttl_grace_seconds", 3600, allow_zero=True
-            ),
+        task_state=_task_state_config(task_state, env),
+    )
+
+
+def _task_state_config(section: dict, env: Mapping[str, str]) -> TaskStateConfig:
+    backend = section.get("backend", "memory")
+    if backend not in ("memory", "redis"):
+        raise ConfigError(
+            f'task_state.backend must be "memory" or "redis", got {backend!r}'
+        )
+    if backend == "redis" and "url" not in section:
+        # Named rather than defaulted. A localhost default would let a
+        # deployment that meant to share a store silently keep its own,
+        # which is the exact failure this backend exists to remove.
+        raise ConfigError('task_state.url is required when backend = "redis"')
+    url = _string(section, "task_state", "url", env) if "url" in section else ""
+
+    max_in_flight = _positive(section, "task_state", "max_in_flight_seconds", 60)
+    socket_timeout = _positive(section, "task_state", "socket_timeout_seconds", 2)
+    if socket_timeout >= max_in_flight:
+        raise ConfigError(
+            "task_state.socket_timeout_seconds must be less than "
+            f"max_in_flight_seconds ({socket_timeout} >= {max_in_flight}); a store "
+            "call that can outlive the reservation it takes would let the "
+            "deadline collect a live call's budget"
+        )
+    return TaskStateConfig(
+        max_in_flight_seconds=max_in_flight,
+        ttl_grace_seconds=_positive(
+            section, "task_state", "ttl_grace_seconds", 3600, allow_zero=True
         ),
+        backend=backend,
+        url=url,
+        socket_timeout_seconds=socket_timeout,
     )
 
 

@@ -8,6 +8,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # The shared task-state store's tests need a real server, not fakeredis.
+      # fakeredis's bundled cjson encodes an empty table as `[]` where real
+      # Redis encodes it as `{}` -- measured -- so a suite that ran on the
+      # fake would be green while production denied every call on
+      # authz.rego's is_array guard. The store returns a flat array precisely
+      # to avoid that, and this service is what proves it against the thing
+      # deployments actually run.
+      redis:
+        image: redis:7-alpine
+        ports: ["6399:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -34,7 +50,7 @@ jobs:
         # generated-schema property test imports it directly, and relying on
         # it arriving as a transitive of `mcp` is what turned this step red
         # the first time.
-        run: pip install -e './warden[mcp]' -e ./demo -e ./tools && pip install -r requirements-dev.txt
+        run: pip install -e './warden[mcp,redis]' -e ./demo -e ./tools && pip install -r requirements-dev.txt
       - name: The MCP extra resolved
         # A guard on the step above, not a test of the product. If any of
         # these stops resolving, the three MCP test modules go back to
@@ -42,6 +58,20 @@ jobs:
         # "fail on skip", so the check has to live here. Red now beats green
         # over an unexercised surface.
         run: python -c "import mcp, mcp_types, httpx2, jsonschema; print(mcp.__name__, mcp_types.__name__, httpx2.__name__, jsonschema.__name__)"
+      - name: The shared store is reachable
+        # Same guard, same reason as the MCP extra above. Every case in
+        # tests/warden/test_task_state_redis.py skips when no server answers,
+        # and pytest has no "fail on skip" -- so without this the job would
+        # report success having exercised none of the store that A2 exists to
+        # add. Red now beats green over an untested budget.
+        env:
+          WARDEN_TEST_REDIS_URL: redis://127.0.0.1:6399/0
+        run: |
+          python -c "
+          import redis, os
+          c = redis.Redis.from_url(os.environ['WARDEN_TEST_REDIS_URL'], socket_connect_timeout=5)
+          print('redis', c.info('server')['redis_version'], c.ping())
+          "
       - name: Lint
         # ruff.toml lives at the repo root because there is no root
         # pyproject.toml -- warden/, demo/ and tools/ are separate
@@ -70,6 +100,8 @@ jobs:
           MAILER_URL: http://mailer.internal
         run: python -m warden.cli.replay config --catalog demo/scenario/tools.toml --data demo/scenario/data.json
       - name: Python tests
+        env:
+          WARDEN_TEST_REDIS_URL: redis://127.0.0.1:6399/0
         run: pytest -v
 
   # The property the whole system rests on, and until now the only one nothing

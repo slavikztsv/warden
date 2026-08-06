@@ -466,3 +466,53 @@ def test_a_non_integer_worker_pool_is_refused(tmp_path):
     path = _with_broker_key(tmp_path, 'worker_threads = "lots"')
     with pytest.raises(ConfigError, match=re.escape("broker.worker_threads")):
         load_broker_config(path, env={})
+
+
+def _with_task_state(tmp_path: Path, body: str) -> Path:
+    return write(tmp_path, COMPLETE + f"\n[task_state]\n{body}\n")
+
+
+def test_the_task_state_backend_defaults_to_memory(tmp_path):
+    """Every config written before the shared store existed has no backend
+    key, and all of them must keep loading -- and keep their own budget."""
+    config = load_broker_config(write_complete_config(tmp_path), env={})
+    assert config.task_state.backend == "memory"
+
+
+def test_the_redis_backend_is_read_with_its_url(tmp_path):
+    path = _with_task_state(tmp_path, 'backend = "redis"\nurl = "${REDIS_URL}"')
+    config = load_broker_config(path, env={"REDIS_URL": "redis://cache:6379/0"})
+    assert config.task_state.backend == "redis"
+    assert config.task_state.url == "redis://cache:6379/0"
+
+
+def test_an_unknown_backend_is_refused(tmp_path):
+    path = _with_task_state(tmp_path, 'backend = "memcached"')
+    with pytest.raises(ConfigError, match=re.escape("task_state.backend")):
+        load_broker_config(path, env={})
+
+
+def test_the_redis_backend_without_a_url_is_refused(tmp_path):
+    """Not defaulted to localhost. A deployment that meant to SHARE a store
+    would silently keep its own, which is the exact failure the shared store
+    exists to remove."""
+    path = _with_task_state(tmp_path, 'backend = "redis"')
+    with pytest.raises(ConfigError, match=re.escape("task_state.url")):
+        load_broker_config(path, env={})
+
+
+def test_an_unset_redis_url_variable_fails_at_boot(tmp_path):
+    path = _with_task_state(tmp_path, 'backend = "redis"\nurl = "${REDIS_URL}"')
+    with pytest.raises(ConfigError, match="REDIS_URL"):
+        load_broker_config(path, env={})
+
+
+def test_a_socket_timeout_at_or_above_the_reservation_deadline_is_refused(tmp_path):
+    """A store call that can outlive the reservation it is taking is a
+    contradiction: the deadline would collect a live call's budget and hand it
+    to a concurrent caller."""
+    path = _with_task_state(
+        tmp_path, "max_in_flight_seconds = 5\nsocket_timeout_seconds = 5"
+    )
+    with pytest.raises(ConfigError, match=re.escape("socket_timeout_seconds")):
+        load_broker_config(path, env={})

@@ -40,6 +40,15 @@ mcp = [
   "mcp==2.0.0",
 ]
 
+# The shared task-state store's client, and only it. A deployment running the
+# default in-memory backend never carries it, the same way one that never
+# enables the MCP surface never carries that SDK. The broker raises at boot if
+# [task_state].backend = "redis" and this extra is absent, rather than
+# discovering it at the first request.
+redis = [
+  "redis==6.4.0",
+]
+
 [project.scripts]
 warden = "warden.cli.main:main"
 

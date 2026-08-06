@@ -101,6 +101,42 @@ def _silence_telemetry() -> None:
         )
 
 
+def _build_task_state(config: BrokerConfig):
+    """The store named by [task_state].backend.
+
+    The import is inside the branch, not at module scope, for the same reason
+    the MCP surface's is: `redis` is an optional extra, and a deployment
+    running the default in-memory backend must not need it installed to
+    start. A missing extra is reported as a missing extra, at boot, rather
+    than as an ImportError at the first request.
+    """
+    if config.task_state.backend == "memory":
+        return InMemoryTaskStateStore(
+            max_in_flight_seconds=config.task_state.max_in_flight_seconds
+        )
+
+    try:
+        from warden.broker.taint_redis import RedisTaskStateStore, connect
+    except ImportError as exc:
+        if exc.name is not None and exc.name.split(".")[0] != "redis":
+            # A typo'd first-party import inside taint_redis.py raises
+            # ImportError too, and reporting that as "install warden[redis]"
+            # would send whoever hits it to reinstall a package already there.
+            raise
+        raise ConfigError(
+            '[task_state].backend is "redis" but the redis extra is not '
+            "installed; install warden[redis]"
+        ) from exc
+
+    return RedisTaskStateStore(
+        connect(
+            config.task_state.url,
+            socket_timeout_seconds=config.task_state.socket_timeout_seconds,
+        ),
+        max_in_flight_seconds=config.task_state.max_in_flight_seconds,
+    )
+
+
 def build(config: BrokerConfig, *, client: httpx.Client | None = None):
     """Wires the enforcement point from a parsed config.
 
@@ -120,12 +156,10 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
             config.opa_url, decision_path=config.decision_path, client=client
         ),
         # One store, shared by the tool API and the proxy, which is what makes
-        # a task's budget one budget rather than two. In-process for now: A2
-        # swaps this for the Redis implementation of the same interface, and
-        # that is the whole of what "more than one worker" needs from here.
-        task_state=InMemoryTaskStateStore(
-            max_in_flight_seconds=config.task_state.max_in_flight_seconds
-        ),
+        # a task's budget one budget rather than two. Which implementation is
+        # a config choice: in-process by default, Redis when a deployment
+        # wants that budget shared between BROKERS as well.
+        task_state=_build_task_state(config),
         audit=AuditLog(config.audit_path),
         # Computed once at startup, never lazily per request: a missing or
         # unreadable bundle must crash before the first decision, not be

@@ -17,9 +17,13 @@ from concurrent.futures import Executor
 from warden.broker.audit import AuditLog
 from warden.broker.identity import TokenInvalid, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
-from warden.broker.taint import TaskStateStore
+from warden.broker.taint import TaskStateStore, TaskStateUnavailable
 
 NO_TOKEN = "unauthenticated"
+# The shared store is unreachable. Its own rule name, not
+# audit.unavailable: an operator reading the log needs to know which
+# dependency went, and these two are refused for opposite reasons.
+STATE_UNAVAILABLE = "state.unavailable"
 
 
 def proxy_token(header: str) -> str:
@@ -301,16 +305,39 @@ async def serve_proxy(
                         **deps,
                     ),
                 )
+            except TaskStateUnavailable:
+                # The STORE, not the log. Checked before the OSError clause
+                # below because it is a subclass of it, and the two differ in
+                # the one way that matters here: the log is fine, so this
+                # refusal CAN be recorded — and therefore must be. A CONNECT
+                # that leaves no trace is the failure mode this component
+                # exists to prevent, and a shared store being unreachable is
+                # exactly when an operator needs the trace.
+                host, port = parse_authority(authority)
+                _audit_refusal(
+                    audit=deps["audit"],
+                    policy_digest=deps["policy_digest"],
+                    host=host,
+                    port=port,
+                    rule=STATE_UNAVAILABLE,
+                )
+                allowed, rule = False, STATE_UNAVAILABLE
             except OSError:
                 # The audit log itself failed. We cannot record, so we cannot
                 # act — same rule as the broker's tool surface, and reported
-                # distinctly rather than hidden behind a generic error.
+                # distinctly rather than hidden behind a generic error. No
+                # _audit_refusal here, deliberately: recording is the thing
+                # that just failed.
                 allowed, rule = False, "audit.unavailable"
             except Exception:
                 allowed, rule = False, "proxy.error"
 
             if not allowed:
-                status = "503 Service Unavailable" if rule == "audit.unavailable" else "403 Forbidden"
+                status = (
+                    "503 Service Unavailable"
+                    if rule in ("audit.unavailable", STATE_UNAVAILABLE)
+                    else "403 Forbidden"
+                )
                 writer.write(
                     f"HTTP/1.1 {status}\r\nX-Warden-Rule: {rule}\r\n\r\n".encode()
                 )
