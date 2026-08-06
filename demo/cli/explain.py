@@ -351,9 +351,19 @@ class NarratedBackends:
 
     Name kept from when this wrapped the old Backends class directly --
     describe()/execute() already take (tool, args), so only the constructor's
-    type changed. validate() is passed through unnarrated: it is not a
-    numbered stage below, the same way it adds no stage in the real broker
-    beyond gating whether describe() is ever reached.
+    type changed. validate() and data_class() are passed through unnarrated:
+    neither is a numbered stage below, the same way neither adds a stage in
+    the real broker.
+
+    Every method the spine calls on a catalog must be forwarded here, and
+    that is a real trap rather than a tidiness note: a wrapper that forwards
+    a SUBSET of an interface breaks silently the moment the interface grows.
+    P2·A added data_class() and this class did not get it, so every brokered
+    call in the whole narrated demo raised AttributeError inside the spine's
+    describe() guard -- reported as a 502 backend fault with no audit record,
+    on every single call, while the entire test suite stayed green.
+    tests/demo/test_explain_wrappers.py now drives one real call through
+    these wrappers so the next addition cannot do the same.
     """
 
     def __init__(self, inner: ToolCatalog) -> None:
@@ -361,6 +371,9 @@ class NarratedBackends:
 
     def validate(self, tool, args):
         return self._inner.validate(tool, args)
+
+    def data_class(self, tool):
+        return self._inner.data_class(tool)
 
     def describe(self, tool, args):
         target = self._inner.describe(tool, args)
