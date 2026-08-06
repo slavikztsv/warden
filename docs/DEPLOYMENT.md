@@ -176,15 +176,25 @@ entirely with `curl`.
 ## Development
 
 ```bash
-.venv/bin/pip install -e ./warden -e ./demo -e ./tools
-.venv/bin/pip install pytest==9.1.1 pytest-asyncio==1.4.0
+.venv/bin/pip install -e './warden[mcp]' -e ./demo -e ./tools
+.venv/bin/pip install -r requirements-dev.txt
 ```
+
+The `[mcp]` extra is optional for *running* the broker and required for
+*testing* it: the MCP surface's tests guard with `pytest.importorskip`, so
+without it three modules skip and the front door goes unexercised.
+`requirements-dev.txt` holds what the runtime does not need — the test runner,
+the linter, the type checker — and CI installs from that same file rather than
+restating the pins.
 
 | Task | Command |
 |---|---|
 | Run the broker | `.venv/bin/warden serve --config <warden.toml>` |
 | Run the control plane | `.venv/bin/warden control --config <control.toml>` |
 | All tests | `.venv/bin/pytest -v` |
+| Lint | `.venv/bin/ruff check .` (config in [ruff.toml](../ruff.toml)) |
+| Types | `.venv/bin/mypy warden --ignore-missing-imports` |
+| Containment | `bash tests/demo/test_isolation.sh` — needs Docker |
 | Policy tests | `~/.cache/warden/opa-1.19.0 test warden/policies/ demo/scenario/data.json -v` |
 | Config check | `.venv/bin/warden config check --catalog … --data … [--mcp]` |
 | Run the MCP shim | `.venv/bin/warden mcp --broker <URL incl. mount path> --token-file <path>` |
@@ -201,8 +211,15 @@ opened.
 Tests that need something external: `tests/demo/test_isolation.sh` and
 `warden-demo up` need Docker; the Gemini client tests skip unless
 `requirements-live.txt` is installed; `--live` runs need a provider key.
-Everything else runs offline. There is no lint, format or type-check step
-configured — [.github/workflows/ci.yml](../.github/workflows/ci.yml) runs the
-policy tests, a config consistency check, and `pytest`.
+Everything else runs offline.
+
+[.github/workflows/ci.yml](../.github/workflows/ci.yml) runs two jobs. `test`
+lints with `ruff`, type-checks `warden/` with `mypy`, then runs the policy
+tests, the config consistency check and `pytest`. `containment` runs
+`tests/demo/test_isolation.sh` under Docker on the runner — which it did not
+until Phase 0, so the property the whole system rests on was the one property
+nothing checked. The type check is deliberately not `--strict`: that reports
+125 errors against 13, which is tracked as F1b in
+[ROADMAP.md](ROADMAP.md) rather than smuggled into a gate.
 
 ---

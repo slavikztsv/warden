@@ -34,7 +34,7 @@ jobs:
         # generated-schema property test imports it directly, and relying on
         # it arriving as a transitive of `mcp` is what turned this step red
         # the first time.
-        run: pip install -e './warden[mcp]' -e ./demo -e ./tools && pip install pytest==9.1.1 pytest-asyncio==1.4.0 jsonschema==4.26.0
+        run: pip install -e './warden[mcp]' -e ./demo -e ./tools && pip install -r requirements-dev.txt
       - name: The MCP extra resolved
         # A guard on the step above, not a test of the product. If any of
         # these stops resolving, the three MCP test modules go back to
@@ -42,6 +42,19 @@ jobs:
         # "fail on skip", so the check has to live here. Red now beats green
         # over an unexercised surface.
         run: python -c "import mcp, mcp_types, httpx2, jsonschema; print(mcp.__name__, mcp_types.__name__, httpx2.__name__, jsonschema.__name__)"
+      - name: Lint
+        # ruff.toml lives at the repo root because there is no root
+        # pyproject.toml -- warden/, demo/ and tools/ are separate
+        # distributions. `--output-format github` turns findings into inline
+        # annotations on the diff instead of buried log lines.
+        run: ruff check . --output-format github
+      - name: Types
+        # Non-strict, over the product tree only, and deliberately so: --strict
+        # reports 125 errors against 13 here, which is a project rather than a
+        # gate. It is tracked as F1b in docs/ROADMAP.md with that price named.
+        # The tree checked is warden/ alone -- demo/ is one deployment of the
+        # product and tools/ is dev scripts; neither is what a deployment runs.
+        run: mypy warden --ignore-missing-imports
       - name: Policy unit tests
         # Two paths, not one: Task 22 moved data.json to demo/scenario/, and
         # authz_test.rego's "shipped-configuration tests" section evaluates
@@ -58,3 +71,21 @@ jobs:
         run: python -m warden.cli.replay config --catalog demo/scenario/tools.toml --data demo/scenario/data.json
       - name: Python tests
         run: pytest -v
+
+  # The property the whole system rests on, and until now the only one nothing
+  # checked. docs/ROADMAP.md called running it "the highest value-per-hour item
+  # in this entire document" while it sat outside CI, because it needs Docker
+  # and the runner has Docker. Its own job so a containment failure reads as a
+  # containment failure, not as a red unit test.
+  containment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: The agent has no route out except the broker
+        # Eight assertions, each one a bypass that must fail: direct egress,
+        # the sinkhole, a backend reached around the broker, a raw socket, and
+        # minting a token from the agent's network. Then two that must succeed:
+        # the broker is reachable, and the refusal was written to the audit log.
+        # The script generates its own keypair with openssl and brings up the
+        # protected profile itself.
+        run: bash tests/demo/test_isolation.sh

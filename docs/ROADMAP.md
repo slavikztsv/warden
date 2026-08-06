@@ -269,7 +269,7 @@ the README's table if it ships.
 | | Work | Size |
 |---|---|---|
 | E1 | Kubernetes manifests plus a Helm chart, with the containment property expressed as a `NetworkPolicy` — the direct analogue of `internal: true` | M |
-| E2 | **Run the containment test in CI.** GitHub Actions has Docker; the compose profile and `tests/demo/test_isolation.sh` can both run there | S |
+| E2 | **Run the containment test in CI.** GitHub Actions has Docker; the compose profile and `tests/demo/test_isolation.sh` can both run there. **Done** — the script passes 8/8 and now gates the build | S |
 | E3 | The same assertions against a `kind` cluster, so the `NetworkPolicy` is proven and not just written | M |
 | E4 | A deployment checklist that fails closed: a `warden config check` extension that refuses a purpose declaring `egress_allow` without an explicit `pii_approved_sinks`, turning today's silent weakening into a boot error | S |
 
@@ -283,8 +283,9 @@ important security property of the system is the one nothing currently checks.
 
 | | Work | Size |
 |---|---|---|
-| F1 | `ruff` and `mypy` (strict over `warden/`), wired into CI. `docs/DEPLOYMENT.md` currently states there is no lint, format or type-check step | S |
-| F2 | Split runtime from test dependencies; `requirements.txt` currently pins `pytest` alongside `fastapi` | S |
+| F1 | `ruff` and `mypy` wired into CI. **Done, with one scope cut:** `mypy` runs non-strict over `warden/`, not strict. Strict reported 125 errors against 14 non-strict, which is a project rather than a gate; it stays open below | S |
+| F2 | Separate the runtime pins from the test pins. **Done, and it was not a split:** the runtime half was a byte-identical restatement of `warden/pyproject.toml`'s dependencies, and nothing installed from the file. It is now `requirements-dev.txt`, test-only, and CI installs from it instead of pinning the same versions inline in a shell line | S |
+| F1b | `mypy --strict` over `warden/`. 125 errors today against 14 non-strict, so it is deferred deliberately rather than skipped. Closing it would also close P1's carried annotation debt on `Spine.__init__` | M |
 | F3 | Versioning, a changelog, and a stated compatibility policy for the token claims, the audit record shape, and the policy input document — all three are interfaces other people will depend on | S |
 | F4 | Publish to PyPI with trusted publishing, and an image to GHCR with a pinned-digest base | M |
 | F5 | SBOM, `pip-audit` in CI, Dependabot, and signed images | M |
