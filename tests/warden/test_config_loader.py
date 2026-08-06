@@ -65,6 +65,7 @@ def test_loads_every_field(tmp_path):
     assert config.decision_path == "warden/authz"
     assert config.bundle_roots == (Path("/policies"),)
     assert config.audit_path == Path("/data/audit.jsonl")
+    assert config.audit_durability == "fsync"
     assert config.issuer == "warden-broker"
     assert config.catalog_path == Path("/config/tools.toml")
     # ttl_seconds is deliberately NOT a BrokerConfig field: the broker
@@ -235,6 +236,7 @@ def test_control_loads_every_field(tmp_path):
     assert config.listen == ("0.0.0.0", 8081)
     assert config.private_key == Path("/data/agent.key")
     assert config.audit_path == Path("/data/audit.jsonl")
+    assert config.audit_durability == "fsync"
     assert config.issuer == "warden-broker"
     assert config.ttl_seconds == 300
 
@@ -566,3 +568,69 @@ def test_a_socket_timeout_at_or_above_the_reservation_deadline_is_refused(tmp_pa
     )
     with pytest.raises(ConfigError, match=re.escape("socket_timeout_seconds")):
         load_broker_config(path, env={})
+
+
+# --- B2: [audit].durability, in BOTH loaders --------------------------------
+#
+# Designed in docs/superpowers/specs/2026-08-06-p2b2-audit-durability-design.md.
+# Grouped rather than split between the broker and control sections above,
+# because the point of decision 2 is the RELATIONSHIP between the two: the key
+# is in both, and unlike [audit].path and [tokens].issuer the two values need
+# not agree.
+
+_AUDIT_SECTION = '[audit]\npath = "/data/audit.jsonl"'
+
+
+def test_audit_durability_defaults_to_the_safe_level(tmp_path):
+    """ROADMAP B2: "the default being the safe one". A config written before
+    this key existed gets the STRONGER behaviour, never the weaker."""
+    config = load_broker_config(write_complete_config(tmp_path), env={})
+    assert config.audit_durability == "fsync"
+
+
+def test_an_unrecognised_broker_durability_is_a_config_error(tmp_path):
+    text = COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + '\ndurability = "fsyncc"')
+    with pytest.raises(
+        ConfigError,
+        match=re.escape(
+            "audit.durability must be one of ('fsync', 'flush'), got 'fsyncc'"
+        ),
+    ):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+def test_the_control_plane_defaults_to_the_safe_level(tmp_path):
+    config = load_control_config(write_control(tmp_path, CONTROL_COMPLETE), env={})
+    assert config.audit_durability == "fsync"
+
+
+def test_an_unrecognised_control_durability_is_a_config_error(tmp_path):
+    """A non-string fails on the same check: the membership test type-checks
+    for free, so there is no separate _string call to get wrong."""
+    text = CONTROL_COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + "\ndurability = 3")
+    with pytest.raises(
+        ConfigError,
+        match=re.escape("audit.durability must be one of ('fsync', 'flush'), got 3"),
+    ):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_the_two_writers_may_choose_different_durability(tmp_path):
+    """Unlike [audit].path and [tokens].issuer -- which MUST agree, and whose
+    divergence is a silent bug and a loud one respectively -- a broker at
+    "flush" and a control plane at "fsync" is a coherent tiering: the grant
+    must survive power loss, the high-volume decisions accept the risk.
+
+    So there is deliberately NO check that the two agree, and this is the test
+    that pins the absence. It is the one test here that would fail if someone
+    "helpfully" added one.
+    """
+    broker = load_broker_config(
+        write(tmp_path, COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + '\ndurability = "flush"')),
+        env={},
+    )
+    control = load_control_config(write_control(tmp_path, CONTROL_COMPLETE), env={})
+    assert broker.audit_durability == "flush"
+    assert control.audit_durability == "fsync"
+    # Same file, different durability. That is the point.
+    assert broker.audit_path == control.audit_path

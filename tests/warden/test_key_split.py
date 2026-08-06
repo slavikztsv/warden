@@ -40,6 +40,7 @@ from fastapi.testclient import TestClient
 import warden.broker.__main__ as broker_main
 import warden.broker.control_main as control_main
 from demo.mocks.seed_db import seed_customers
+from warden.broker.audit import AuditLog
 from warden.broker.config.loader import (
     BrokerConfig,
     ControlConfig,
@@ -85,6 +86,7 @@ def write_warden_toml(
     issuer: str = "warden-broker",
     listen: str = "0.0.0.0:8080",
     proxy_listen: str = "0.0.0.0:3128",
+    durability: str = "fsync",
 ) -> Path:
     """Writes a warden.toml the shape compose.yml mounts, with the
     same defaults broker_env() used to bake into an env dict -- one root
@@ -113,7 +115,8 @@ decision_path = "{decision_path}"
 bundle_roots  = [{roots_toml}]
 
 [audit]
-path = "{audit_path}"
+path       = "{audit_path}"
+durability = "{durability}"
 
 [tokens]
 issuer = "{issuer}"
@@ -136,6 +139,7 @@ def write_control_toml(
     issuer: str = "warden-broker",
     ttl_seconds: int = 300,
     audit_path: Path | None = None,
+    durability: str = "fsync",
 ) -> Path:
     """issuer here must match write_warden_toml's issuer for a token minted
     under one to verify under the other -- see
@@ -158,7 +162,8 @@ listen = "{listen}"
 private_key = "{private_key}"
 
 [audit]
-path = "{audit_path}"
+path       = "{audit_path}"
+durability = "{durability}"
 
 [tokens]
 issuer      = "{issuer}"
@@ -664,3 +669,41 @@ def test_warden_demo_up_rebuilds_before_starting_containers(tmp_path):
     assert len(runs) == 2, f"expected exactly one `docker compose ... run` per profile, found {len(runs)}: {runs}"
     for call in ups + runs:
         assert "--build" in call, f"docker compose invocation without --build: {call}"
+
+
+# --- B2: the configured durability must actually reach the log --------------
+#
+# The step whose omission leaves [audit].durability parsed and never consumed,
+# which is exactly the silent-no-op failure BrokerConfig.issuer's own comment
+# warns about. Both sides get one, and they are NOT symmetric.
+
+
+def test_the_broker_builds_its_audit_log_with_the_configured_durability(
+    tmp_path, monkeypatch
+):
+    """Reads the RESULT, not the call: build() returns its BrokerComponents,
+    and AuditLog.durability is public precisely so this needs no mock."""
+    set_catalog_env(monkeypatch, tmp_path)
+    _, public_key = write_keypair(tmp_path)
+    config = broker_config(tmp_path, public_key, durability="flush")
+    _, components = broker_main.build(config, client=stub_client())
+    assert components.audit.durability == "flush"
+
+
+def test_the_control_plane_builds_its_audit_log_with_the_configured_durability(
+    tmp_path, monkeypatch
+):
+    """control_main.build() returns only the app -- the log is a closure
+    argument to create_control_app and nothing exposes it -- so this captures
+    the construction instead of reading the result."""
+    private_key, _ = write_keypair(tmp_path)
+    captured: dict = {}
+
+    class Capturing(AuditLog):
+        def __init__(self, path, **kwargs):
+            captured.update(kwargs)
+            super().__init__(path, **kwargs)
+
+    monkeypatch.setattr(control_main, "AuditLog", Capturing)
+    control_main.build(control_config(tmp_path, private_key, durability="flush"))
+    assert captured["durability"] == "flush"

@@ -110,18 +110,31 @@ brokers still keep two budgets (that is A2). The paragraphs above are kept as
 the account of why the work was sequenced this way, not as a description of
 the code.
 
-**The audit log is ~~O(n²)~~ and is not crash-durable.** ~~`_head()` calls
+**The audit log is ~~O(n²)~~ ~~and is not crash-durable~~.** ~~`_head()` calls
 `records()`, which reads and JSON-parses the entire file, on **every append**
 ([`audit.py:64`](../warden/broker/audit.py)). Ten thousand decisions means ten
 thousand full-file parses.~~ **Closed by B1**, which landed in front of A6
 because offloading onto a lock held across a growing file parse would have
 relocated the ceiling rather than removed it: 0.76ms per append at 100
-records, 37.1ms at 4000. The head is now read once, on the first append, and
-advanced by each write. Separately, `append()` calls `handle.flush()` with no
-`os.fsync()` — so "the decision is written down **before** anything happens", the
-property the whole design turns on, is durable against a process crash but not
-against a host loss. The claim is stronger than the code. Its `threading.Lock` is
-also process-local, so a second worker breaks the chain rather than slowing it.
+records, 37.1ms at 4000. ~~The head is now read once, on the first append, and
+advanced by each write.~~ B6 then replaced B1's *mechanism* rather than
+repairing it: the head comes from the file's **tail**, read under the lock, so
+nothing is cached and the whole file is never parsed even once. ~~Separately,
+`append()` calls `handle.flush()` with no `os.fsync()` — so "the decision is
+written down **before** anything happens", the property the whole design turns
+on, is durable against a process crash but not against a host loss. The claim
+is stronger than the code.~~ **Closed by B2**, which put an `os.fsync` inside
+the `flock` and made the level `[audit].durability`, defaulting to the safe
+one — measured 16× (~107µs → ~1.7ms per append), flat in log size. ~~Its
+`threading.Lock` is also process-local, so a second worker breaks the chain
+rather than slowing it.~~ **Closed by B6.**
+
+Two of those three strikethroughs are B2's doing only in the sense that
+rewriting a paragraph forces you to read all of it. The `threading.Lock`
+sentence and the head-cache sentence were falsified by **B6**, three commits
+earlier, and survived because B6 rewrote the § B table row and not this
+paragraph. They are struck rather than deleted, because a claim this document
+made and stopped being true is part of the account.
 
 **Task state is never evicted.** ~~`TaintTracker._tasks` is a `defaultdict`
 that only ever grows; nothing removes a finished task. A long-lived broker leaks
@@ -331,7 +344,7 @@ directions: either half reading the other's spelling denies `input.malformed`.
 | | Work | Size |
 |---|---|---|
 | B1 | ~~Cache the chain head in memory after one read at boot~~; stop re-parsing the file per append. **Done**, pulled in front of A6 — and read on the first *append* rather than "at boot", because `warden verify-chain` exists to be pointed at a corrupt log and [cli/replay.py](../warden/cli/replay.py) constructs the `AuditLog` before the guard that reports one. A constructor that parsed the file would make that tool traceback instead of doing its job | S |
-| B2 | `os.fsync` before returning from `append()`, with the durability level configurable and the default being the safe one | S |
+| B2 | ~~`os.fsync` before returning from `append()`, with the durability level configurable and the default being the safe one~~. **Done.** `append()` returns only once the record is on the device, so README's "written down **before** anything happens" is true against a host loss and not only against a process crash — the doc change B2 makes is a *subtraction*. The level is `[audit].durability`, in **both** TOMLs, defaulting to `"fsync"`; unlike `[audit].path` and `[tokens].issuer` the two values need **not** agree, because a broker at `"flush"` with a control plane at `"fsync"` is a coherent tiering rather than a misconfiguration. Record 1 also fsyncs the parent **directory**: `fsync` on the file makes its contents durable and says nothing about the directory entry that makes it findable, so without it a power loss can lose the whole log including the record whose `append()` already returned. Measured 16× (~107µs → ~1.7ms), flat in log size, which puts the deployment's audit ceiling at ~590 records/second; `fdatasync` measured *indistinguishable* from `fsync` (1687µs against 1649µs — an append changes the file size, so the metadata flush happens anyway), so there is no third level | S |
 | B3 | Segment rotation with an anchor record carrying the previous segment's head hash, so a rotated chain still verifies end to end | M |
 | B4 | Teach `warden verify-chain` about segments | S |
 | B5 | A pluggable sink: the file, plus structured stdout for a log shipper, plus an optional append-only external store | M |

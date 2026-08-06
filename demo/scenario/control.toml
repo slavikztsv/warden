@@ -27,6 +27,11 @@ private_key = "/data/agent.key"
 [audit]
 # MUST equal warden.toml's [audit].path. See the note above.
 path = "/data/audit.jsonl"
+# "fsync" (the default) or "flush". Unlike `path` directly above, this one
+# need NOT match warden.toml's -- see the longer note there. The control plane
+# writes a handful of mint records per task, so it has no throughput reason to
+# ever weaken.
+durability = "fsync"
 
 [tokens]
 issuer      = "warden-broker"

@@ -44,7 +44,9 @@ def build(config: ControlConfig):
         config.private_key, issuer=config.issuer, default_ttl_seconds=config.ttl_seconds
     )
     return create_control_app(
-        signer=signer, audit=AuditLog(config.audit_path), issuer=config.issuer
+        signer=signer,
+        audit=AuditLog(config.audit_path, durability=config.audit_durability),
+        issuer=config.issuer,
     )
 
 

@@ -160,7 +160,7 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         # a config choice: in-process by default, Redis when a deployment
         # wants that budget shared between BROKERS as well.
         task_state=_build_task_state(config),
-        audit=AuditLog(config.audit_path),
+        audit=AuditLog(config.audit_path, durability=config.audit_durability),
         # Computed once at startup, never lazily per request: a missing or
         # unreadable bundle must crash before the first decision, not be
         # discovered halfway through serving one.

@@ -76,6 +76,23 @@ against anything real.
   minting if it cannot. Nothing compares the two paths, so a divergence is two
   chains and no error: under Compose the directory is shared, and the value is
   the same string in both files.
+- Leave `[audit].durability` at its default, `"fsync"`, unless you have
+  measured that you cannot. It is what makes "the decision is written down
+  before anything happens" true against a **host** loss and not only against a
+  process crash. It costs: an append goes from ~107µs to ~1.7ms — flat in log
+  size, but ~16× — and because appends serialize under one `flock`, that is
+  the whole deployment's audit ceiling at roughly **590 records/second**, not
+  a per-thread number. `[broker].worker_threads` still buys concurrency for
+  everything else; sixteen threads all recording at once make the last one
+  wait ~27ms. `"flush"` is the other level and is what shipped before B2: the
+  record reaches the kernel's page cache, so it survives the broker dying and
+  not the host. Those numbers are ext4-under-WSL2 numbers; the ratio
+  transfers, the microseconds do not.
+- This is the one `[audit]` value the two processes need **not** agree on.
+  Unlike `path` directly above, a broker at `"flush"` with a control plane at
+  `"fsync"` is a coherent choice — the grant survives power loss, the
+  high-volume decisions accept the risk — so nothing compares them and nothing
+  errors. Set both deliberately rather than assuming one inherits the other.
 - Run `warden config check --catalog … --data … --mcp` before setting
   `[mcp].enabled = true`. It demands a `description` and a `title` on every
   tool, which nothing else in this list requires.

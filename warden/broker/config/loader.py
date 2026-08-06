@@ -18,6 +18,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+# The durability vocabulary lives with the mechanism that implements it, so
+# there is no second copy to drift. Measured before adding this edge, because
+# control_main is the process that holds the private signing key: its import
+# graph is 9 `warden` modules and ALREADY contains warden.broker.audit, which
+# it imports to construct an AuditLog. This costs it nothing, and audit.py is
+# deliberately stdlib-only.
+from warden.broker.audit import DEFAULT_DURABILITY, DURABILITY_LEVELS
+
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
@@ -99,6 +107,13 @@ class BrokerConfig:
     decision_path: str
     bundle_roots: tuple[Path, ...]
     audit_path: Path
+    # "fsync" or "flush". Unlike audit_path and issuer -- the two values these
+    # two processes MUST agree on -- this one need NOT match control.toml's. A
+    # broker at "flush" with a control plane at "fsync" says "the grant must
+    # survive power loss; the high-volume decisions accept the risk", which is
+    # a coherent tiering rather than a misconfiguration. Nothing compares them
+    # and nothing should. See the B2 design, decision 2.
+    audit_durability: str
     # issuer, not ttl_seconds: the broker VERIFIES a token's issuer (so it
     # must agree with control.toml's, or every token is rejected) but never
     # MINTS one, so a TTL here would be parsed and never consumed -- exactly
@@ -214,6 +229,29 @@ def _positive(
     return value
 
 
+def _durability(section: dict, table: str) -> str:
+    """`[audit].durability` -- optional, defaulted to the safe level.
+
+    Optional because every config written before this key existed must keep
+    loading, and safe-by-default because those configs then get the STRONGER
+    behaviour rather than the weaker one.
+
+    An unrecognised value raises rather than falling back in EITHER direction.
+    Falling back to "flush" silently weakens the log, which is the failure
+    config/schema.py exists to prevent ("a typo that silently disables a check
+    is precisely the failure this module exists to make impossible"). Falling
+    back to "fsync" silently ignores what an operator wrote, which is how a
+    deployment acquires a throughput profile nobody chose. The membership test
+    also type-checks for free: `durability = 3` is not in the tuple either.
+    """
+    value = section.get("durability", DEFAULT_DURABILITY)
+    if value not in DURABILITY_LEVELS:
+        raise ConfigError(
+            f"{table}.durability must be one of {DURABILITY_LEVELS}, got {value!r}"
+        )
+    return value
+
+
 def _address(section: dict, table: str, key: str, env: Mapping[str, str]) -> tuple[str, int]:
     raw = _string(section, table, key, env)
     host, separator, port = raw.rpartition(":")
@@ -283,6 +321,7 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
         decision_path=_string(policy, "policy", "decision_path", env),
         bundle_roots=_paths(policy, "policy", "bundle_roots", env),
         audit_path=Path(_string(audit, "audit", "path", env)),
+        audit_durability=_durability(audit, "audit"),
         issuer=_string(tokens, "tokens", "issuer", env),
         catalog_path=Path(_string(catalog, "catalog", "tools", env)),
         worker_threads=_positive(broker, "broker", "worker_threads", 16),
@@ -340,6 +379,12 @@ class ControlConfig:
     # hazard as `issuer` below, and treated the same way: a comment in both
     # TOMLs and here. See the B7 design's decision 7.
     audit_path: Path
+    # "fsync" or "flush", and unlike audit_path directly above it this one need
+    # NOT match warden.toml's. The control plane writes a handful of mint
+    # records per task, so it has no throughput reason to ever weaken -- but a
+    # deployment that weakens the BROKER's is making a coherent choice, not a
+    # mistake, so nothing here enforces agreement. See BrokerConfig.
+    audit_durability: str
     # issuer must agree with BrokerConfig.issuer, or every minted token
     # fails verification. ttl_seconds governs minting only, so it lives
     # here and nowhere else -- the broker never mints.
@@ -389,6 +434,7 @@ def load_control_config(path: Path, env: Mapping[str, str]) -> ControlConfig:
         listen=_address(control, "control", "listen", env),
         private_key=Path(_string(identity, "identity", "private_key", env)),
         audit_path=Path(_string(audit, "audit", "path", env)),
+        audit_durability=_durability(audit, "audit"),
         issuer=_string(tokens, "tokens", "issuer", env),
         ttl_seconds=ttl_seconds,
     )

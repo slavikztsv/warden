@@ -35,6 +35,18 @@ bundle_roots  = ["/policies"]
 # compares the two path strings, so a divergence here is two chains and no
 # error anywhere.
 path = "/data/audit.jsonl"
+# "fsync" (the default) or "flush". "fsync" means append() returns only once
+# the record is on the disk, so it survives the host losing power -- measured
+# at ~1.7ms against ~107us, flat in log size, which puts the whole
+# deployment's audit ceiling at ~590 records/second because appends serialize
+# under one lock. "flush" returns once the record is in the kernel's page
+# cache: it survives this process dying, not the host.
+#
+# Unlike `path` above, this one need NOT match control.toml's. A broker at
+# "flush" with a control plane at "fsync" says "the grant must survive power
+# loss; the high-volume decisions accept the risk" -- a coherent tiering, not
+# a misconfiguration, and nothing compares the two.
+durability = "fsync"
 
 [tokens]
 issuer = "warden-broker"

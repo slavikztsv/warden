@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from warden.cli.replay import main, render_replay
 
 RECORDS = [
@@ -1307,3 +1309,18 @@ def test_a_capped_scenario_is_reported_as_failed_not_measured(monkeypatch, capsy
     assert "not measured" in out
     # The partial counts must NOT appear as if they were a result.
     assert "10,312 records read" not in out
+
+
+def test_the_shipped_configs_name_the_safe_durability():
+    """B2. Each names it explicitly -- these are the reference configs, and a
+    knob nobody can see in them is a knob nobody finds.
+
+    Deliberately NOT an equality check between the two: they need not agree
+    (see the B2 design, decision 2), and a test asserting they match would fail
+    a legitimate deployment. Contrast test_control_audit.py's
+    test_the_shipped_control_toml_names_the_brokers_audit_log, where the two
+    values genuinely must be the same string.
+    """
+    scenario = Path(__file__).resolve().parents[2] / "demo" / "scenario"
+    for name in ("warden.toml", "control.toml"):
+        assert 'durability = "fsync"' in (scenario / name).read_text(), name
