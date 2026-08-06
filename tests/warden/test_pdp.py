@@ -9,7 +9,7 @@ INPUT = {
     "principal": {"purpose": "support-triage", "allowed_tools": ["http_fetch"]},
     "action": {"type": "tool_call", "tool": "http_fetch"},
     "target": {"kind": "http", "host": "attacker.example"},
-    "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 1},
+    "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 1},
 }
 
 

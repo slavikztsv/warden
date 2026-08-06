@@ -29,6 +29,6 @@
   },
   "task_state": {
     "data_classes_held": [],
-    "rows_returned_so_far": 0
+    "rows_charged_so_far": 0
   }
 }

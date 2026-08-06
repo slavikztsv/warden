@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from tools.capture_expected import EXPECTED_CASE_COUNT
-from tools.opa_version import resolve_opa
+from tools.opa_version import bundle_args, resolve_opa
 from warden.broker.pdp import DENY_PRECEDENCE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -45,14 +45,12 @@ def _cases() -> list[str]:
 
 def _evaluate(binary: str, document: dict) -> dict:
     result = subprocess.run(
-        # Two -d roots since Task 22 split the bundle: the rules directory
-        # (warden/policies/, which also holds authz_test.rego -- opa eval
-        # loads it too, but it declares no data.* values so it is inert
-        # here) and the deployment's data.json, named directly rather than
-        # via its containing demo/scenario/ directory so tools.toml,
-        # warden.toml etc. are not pulled into the bundle opa evaluates.
-        [binary, "eval", "-I", "-d", str(REPO_ROOT / "warden" / "policies"),
-         "-d", str(REPO_ROOT / "demo" / "scenario" / "data.json"),
+        # The bundle spelling lives in tools/opa_version.py, shared with
+        # tools/capture_expected.py. It was duplicated here and there, and
+        # when Task 22 split the bundle only this copy was updated -- see
+        # that module's docstring for what the stale copy would have written
+        # into expected.json.
+        [binary, "eval", "-I", *bundle_args(REPO_ROOT),
          "data.warden.authz", "--format=json"],
         input=json.dumps(document), capture_output=True, text=True,
         cwd=REPO_ROOT, check=False,
@@ -109,6 +107,33 @@ def test_corpus_has_the_expected_case_count():
     constant -- shared with tools/capture_expected.py, which refuses to
     capture when it disagrees -- turns that into a loud failure instead."""
     assert len(_cases()) == EXPECTED_CASE_COUNT
+
+
+def test_the_shipped_bundle_is_not_all_denials(opa_binary):
+    """The baseline this corpus rests on must be capable of allowing.
+
+    Not a tautology, and not covered by the per-case assertions: those compare
+    a live evaluation against expected.json, so a baseline captured from a
+    BROKEN bundle -- one missing data.json, where R1b's fail-closed default
+    denies every input as input.malformed -- agrees with a live evaluation
+    against that same broken bundle, and all fourteen cases pass while
+    asserting nothing about any rule.
+
+    That was not hypothetical. tools/capture_expected.py, the one committed
+    way to regenerate expected.json, built its own single-root command line
+    and kept it when Task 22 moved data.json out of warden/policies/. Running
+    it wrote exactly that baseline. Both callers now build the bundle through
+    tools.opa_version.bundle_args, and this asserts the consequence rather
+    than the mechanism: a bundle that cannot allow anything is a bundle that
+    is not loaded.
+    """
+    expected = json.loads((CORPUS / "expected.json").read_text())
+    allowed = [case for case, outcome in expected.items() if outcome["allow"]]
+    assert allowed, (
+        "every case in expected.json denies. The bundle it was captured from "
+        "was almost certainly missing demo/scenario/data.json -- recapture "
+        "with tools/capture_expected.py and check its -d roots."
+    )
 
 
 def test_no_reason_is_unrankable():

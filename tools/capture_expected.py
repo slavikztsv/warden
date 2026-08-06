@@ -33,7 +33,7 @@ CORPUS = REPO_ROOT / "tests" / "golden" / "decisions"
 
 sys.path.insert(0, str(REPO_ROOT))
 
-from tools.opa_version import resolve_opa  # noqa: E402
+from tools.opa_version import bundle_args, resolve_opa  # noqa: E402
 from warden.broker.pdp import DENY_PRECEDENCE  # noqa: E402
 
 # 7 demo cases derived from the frozen audit log (tools/build_corpus.py) +
@@ -48,7 +48,17 @@ def _cases() -> list[Path]:
 
 def _evaluate(binary: str, document_text: str) -> dict:
     result = subprocess.run(
-        [binary, "eval", "-I", "-d", str(REPO_ROOT / "warden" / "policies"),
+        # The bundle spelling comes from tools/opa_version.py, not from here.
+        # This script used to build its own single-root command line, and
+        # kept it when Task 22 moved data.json out of warden/policies/ --
+        # which made every capture evaluate against a bundle with no
+        # data.tools, no data.purposes and no data.limits, where R1b's
+        # fail-closed default denies EVERYTHING as input.malformed. A run
+        # would have written a perfectly self-consistent expected.json in
+        # which all fourteen cases deny, and the corpus test would have
+        # passed against it while asserting nothing about any rule. One
+        # definition now, shared with the corpus test.
+        [binary, "eval", "-I", *bundle_args(REPO_ROOT),
          "data.warden.authz", "--format=json"],
         input=document_text, capture_output=True, text=True,
         cwd=REPO_ROOT, check=True,

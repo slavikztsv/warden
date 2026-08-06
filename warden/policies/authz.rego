@@ -77,9 +77,9 @@ default safe_data_classes_held := null
 
 safe_data_classes_held := input.task_state.data_classes_held
 
-default safe_rows_returned_so_far := null
+default safe_rows_charged_so_far := null
 
-safe_rows_returned_so_far := input.task_state.rows_returned_so_far
+safe_rows_charged_so_far := input.task_state.rows_charged_so_far
 
 default safe_action_tool := null
 
@@ -109,7 +109,7 @@ deny_reasons contains "input.malformed" if not is_array(safe_counterparties)
 
 deny_reasons contains "input.malformed" if not is_array(safe_data_classes_held)
 
-deny_reasons contains "input.malformed" if not is_number(safe_rows_returned_so_far)
+deny_reasons contains "input.malformed" if not is_number(safe_rows_charged_so_far)
 
 # An unknown purpose has no allowlist, so nothing could be checked against it.
 deny_reasons contains "input.malformed" if not data.purposes[safe_purpose]
@@ -153,7 +153,7 @@ deny_reasons contains "input.malformed" if {
 # tool to its target.
 #
 # Second: `is_number` accepts negatives, and the bound is a sum. A negative
-# `rows_returned_so_far` made the total smaller than the limit — a 5,000,000
+# `rows_charged_so_far` made the total smaller than the limit — a 5,000,000
 # row read evaluated to allow. Counts are cardinalities; they cannot be
 # negative.
 #
@@ -255,8 +255,8 @@ deny_reasons contains "input.malformed" if {
 }
 
 deny_reasons contains "input.malformed" if {
-	is_number(safe_rows_returned_so_far)
-	safe_rows_returned_so_far < 0
+	is_number(safe_rows_charged_so_far)
+	safe_rows_charged_so_far < 0
 }
 
 deny_reasons contains "input.malformed" if {
@@ -345,9 +345,19 @@ deny_reasons contains "egress.pii_sink" if {
 #
 # It also closes a hole the tool-name form had: a SECOND database tool
 # escaped the row budget entirely, because this named exactly one.
+# Note what this reads: `input.task_state.rows_charged_so_far` DIRECTLY, not
+# the `safe_rows_charged_so_far` accessor above. If that key is ever absent,
+# `total` is undefined, the body is undefined, and this rule contributes no
+# deny reason at all -- the same fail-open shape R1c documents. What stands
+# between that and an unbounded read is solely the malformed guard at the
+# accessor, which denies when the key is missing or not a number. Measured
+# while renaming the field in P2·A: spelling this one line back to the old key
+# while leaving the accessor on the new one drops `rows.bounded` from
+# demo-4-bulk-read's reasons, and only `rows.scope` still denies it. Weaken
+# that guard and this rule stops firing with nothing behind it.
 deny_reasons contains "rows.bounded" if {
 	input.target.kind == "db"
-	total := input.task_state.rows_returned_so_far + input.target.estimated_rows
+	total := input.task_state.rows_charged_so_far + input.target.estimated_rows
 	total > safe_max_rows_per_task
 }
 

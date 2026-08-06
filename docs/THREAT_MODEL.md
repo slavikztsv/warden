@@ -76,7 +76,7 @@ quietly fixed. Each is a real property of the system as shipped.
   during it. This was found the hard way: an earlier version took the
   snapshot *before* the request body was parsed, putting that `await` inside
   what was supposed to be the critical section, so two concurrent calls for
-  the same task could both read `rows_returned_so_far` before either recorded
+  the same task could both read `rows_charged_so_far` before either recorded
   its own read — a live TOCTOU, not a latent one, and it would interleave on
   one worker, one event loop, no threads required. Moving the snapshot to
   after the last `await` closed it. The safety is still fragile: change the

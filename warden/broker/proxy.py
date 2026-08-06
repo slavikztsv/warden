@@ -105,7 +105,7 @@ def authorize_connect(
             args_digest="sha256:none",
             decision="deny",
             rule=NO_TOKEN,
-            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            task_state={"data_classes_held": [], "rows_charged_so_far": 0},
             policy_bundle_digest=policy_digest,
         )
         return False, NO_TOKEN
@@ -166,7 +166,7 @@ def _audit_refusal(*, audit, policy_digest: str, host: str, port: int, rule: str
             args_digest="sha256:none",
             decision="deny",
             rule=rule,
-            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            task_state={"data_classes_held": [], "rows_charged_so_far": 0},
             policy_bundle_digest=policy_digest,
         )
     except OSError:

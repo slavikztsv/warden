@@ -4,20 +4,20 @@ RECORDS = [
     {"seq": 1, "task_id": "4711", "agent_id": "triage-bot", "purpose": "support-triage",
      "action": {"type": "tool_call", "tool": "read_document"},
      "target": {"kind": "doc"}, "decision": "allow", "rule": "tools.allowed",
-     "task_state": {"data_classes_held": [], "rows_returned_so_far": 0}, "hash": "a" * 64},
+     "task_state": {"data_classes_held": [], "rows_charged_so_far": 0}, "hash": "a" * 64},
     {"seq": 2, "task_id": "4711", "agent_id": "triage-bot", "purpose": "support-triage",
      "action": {"type": "tool_call", "tool": "query_customers"},
      "target": {"kind": "db", "estimated_rows": 1}, "decision": "allow", "rule": "rows.bounded",
-     "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 1}, "hash": "b" * 64},
+     "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 1}, "hash": "b" * 64},
     {"seq": 3, "task_id": "4711", "agent_id": "triage-bot", "purpose": "support-triage",
      "action": {"type": "tool_call", "tool": "http_fetch"},
      "target": {"kind": "http", "host": "docstore.internal", "path": "/feedback"},
      "decision": "deny", "rule": "egress.pii_sink",
-     "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 1}, "hash": "c" * 64},
+     "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 1}, "hash": "c" * 64},
     {"seq": 4, "task_id": "9999", "agent_id": "other-bot", "purpose": "other",
      "action": {"type": "tool_call", "tool": "read_document"}, "target": {"kind": "doc"},
      "decision": "allow", "rule": "tools.allowed",
-     "task_state": {"data_classes_held": [], "rows_returned_so_far": 0}, "hash": "d" * 64},
+     "task_state": {"data_classes_held": [], "rows_charged_so_far": 0}, "hash": "d" * 64},
 ]
 
 # A successful CONNECT (the proxy's own record shape: broker/proxy.py's
@@ -28,7 +28,7 @@ CONNECT_RECORD = {
     "target": {"kind": "http", "host": "docstore.internal", "port": 443, "path": "",
                "estimated_rows": 0, "recipients": []},
     "decision": "allow", "rule": "egress.allowlist",
-    "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 1}, "hash": "e" * 64,
+    "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 1}, "hash": "e" * 64,
 }
 
 # A proxy refusal with no valid token: sentinel principal fields per
@@ -39,7 +39,7 @@ SENTINEL_RECORD = {
     "target": {"kind": "http", "host": "evil.example", "port": 443, "path": "",
                "estimated_rows": 0, "recipients": []},
     "decision": "deny", "rule": "unauthenticated",
-    "task_state": {"data_classes_held": [], "rows_returned_so_far": 0}, "hash": "f" * 64,
+    "task_state": {"data_classes_held": [], "rows_charged_so_far": 0}, "hash": "f" * 64,
 }
 
 
@@ -93,7 +93,7 @@ def test_replay_command_exits_zero(tmp_path, capsys):
             action={"type": "tool_call", "tool": "read_document"},
             target={"kind": "doc", "path": doc_id}, args_digest="sha256:none",
             decision="allow", rule="allow",
-            task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+            task_state={"data_classes_held": [], "rows_charged_so_far": 0},
             policy_bundle_digest="sha256:demo",
         )
     assert main(["replay", "4711", "--audit", str(path)]) == 0
@@ -155,7 +155,7 @@ def test_verify_chain_exits_zero_on_an_intact_chain(tmp_path, capsys):
         task_id="4711", agent_id="triage-bot", purpose="support-triage",
         action={"type": "tool_call", "tool": "read_document"}, target={"kind": "doc"},
         args_digest="sha256:none", decision="allow", rule="tools.allowed",
-        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
         policy_bundle_digest="sha256:none",
     )
     assert main(["verify-chain", "--audit", str(log_path)]) == 0
@@ -213,7 +213,7 @@ def test_describe_shows_the_document_id_for_doc_reads():
         "action": {"type": "tool_call", "tool": "read_document"},
         "target": {"kind": "doc", "path": "kb/refund-policy"},
         "decision": "allow", "rule": "allow",
-        "task_state": {"data_classes_held": [], "rows_returned_so_far": 0}, "hash": "0" * 64,
+        "task_state": {"data_classes_held": [], "rows_charged_so_far": 0}, "hash": "0" * 64,
     }
     assert "read_document(kb/refund-policy)" in render_replay([record])
 
@@ -224,7 +224,7 @@ def test_describe_shows_the_recipient_for_mail():
         "action": {"type": "tool_call", "tool": "send_email"},
         "target": {"kind": "mail", "recipients": ["customer:8812"]},
         "decision": "allow", "rule": "allow",
-        "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 1}, "hash": "1" * 64,
+        "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 1}, "hash": "1" * 64,
     }
     assert "send_email(customer:8812)" in render_replay([record])
 
@@ -373,7 +373,7 @@ def _tampered_log(path) -> None:
     common = dict(
         task_id="4711", agent_id="triage-bot", purpose="support-triage",
         args_digest="sha256:none",
-        task_state={"data_classes_held": ["pii"], "rows_returned_so_far": 1},
+        task_state={"data_classes_held": ["pii"], "rows_charged_so_far": 1},
         policy_bundle_digest="sha256:demo",
     )
     log.append(
@@ -426,7 +426,7 @@ def test_replay_of_an_intact_log_reports_the_chain_as_intact(tmp_path, capsys):
         action={"type": "tool_call", "tool": "read_document"},
         target={"kind": "doc", "path": "ticket-4711"}, args_digest="sha256:none",
         decision="allow", rule="allow",
-        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
         policy_bundle_digest="sha256:demo",
     )
 
@@ -451,7 +451,7 @@ def test_replay_of_a_malformed_record_is_reported_as_broken(tmp_path, capsys):
                 "action": {"type": "tool_call", "tool": "read_document"},
                 "target": {"kind": "doc", "path": "x"}, "decision": "allow",
                 "rule": "allow",
-                "task_state": {"data_classes_held": [], "rows_returned_so_far": 0},
+                "task_state": {"data_classes_held": [], "rows_charged_so_far": 0},
                 "hash": "0" * 64,  # no prev_hash: verify_chain() raises KeyError
             }
         )
@@ -550,7 +550,7 @@ def test_replay_exit_code_follows_the_chain_verdict(tmp_path, capsys):
         action={"type": "tool_call", "tool": "read_document"},
         target={"kind": "doc", "path": "ticket-4711"}, args_digest="sha256:none",
         decision="allow", rule="allow",
-        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
         policy_bundle_digest="sha256:demo",
     )
     tampered = tmp_path / "tampered.jsonl"
@@ -1039,7 +1039,7 @@ def test_a_failure_row_keeps_whatever_the_broker_did_record(tmp_path):
         "target": {"kind": "db", "estimated_rows": 10312, "subjects": ["*"]},
         "decision": "deny",
         "rule": "db.rows",
-        "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 0},
+        "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 0},
     }) + "\n")
     steps = _steps_from(tmp_path)
     assert steps == [{

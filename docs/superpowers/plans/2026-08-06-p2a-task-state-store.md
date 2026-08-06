@@ -22,7 +22,7 @@ implementation here; the interface is shaped so A2's Lua script is a drop-in.
 
 - **Branch:** `p2a-task-state-store`. Every task ends in a commit; the tree is
   green at every commit.
-- **The gate is:** `ruff check .`, `mypy warden/`, `pytest`, `opa test warden/policies/`.
+- **The gate is:** `ruff check .`, `mypy warden/`, `pytest`, `opa test warden/policies/ demo/scenario/data.json`.
   All four pass before any commit. Expect **722** tests collected — 638 means
   the `mcp` extra is missing from the venv, not that tests vanished.
 - **The `.venv` cannot be recreated in this environment.** Use it; do not
@@ -79,7 +79,7 @@ readable. Nothing about what the number *means* changes in this task.
 ```bash
 grep -rn "rows_returned_so_far" --include='*.py' --include='*.rego' --include='*.json' . | grep -v '\.venv' | wc -l
 .venv/bin/pytest -q 2>&1 | tail -3       # expect 722 collected, all pass
-opa test warden/policies/                 # expect PASS
+opa test warden/policies/ demo/scenario/data.json   # expect PASS 53/53
 ```
 
 - [ ] **Step 2: Rename in source and policy**
@@ -102,7 +102,7 @@ Expected: `default safe_rows_charged_so_far := null`, its definition, the
 - [ ] **Step 3: Run the non-golden gates**
 
 ```bash
-opa test warden/policies/
+opa test warden/policies/ demo/scenario/data.json
 .venv/bin/pytest -q tests/warden/test_taint.py tests/warden/test_app.py tests/warden/test_spine.py
 ```
 
@@ -1458,7 +1458,7 @@ task's budget is briefly stricter than its reads.
 
 ```bash
 ruff check . && .venv/bin/mypy warden/ && .venv/bin/pytest -q 2>&1 | tail -3
-opa test warden/policies/
+opa test warden/policies/ demo/scenario/data.json
 ```
 
 Expected: clean, 723+ passing (722 baseline, minus `test_taint.py`'s 10, plus

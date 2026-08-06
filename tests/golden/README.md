@@ -10,6 +10,16 @@ count, so the mode matters.
 verifies in `tests/test_golden_replay.py`, and an edit is indistinguishable
 from tampering, which is the point.
 
+**It therefore still spells the row budget `rows_returned_so_far`, and that is
+correct.** P2·A renamed the field to `rows_charged_so_far` everywhere the
+broker writes it, but this file is a log an *older* broker really did write,
+frozen before the product/demo seam refactor. Rewriting it to look like
+today's broker produced it is exactly the edit the paragraph above forbids —
+so the translation lives in `tools/build_corpus.py`, which derives the seven
+demo decision inputs from these records and renames the key on the way past.
+`warden replay` is unaffected: it reads `data_classes_held` from a record and
+never the row count.
+
 `replay-4711.txt` is the exact stdout of
 
     warden replay 4711 --audit tests/golden/audit-4711.jsonl

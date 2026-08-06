@@ -197,7 +197,7 @@ def test_both_surfaces_write_the_same_record_when_allowed(tmp_path):
     binding's data_class) and always reports 0 rows (DocstoreAdapter's
     ToolResult never sets `rows`), so calling it twice for the SAME task_id
     -- once through each door -- taints data_classes_held after the first
-    call and leaves rows_returned_so_far untouched. Every field but
+    call and leaves rows_charged_so_far untouched. Every field but
     task_state is asserted equal outright; task_state is asserted against
     the EXACT evolution a single, correctly-ordered taint tracker predicts,
     which is strictly more informative than raw equality would have been.
@@ -240,10 +240,10 @@ def test_both_surfaces_write_the_same_record_when_allowed(tmp_path):
         for r in (http, mcp)
     ]
     assert stripped[0] == stripped[1]
-    assert http["task_state"] == {"data_classes_held": [], "rows_returned_so_far": 0}
+    assert http["task_state"] == {"data_classes_held": [], "rows_charged_so_far": 0}
     assert mcp["task_state"] == {
         "data_classes_held": ["public"],
-        "rows_returned_so_far": 0,
+        "rows_charged_so_far": 0,
     }
 
     body = response.json()
@@ -811,9 +811,9 @@ def test_an_allowed_read_advances_the_budget_once_per_surface(tmp_path):
     ):
         spine = client.app.state.spine
         invoke(client, token, "query_customers", {"filter": "id=8812"})
-        after_http = spine.task_state("4711")["rows_returned_so_far"]
+        after_http = spine.task_state("4711")["rows_charged_so_far"]
         call_tool(client, token, "query_customers", {"filter": "id=8812"})
-        after_mcp = spine.task_state("4711")["rows_returned_so_far"]
+        after_mcp = spine.task_state("4711")["rows_charged_so_far"]
         assert after_http == 1
         assert after_mcp == 2
 
@@ -906,7 +906,7 @@ async def test_concurrent_mcp_calls_for_one_task_do_not_exceed_the_row_bound(tmp
         import json as _json
 
         state = _json.loads(request.content)["input"]["task_state"]
-        allow = state["rows_returned_so_far"] < 1
+        allow = state["rows_charged_so_far"] < 1
         return httpx.Response(
             200,
             json={

@@ -311,7 +311,7 @@ def test_reading_customers_taints_the_task_for_later_calls(tmp_path, signer):
 
     second_input = json.loads(seen[1])["input"]
     assert second_input["task_state"]["data_classes_held"] == ["pii"]
-    assert second_input["task_state"]["rows_returned_so_far"] == 1
+    assert second_input["task_state"]["rows_charged_so_far"] == 1
 
 
 def test_audit_write_failure_refuses_the_action(tmp_path, signer):
@@ -722,7 +722,7 @@ def test_negative_row_count_from_a_backend_is_rejected_not_clamped(tmp_path, sig
     assert records[0]["decision"] == "allow"
 
     state = taint.snapshot("4711")  # token_for()'s default task_id
-    assert state["rows_returned_so_far"] == 0
+    assert state["rows_charged_so_far"] == 0
     assert state["data_classes_held"] == []
 
 
@@ -818,7 +818,7 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
     """The row bound OPA enforces is already_read + about_to_read. That only
     works if task_state in the policy input is the snapshot taken BEFORE
     this call executes. Prove it directly: a single query_customers call
-    that returns 120 rows must still report rows_returned_so_far == 0 to
+    that returns 120 rows must still report rows_charged_so_far == 0 to
     the PDP for that same call, because taint.record_read() has not run
     yet when decide() is invoked."""
     import json
@@ -853,13 +853,13 @@ def test_policy_input_task_state_is_the_pre_execution_snapshot(tmp_path, signer)
 
     assert response.status_code == 200
     assert response.json()["rows"] == 120
-    assert seen[0]["input"]["task_state"]["rows_returned_so_far"] == 0
+    assert seen[0]["input"]["task_state"]["rows_charged_so_far"] == 0
 
 
 # --- Concurrency: the TOCTOU this branch's review pass found while writing
 # docs/THREAT_MODEL.md. warden/broker/app.py's only await must run BEFORE
 # warden/broker/spine.py takes its taint snapshot, or two concurrent calls
-# for the same task can both read a stale rows_returned_so_far and both be
+# for the same task can both read a stale rows_charged_so_far and both be
 # approved even though their combined total breaks the bound -- spine.py's
 # own docstring states the invariant now: the sequence from the snapshot
 # through record_read is synchronous by construction, not by discipline.
@@ -907,7 +907,7 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
     requesting more than half the row bound, so their combined total (60)
     breaks the configured limit (50) unless the second one is denied. This
     is the regression test for the race: with the snapshot taken before the
-    request body is parsed (the bug), both calls read rows_returned_so_far=0
+    request body is parsed (the bug), both calls read rows_charged_so_far=0
     and both get approved -- proven by running this same scenario against
     that ordering, which fails with two 200s and a final count of 60. With
     the fix, the second call's snapshot reflects the first call's already-
@@ -920,7 +920,7 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
         payload = json.loads(request.read())
         task_state = payload["input"]["task_state"]
         target = payload["input"]["target"]
-        total = task_state["rows_returned_so_far"] + target.get("estimated_rows", 0)
+        total = task_state["rows_charged_so_far"] + target.get("estimated_rows", 0)
         if total > max_rows:
             return httpx.Response(
                 200, json={"result": {"allow": False, "deny_reasons": ["rows.bounded"]}}
@@ -965,7 +965,7 @@ async def test_concurrent_reads_for_the_same_task_do_not_exceed_the_row_bound(
 
     # The property that actually matters, independent of which call "won":
     # the recorded total must never exceed the configured bound.
-    final_rows = taint.snapshot("4711")["rows_returned_so_far"]  # token_for()'s default task_id
+    final_rows = taint.snapshot("4711")["rows_charged_so_far"]  # token_for()'s default task_id
     assert final_rows <= max_rows
     assert len(audit.records()) == 2
 

@@ -5,5 +5,5 @@
     "counterparties": ["customer:8812"], "purpose": "support-triage", "task_id": "4711"
   },
   "target": {"estimated_rows": 5000000, "host": "", "kind": "doc", "path": "", "port": 0, "recipients": [], "subjects": []},
-  "task_state": {"data_classes_held": [], "rows_returned_so_far": 0}
+  "task_state": {"data_classes_held": [], "rows_charged_so_far": 0}
 }

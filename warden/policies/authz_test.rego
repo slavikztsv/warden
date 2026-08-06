@@ -29,9 +29,9 @@ principal := {
     "counterparties": ["customer:8812"],
 }
 
-clean_state := {"data_classes_held": [], "rows_returned_so_far": 0}
+clean_state := {"data_classes_held": [], "rows_charged_so_far": 0}
 
-tainted_state := {"data_classes_held": ["pii"], "rows_returned_so_far": 1}
+tainted_state := {"data_classes_held": ["pii"], "rows_charged_so_far": 1}
 
 test_allows_a_permitted_tool if {
     authz.allow with input as {
@@ -113,7 +113,7 @@ test_row_bound_accumulates_across_the_task if {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
         "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 1},
-        "task_state": {"data_classes_held": ["pii"], "rows_returned_so_far": 50},
+        "task_state": {"data_classes_held": ["pii"], "rows_charged_so_far": 50},
     }
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
@@ -255,7 +255,7 @@ test_denies_nested_data_classes if {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "http_fetch"},
         "target": {"kind": "http", "host": "docstore.internal", "port": 443},
-        "task_state": {"data_classes_held": [["pii"]], "rows_returned_so_far": 0},
+        "task_state": {"data_classes_held": [["pii"]], "rows_charged_so_far": 0},
     }
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
@@ -280,7 +280,7 @@ test_denies_a_negative_row_counter if {
         "principal": principal,
         "action": {"type": "tool_call", "tool": "query_customers"},
         "target": {"kind": "db", "subjects": ["*"], "estimated_rows": 5000000},
-        "task_state": {"data_classes_held": [], "rows_returned_so_far": -4999999950},
+        "task_state": {"data_classes_held": [], "rows_charged_so_far": -4999999950},
     }
         with data.purposes as mock_data.purposes
         with data.limits as mock_data.limits
@@ -641,7 +641,7 @@ mislabelled_db_read := {
         "kind": "doc", "host": "", "port": 0, "path": "",
         "estimated_rows": 5000000, "recipients": [], "subjects": [],
     },
-    "task_state": {"data_classes_held": [], "rows_returned_so_far": 0},
+    "task_state": {"data_classes_held": [], "rows_charged_so_far": 0},
 }
 
 test_absent_tool_catalog_denies if {

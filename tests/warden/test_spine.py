@@ -98,7 +98,7 @@ def test_task_state_is_read_only_even_for_an_id_no_token_ever_minted(tmp_path):
 
     assert spine.task_state("nobody-minted-this-id") == {
         "data_classes_held": [],
-        "rows_returned_so_far": 0,
+        "rows_charged_so_far": 0,
     }
     assert "nobody-minted-this-id" not in spine._taint._tasks
 

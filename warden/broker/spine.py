@@ -92,7 +92,7 @@ def _empty_state() -> dict:
     # Nothing aliases it today because _refuse() discards the record it
     # gets back, but the next caller to keep that return value would not
     # know it was holding a landmine.
-    return {"data_classes_held": [], "rows_returned_so_far": 0}
+    return {"data_classes_held": [], "rows_charged_so_far": 0}
 
 
 def args_digest(args: dict) -> str:

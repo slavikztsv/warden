@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 @dataclass
 class _TaskState:
     data_classes_held: set[str] = field(default_factory=set)
-    rows_returned_so_far: int = 0
+    rows_charged_so_far: int = 0
 
 
 class TaintTracker:
@@ -28,7 +28,7 @@ class TaintTracker:
         state = self._tasks[task_id]
         return {
             "data_classes_held": sorted(state.data_classes_held),
-            "rows_returned_so_far": state.rows_returned_so_far,
+            "rows_charged_so_far": state.rows_charged_so_far,
         }
 
     def peek(self, task_id: str) -> dict:
@@ -48,10 +48,10 @@ class TaintTracker:
         """
         state = self._tasks.get(task_id)
         if state is None:
-            return {"data_classes_held": [], "rows_returned_so_far": 0}
+            return {"data_classes_held": [], "rows_charged_so_far": 0}
         return {
             "data_classes_held": sorted(state.data_classes_held),
-            "rows_returned_so_far": state.rows_returned_so_far,
+            "rows_charged_so_far": state.rows_charged_so_far,
         }
 
     def record_read(self, task_id: str, *, data_class: str | None, rows: int) -> None:
@@ -60,4 +60,4 @@ class TaintTracker:
         state = self._tasks[task_id]
         if data_class is not None:
             state.data_classes_held.add(data_class)
-        state.rows_returned_so_far += rows
+        state.rows_charged_so_far += rows

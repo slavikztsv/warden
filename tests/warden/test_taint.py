@@ -7,7 +7,7 @@ def test_a_fresh_task_is_clean():
     tracker = TaintTracker()
     assert tracker.snapshot("4711") == {
         "data_classes_held": [],
-        "rows_returned_so_far": 0,
+        "rows_charged_so_far": 0,
     }
 
 
@@ -29,7 +29,7 @@ def test_rows_accumulate_across_calls():
     tracker = TaintTracker()
     for _ in range(50):
         tracker.record_read("4711", data_class="pii", rows=1)
-    assert tracker.snapshot("4711")["rows_returned_so_far"] == 50
+    assert tracker.snapshot("4711")["rows_charged_so_far"] == 50
 
 
 def test_tasks_are_isolated_from_each_other():
@@ -37,7 +37,7 @@ def test_tasks_are_isolated_from_each_other():
     tracker.record_read("4711", data_class="pii", rows=10)
     assert tracker.snapshot("9999") == {
         "data_classes_held": [],
-        "rows_returned_so_far": 0,
+        "rows_charged_so_far": 0,
     }
 
 
@@ -53,7 +53,7 @@ def test_negative_rows_are_rejected():
     tracker = TaintTracker()
     with pytest.raises(ValueError):
         tracker.record_read("4711", data_class="pii", rows=-5000000)
-    assert tracker.snapshot("4711")["rows_returned_so_far"] == 0
+    assert tracker.snapshot("4711")["rows_charged_so_far"] == 0
 
 
 def test_peek_does_not_create_an_entry_for_an_unseen_task():
@@ -65,7 +65,7 @@ def test_peek_does_not_create_an_entry_for_an_unseen_task():
     tracker = TaintTracker()
     assert tracker.peek("never-seen") == {
         "data_classes_held": [],
-        "rows_returned_so_far": 0,
+        "rows_charged_so_far": 0,
     }
     assert "never-seen" not in tracker._tasks
 
@@ -75,7 +75,7 @@ def test_peek_reports_the_same_state_snapshot_would():
     tracker.record_read("4711", data_class="pii", rows=3)
     assert tracker.peek("4711") == tracker.snapshot("4711") == {
         "data_classes_held": ["pii"],
-        "rows_returned_so_far": 3,
+        "rows_charged_so_far": 3,
     }
 
 
@@ -84,7 +84,7 @@ def test_snapshot_is_not_a_live_view_of_internal_state():
     tracker.record_read("4711", data_class="pii", rows=1)
     snap = tracker.snapshot("4711")
     snap["data_classes_held"].append("exfiltrated")
-    snap["rows_returned_so_far"] = 999999
+    snap["rows_charged_so_far"] = 999999
     fresh = tracker.snapshot("4711")
     assert fresh["data_classes_held"] == ["pii"]
-    assert fresh["rows_returned_so_far"] == 1
+    assert fresh["rows_charged_so_far"] == 1

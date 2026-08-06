@@ -271,7 +271,7 @@ class NarratedPDP:
         target = input_doc["target"]
 
         stage("⑤", "THE BROKER ADDS WHAT ONLY IT KNOWS")
-        show("rows read so far this task", state["rows_returned_so_far"])
+        show("rows read so far this task", state["rows_charged_so_far"])
         show("data classes held", state["data_classes_held"] or "[] (nothing sensitive yet)")
         if target["kind"] == "db":
             show("rows this query would return", target["estimated_rows"])
@@ -410,7 +410,7 @@ class NarratedTaint:
         if before != after:
             stage("⑩", "THE TASK'S STATE CHANGES")
             show("data classes held", f"{before['data_classes_held']} → {after['data_classes_held']}")
-            show("rows read", f"{before['rows_returned_so_far']} → {after['rows_returned_so_far']}")
+            show("rows read", f"{before['rows_charged_so_far']} → {after['rows_charged_so_far']}")
             if "pii" in after["data_classes_held"] and "pii" not in before["data_classes_held"]:
                 why(
                     "This is the pivotal line of the whole run. From here on the "
@@ -1199,7 +1199,7 @@ def _steps_from(scratch: Path) -> list[dict]:
             "decision": record["decision"],
             "rule": record["rule"],
             "held": list(record["task_state"]["data_classes_held"]),
-            "rows_before": record["task_state"]["rows_returned_so_far"],
+            "rows_before": record["task_state"]["rows_charged_so_far"],
         }
         for record in AuditLog(audit_file).records()
     ]

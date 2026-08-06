@@ -39,6 +39,27 @@ DEMO_CASES = [
 ]
 
 
+def task_state(record: dict) -> dict:
+    """The record's task_state, in the vocabulary the CURRENT policy speaks.
+
+    The frozen log predates P2·A's rename of `rows_returned_so_far` to
+    `rows_charged_so_far`, and it stays that way on purpose: it is a real
+    hash-chained log captured from a real run, and rewriting it to look like
+    today's broker wrote it is precisely the edit tests/golden/README.md
+    forbids. So the translation lives here, in the derivation, rather than in
+    the artifact.
+
+    Renaming rather than adding: a corpus input carrying the old key would be
+    denied `input.malformed` by every rule that reads the new one -- loudly,
+    which is the property the rename was chosen for, and useless as a
+    regression corpus.
+    """
+    state = dict(record["task_state"])
+    if "rows_returned_so_far" in state:
+        state["rows_charged_so_far"] = state.pop("rows_returned_so_far")
+    return state
+
+
 def policy_input(record: dict) -> dict:
     return {
         "principal": {
@@ -53,7 +74,7 @@ def policy_input(record: dict) -> dict:
             "args_digest": record["args_digest"],
         },
         "target": record["target"],
-        "task_state": record["task_state"],
+        "task_state": task_state(record),
     }
 
 

@@ -105,7 +105,7 @@ that second file first; it is under thirty lines.
  "action":    {"type":"tool_call","tool":"http_fetch"},
  "target":    {"kind":"http","host":"attacker.example","port":80,"path":"/collect",
                "estimated_rows":0,"recipients":[]},
- "task_state":{"data_classes_held":[],"rows_returned_so_far":0}}
+ "task_state":{"data_classes_held":[],"rows_charged_so_far":0}}
 EOF
 ```
 
@@ -130,7 +130,7 @@ The same request, but to `docstore.internal`, which **is** on the approved list:
  "action":    {"type":"tool_call","tool":"http_fetch"},
  "target":    {"kind":"http","host":"docstore.internal","port":80,"path":"/feedback",
                "estimated_rows":0,"recipients":[]},
- "task_state":{"data_classes_held":[],"rows_returned_so_far":0}}
+ "task_state":{"data_classes_held":[],"rows_charged_so_far":0}}
 EOF
 ```
 
@@ -146,7 +146,7 @@ putting `"pii"` in `data_classes_held`:
  "action":    {"type":"tool_call","tool":"http_fetch"},
  "target":    {"kind":"http","host":"docstore.internal","port":80,"path":"/feedback",
                "estimated_rows":0,"recipients":[]},
- "task_state":{"data_classes_held":["pii"],"rows_returned_so_far":1}}
+ "task_state":{"data_classes_held":["pii"],"rows_charged_so_far":1}}
 EOF
 ```
 
@@ -207,7 +207,7 @@ def record(decision, rule):
         target={"kind": "doc", "host": "", "port": 0, "path": "x",
                 "estimated_rows": 0, "recipients": []},
         args_digest="sha256:demo", decision=decision, rule=rule,
-        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
         policy_bundle_digest="sha256:demo")
 
 record("allow", "allow")

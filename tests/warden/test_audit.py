@@ -14,7 +14,7 @@ def _append(log, **overrides):
         args_digest="sha256:aaa",
         decision="allow",
         rule="tools.allowed",
-        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
         policy_bundle_digest="sha256:bbb",
     )
     fields.update(overrides)
@@ -127,7 +127,7 @@ def test_written_lines_are_key_sorted(tmp_path):
         args_digest="sha256:d",
         decision="allow",
         rule="allow",
-        task_state={"data_classes_held": [], "rows_returned_so_far": 0},
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
         policy_bundle_digest="sha256:b",
     )
     line = (tmp_path / "audit.jsonl").read_text().strip()
