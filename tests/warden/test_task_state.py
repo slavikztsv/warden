@@ -190,6 +190,43 @@ def test_charging_an_expired_task_starts_it_clean():
     assert pre == {"data_classes_held": [], "rows_charged_so_far": 0}
 
 
+def test_settling_an_expired_task_does_not_resurrect_it():
+    """Eviction is a reset in BOTH directions, and only one of them was
+    tested.
+
+    test_charging_an_expired_task_starts_it_clean covers a CHARGE arriving
+    after expiry. This covers a settle arriving after it: the call really did
+    read those rows, but the task it belonged to is gone, and committing them
+    would bring a dead task's budget back from nothing.
+
+    It matters far more for a store whose writes auto-create. Redis's HINCRBY
+    and HSET both do, so an unguarded settle rebuilds the hash WITHOUT the
+    `x` field -- and a task-state entry with no expiry is an immortal key
+    holding a budget nothing will ever collect. Found by mutation: removing
+    that store's EXISTS guard left every other case in the suite green.
+    """
+    s = store()
+    s.charge("4711", charge_id="c1", rows=40, data_class="pii", now=1000,
+             expires_at=2000)
+    s.reconcile("4711", "c1", rows=40, data_class="pii", now=3000)
+    assert s.peek("4711", now=3000) == {
+        "data_classes_held": [], "rows_charged_so_far": 0,
+    }
+
+
+def test_abandoning_an_expired_task_does_not_resurrect_it():
+    """The same, for the ending that KEEPS the class. abandon() taints the
+    task explicitly, so an unguarded one would recreate an evicted task
+    holding pii and nothing else -- the worst shape to bring back."""
+    s = store()
+    s.charge("4711", charge_id="c1", rows=40, data_class="pii", now=1000,
+             expires_at=2000)
+    s.abandon("4711", "c1", data_class="pii", now=3000)
+    assert s.peek("4711", now=3000) == {
+        "data_classes_held": [], "rows_charged_so_far": 0,
+    }
+
+
 def test_peek_does_not_create_an_entry_for_an_unseen_task():
     """Spine.task_state and proxy.authorize_connect both read through here with
     an arbitrary id and no minted token behind it. Creating a phantom entry per

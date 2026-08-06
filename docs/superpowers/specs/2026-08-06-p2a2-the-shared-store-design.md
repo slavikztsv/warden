@@ -195,10 +195,27 @@ against 7.4.10 during the spike.
 | **Two brokers share one budget** | Ten charges alternating across two independent clients | point the two at different Redis DBs | **prefix [0,10..90], shared total 100** |
 | `peek` creates nothing | Peek an id never charged; assert no key exists | let `peek` run the eviction prelude | **no key created** |
 | An evicted task starts clean | Charge past `x`; assert the pre-state is zero | drop the prelude's `DEL` | passing |
-| A settle cannot resurrect an evicted task | Reconcile a task past `x`; assert no key | drop the `EXISTS` guard (`HINCRBY` auto-creates, with no `x`, so no TTL — an immortal key) | passing |
+| A settle cannot resurrect an evicted task | `test_settling_an_expired_task_does_not_resurrect_it` and its `abandon` twin, **written because this row was false** | drop the `EXISTS` guard | **the mutation initially passed** — see below |
 | The key TTL never collects a live task | Charge with a logical clock far from wall time | `EXPIREAT` instead of `EXPIRE` | **caught the real bug** |
 | A store outage refuses and RECORDS on the proxy | Unreachable Redis; assert 503 **and** an audit record | catch it as `except Exception` | to build |
-| Sequential runs are unchanged | The golden corpus and `warden-demo explain` | — (must *not* move) | to run |
+| Sequential runs are unchanged | The golden corpus and `warden-demo explain` | — (must *not* move) | unchanged |
+
+**One row of that table was a claim rather than a result, and the mutation is
+what caught it.** "A settle cannot resurrect an evicted task" was asserted as
+`passing` when nothing tested it: the in-memory suite covers a *charge*
+arriving after expiry (`test_charging_an_expired_task_starts_it_clean`) and
+had no case at all for a *settle* arriving after one. Removing the Redis
+store's `EXISTS` guard left all 28 cases green.
+
+The consequence is the worst shape available. `HINCRBY` and `HSET`
+auto-create, so an unguarded settle rebuilds the hash **without** the `x`
+field — measured: `TTL: -1`, contents `{k:pii, c:40}`. An evicted task comes
+back holding PII, with a budget no expiry will ever collect.
+
+Two cases were added to `tests/warden/test_task_state.py` — the shared
+contract, so both stores are held to it — and the mutation now reddens both.
+The lesson is the one this repository already writes down: a proof table is a
+list of intentions until each row has been made to fail.
 
 ## What this does not do
 
