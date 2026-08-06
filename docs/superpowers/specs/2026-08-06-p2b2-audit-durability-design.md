@@ -5,7 +5,11 @@ reviewed after the first draft — see *What the review changed*.
 **Sequenced by:** [docs/ROADMAP.md](../../ROADMAP.md) § B, item B2 — "`os.fsync`
 before returning from `append()`, with the durability level configurable and
 the default being the safe one". Size S.
-**Covers:** B2 only, in one commit.
+**Covers:** B2 only, in two commits — the mechanism, then the config surface
+and the docs. One was planned; the split happened because the mechanism is
+independently green and independently rejectable (the log becomes durable, with
+no way to turn it off), and a reviewer should be able to reject either half
+without the other.
 **Deliberately does not cover:** B3 (rotation), B4, B5 (the cross-host case and
 the pluggable sink), C2, and the process model — and therefore § A's exit
 criterion, which still has nothing to start a second worker with. See *What
@@ -545,6 +549,43 @@ the implementer:
   must name distinct strings and each mutation must assert `count(old) == 1`.
 - **Read the failing test names out of pytest**, rather than trusting this
   table.
+
+---
+
+## What the mutation pass found
+
+Fourteen mutations across the fifteen rows (rows 1–2 and 3–4 share a mutation
+each; row 15 got one per shipped file). **All fourteen ended RED**, but two of
+them did not on the first pass, and both are worth more than the table.
+
+**One real gap, and it is the recorded trap exactly.**
+`test_a_failed_fsync_refuses_the_append_as_an_oserror` **passed** with the file
+`fsync`'s failure swallowed — the precise bug it names. Its log was fresh, so
+the append under test was record 1, so decision 5's *directory* `fsync` also
+fired, and the patched `os.fsync` raised there instead. The test asserted the
+right thing about the wrong syscall. Fixed by pre-seeding one record, which
+makes the append under test record 2 and leaves the file `fsync` as the only
+one that fires; the pre-seed now carries a comment saying it is load-bearing
+rather than tidiness, because it looks exactly like tidiness.
+
+**One broken mutation wearing a gap's clothes — a new trap.** M7 deleted the
+directory-`fsync` block and left `if seq == 0:` with only comments beneath it.
+That is an `IndentationError`, so `test_audit.py` never imported, so pytest
+reported `ERROR` and not `FAILED` — and a harness scanning for `^FAILED`
+reported *nothing reddened*, which is indistinguishable from a genuine gap. A
+mutation must leave compilable code (`pass`), and the harness must treat a
+collection error as a broken mutation rather than as a result. Both fixed.
+
+**Two collisions, recorded rather than tidied.** M1 (the default is no longer
+safe) reddened nine tests, including `test_loads_every_field` and
+`test_control_loads_every_field` — the two whole-config assertions that were
+*extended* for exactly this reason. M5 (the log is never fsynced) reddened
+three, because two other tests legitimately depend on the file `fsync`
+happening. Neither is a defect; both are why the pass reads the failing names
+out of pytest instead of trusting the table.
+
+**Nothing reddened nothing.** Every row has been watched go red and green
+again.
 
 ---
 

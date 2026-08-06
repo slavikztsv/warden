@@ -526,9 +526,18 @@ def test_a_failed_fsync_refuses_the_append_as_an_oserror(tmp_path):
     the same rule _head_from_tail states for a torn trailing line. The
     consequence is stated rather than fixed: the file over-reports by one
     record, and the enforcement failed in the safe direction.
+
+    PRE-SEEDED, and that is load-bearing rather than tidiness. Written against
+    a fresh log this test passed with the file fsync's failure SWALLOWED --
+    the exact bug it names -- because a fresh log makes the append under test
+    record 1, which also fsyncs the parent directory, and the patched fsync
+    raised there instead. The mutation pass caught it; the assertion did not.
+    One existing record makes this record 2, so the file fsync is the only one
+    that fires.
     """
     path = tmp_path / "audit.jsonl"
     log = AuditLog(path)
+    _append(log)
 
     def failing(fd: int) -> None:
         raise OSError("input/output error")
@@ -536,7 +545,7 @@ def test_a_failed_fsync_refuses_the_append_as_an_oserror(tmp_path):
     with patch.object(os, "fsync", failing):
         with pytest.raises(OSError, match="input/output error"):
             _append(log)
-    assert len(log.records()) == 1
+    assert len(log.records()) == 2
 
 
 _LOCK_PROBE = """
