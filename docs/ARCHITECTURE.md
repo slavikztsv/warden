@@ -119,8 +119,8 @@ the build if a vendor SDK ever appears among them).
 **State.** All security state is in-process and in-memory: data classes held
 and row budgets in `InMemoryTaskStateStore`, keyed by `task_id`. The only
 durable state is the audit log and the SQLite database. There is no queue and
-no asynchronous decision path — a decision is made, recorded and acted on
-within one request.
+no deferred decision path — a decision is made, recorded and acted on within
+one request, on one thread.
 
 **Concurrency.** Two calls for one task cannot both pass the same budget,
 because a call *charges* its estimate before the decision rather than reading
@@ -131,9 +131,17 @@ by `rows.bounded`.
 
 This used to be a property of the call graph instead — the handler's only
 `await` ran before the snapshot, and everything after it was synchronous — and
-that argument is no longer load-bearing. The sequence is still synchronous
-today, but making it async (A6) would remove a performance ceiling rather than
-a control.
+that argument is no longer load-bearing. A6 has since acted on that: each
+front door, and the proxy's `authorize_connect`, now hands the sequence to a
+threadpool the broker owns (`[broker] worker_threads`, default 16), so a slow
+adapter no longer stalls every other request and every `CONNECT` sharing the
+loop. The sequence itself is unchanged and still synchronous — what moved is
+which thread runs it, and the control was never the thread.
+
+That pool is the broker's concurrency limit, and it is shared by both
+surfaces. A burst of slow tool calls therefore delays `CONNECT`
+authorizations; a delayed `CONNECT` waits, and is never allowed on a decision
+that was not made.
 
 ---
 
@@ -277,7 +285,7 @@ what the *task* is carrying, which is a property no single request contains.
 | Storage | In-memory in the broker process |
 | What the number means | Rows **charged**: settled reads plus reservations still in flight. A reserved-but-unused row counts until reconciliation, deliberately |
 | Expiry | Two clocks. A reservation expires after `max_in_flight_seconds` (60), so a broker killed mid-call self-heals. A whole task expires `ttl_grace_seconds` (3600) after its last token's `exp` |
-| Concurrency | Safe within a process, by an atomic charge rather than by the handler happening not to suspend |
+| Concurrency | Safe within a process, by an atomic charge rather than by the handler happening not to suspend — which is what let A6 move the sequence onto a threadpool without touching it |
 | Distributed | Not supported. Two brokers share no store, so horizontal scaling still needs one that is not built |
 
 ---

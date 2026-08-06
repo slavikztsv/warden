@@ -15,6 +15,10 @@
 [broker]
 listen       = "0.0.0.0:8080"
 proxy_listen = "0.0.0.0:3128"
+# How many tool calls and CONNECT authorizations may be in flight at once.
+# One pool serves both surfaces. Left out entirely it defaults to 16; named
+# here so the demo's config shows the knob rather than hiding it.
+worker_threads = 16
 
 [identity]
 public_key = "/data/agent.pub"

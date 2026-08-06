@@ -98,10 +98,24 @@ across anything slow: the store's atomic charge is the whole of the ordering.
 A6 may now make the spine async without removing a control, because the control
 is no longer the synchrony.
 
-**The audit log is O(n²) and is not crash-durable.** `_head()` calls `records()`,
-which reads and JSON-parses the entire file, on **every append**
+**A6 then did the second, and the ceiling above is gone.** Every call site —
+both front doors' spine calls and the proxy's `authorize_connect` — now awaits
+the still-synchronous sequence on a pool the broker owns, so a slow adapter no
+longer stalls the loop that every other request and every `CONNECT` shares.
+Two things did *not* change, and both matter: the spine is still synchronous
+(so nothing that implements or wraps a broker interface had to move), and two
+brokers still keep two budgets (that is A2). The paragraphs above are kept as
+the account of why the work was sequenced this way, not as a description of
+the code.
+
+**The audit log is ~~O(n²)~~ and is not crash-durable.** ~~`_head()` calls
+`records()`, which reads and JSON-parses the entire file, on **every append**
 ([`audit.py:64`](../warden/broker/audit.py)). Ten thousand decisions means ten
-thousand full-file parses. Separately, `append()` calls `handle.flush()` with no
+thousand full-file parses.~~ **Closed by B1**, which landed in front of A6
+because offloading onto a lock held across a growing file parse would have
+relocated the ceiling rather than removed it: 0.76ms per append at 100
+records, 37.1ms at 4000. The head is now read once, on the first append, and
+advanced by each write. Separately, `append()` calls `handle.flush()` with no
 `os.fsync()` — so "the decision is written down **before** anything happens", the
 property the whole design turns on, is durable against a process crash but not
 against a host loss. The claim is stronger than the code. Its `threading.Lock` is
@@ -219,7 +233,7 @@ The load-bearing one. Everything in the "production" definition depends on it.
 | A3 | Change budget semantics from *count what was returned* to **reserve the estimate, then reconcile the actual**. **Done** — and it covers `data_classes_held` too, which this table never mentioned and which had the identical hole | M |
 | A4 | Release a reservation when `execute()` fails, so a backend outage does not consume a task's budget. **Done** — and the data class is deliberately NOT released with it | S |
 | A5 | TTL eviction keyed on token expiry, closing the unbounded-growth leak. **Done** — plus a second, shorter clock: a per-reservation deadline, so a broker killed mid-call self-heals in seconds rather than at task end | S |
-| A6 | Make the spine genuinely async: `httpx.AsyncClient` in the PDP, adapters off the loop via a threadpool, `authorize_connect` awaitable | M |
+| A6 | ~~Make the spine genuinely async: `httpx.AsyncClient` in the PDP, adapters off the loop via a threadpool, `authorize_connect` awaitable~~ **Done, by one mechanism instead of three** — every call site hands the still-synchronous spine to a threadpool the broker owns. The property this line wanted (nothing blocking the loop) is delivered; the interface churn it implied is not. See below | M |
 
 **Exit:** four workers behind a load balancer, a concurrency test that fires N
 simultaneous reads at one `task_id` and asserts the budget is honoured exactly
@@ -255,6 +269,32 @@ four adapter kinds. It is monotonic under failure but not under refusal: a
 denied call leaves no trace (or one refusal could poison a task deliberately),
 while a failed `execute()` keeps the class and returns the rows.
 
+**A6 was delivered as an offload, not as a conversion, and the roadmap line
+above was wrong about the mechanism rather than about the goal.** Converting
+`PolicyDecisionPoint`, the four adapters and `authorize_connect` to async
+would change interfaces that other things implement and wrap — including the
+four `Narrated*` wrappers in [demo/cli/explain.py](../demo/cli/explain.py),
+which forward hand-written subsets and rot silently; commit `794d876` is that
+bug. Two of the conversion's failure modes are also invisible to the gates:
+`Spine._settle`'s `operation` parameter is unannotated, so a coroutine passed
+through it is `Any` to `mypy` and its `except Exception: pass` swallows the
+result; and a half-converted PDP is caught by `pdp.py`'s own `except TypeError`
+and returns a *policy denial*, writing one into the tamper-evident chain for
+every call while the broker reports healthy.
+
+Awaiting the synchronous spine on a pool at each call site has neither mode,
+and it makes A2's sync-versus-async client question moot before it is asked.
+The cost is one roadmap line's literal wording. The pool is the broker's own
+and sized by `[broker] worker_threads`, because asyncio's default executor is
+`min(32, cpu_count + 4)` — invisible and machine-dependent, which is not a
+limit this product gets to have undocumented.
+
+**B1 was pulled forward out of § B to land first**, because without it A6
+delivers nothing measurable: offloading onto `AuditLog`'s lock, which was held
+across a full re-parse of the log on every append, would have moved the ceiling
+rather than removed it. Measured before the change: 0.76ms per append at 100
+records, 8.0ms at 1000, 37.1ms at 4000 — and 71.8s for 4000 appends.
+
 **The field is now `rows_charged_so_far`.** The quantity is different and
 non-monotonic — a concurrent call records a total that a later reconcile brings
 back down — and a name promising otherwise sits in the one artifact whose pitch
@@ -265,7 +305,7 @@ directions: either half reading the other's spelling denies `input.malformed`.
 
 | | Work | Size |
 |---|---|---|
-| B1 | Cache the chain head in memory after one read at boot; stop re-parsing the file per append | S |
+| B1 | ~~Cache the chain head in memory after one read at boot~~; stop re-parsing the file per append. **Done**, pulled in front of A6 — and read on the first *append* rather than "at boot", because `warden verify-chain` exists to be pointed at a corrupt log and [cli/replay.py](../warden/cli/replay.py) constructs the `AuditLog` before the guard that reports one. A constructor that parsed the file would make that tool traceback instead of doing its job | S |
 | B2 | `os.fsync` before returning from `append()`, with the durability level configurable and the default being the safe one | S |
 | B3 | Segment rotation with an anchor record carrying the previous segment's head hash, so a rotated chain still verifies end to end | M |
 | B4 | Teach `warden verify-chain` about segments | S |

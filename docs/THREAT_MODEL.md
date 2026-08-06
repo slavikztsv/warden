@@ -91,6 +91,14 @@ quietly fixed. Each is a real property of the system as shipped.
   spine's own concurrency can reopen it, because the ordering is now the
   store's atomicity rather than the absence of an `await`.
 
+  That prediction has since been cashed. A6 moved the whole sequence off the
+  event loop onto a threadpool — both front doors and the proxy's
+  `authorize_connect` — and the budget did not move with it: the exit-criterion
+  test now runs through *both* surfaces, and reverting the charge to a plain
+  read allows all ten callers through either one. The sentence above is
+  therefore the same sentence, with in-process concurrency now real rather
+  than hypothetical.
+
   Two consequences of charging, stated because they are deliberate rather than
   incidental. A task's budget is briefly **stricter** than its reads: a
   reserved-but-unused row counts until reconciliation, so a task that reserved

@@ -24,8 +24,16 @@ against anything real.
 
 ### Required
 
-- Run the broker with **one worker**. The row budget has no lock and relies on
-  a single event loop.
+- Run the broker with **one worker**. The row budget lives in that process, so
+  two brokers keep two budgets rather than sharing one. *Within* a process it
+  is locked and charged atomically, so this is a limit on scaling out, not a
+  race between concurrent requests — see
+  [THREAT_MODEL.md](THREAT_MODEL.md).
+- Size `[broker] worker_threads` (default 16) for the deployment. It is the
+  broker's concurrency limit: how many tool calls and `CONNECT`
+  authorizations can be in flight at once. One pool serves both surfaces, so
+  a burst of slow tool calls delays `CONNECT` decisions — which fails closed,
+  a queued `CONNECT` waits rather than being allowed.
 - Keep the agent on a network with no gateway. Enforcement is bypassed entirely
   by any direct route to a protected system.
 - Keep the signing key out of the enforcement point. The broker must load the
