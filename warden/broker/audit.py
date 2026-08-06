@@ -28,9 +28,16 @@ GENESIS_HASH = "0" * 64
 # A constructor default rather than a config knob, deliberately, and unlike
 # A6's `worker_threads`: that one was invisible AND machine-dependent
 # (asyncio's min(32, cpu_count + 4)), which is not a limit this product gets
-# to leave undocumented. This one is a fixed constant in a single place. It
-# becomes a knob when B2 adds `[audit].durability`, so the config surface
-# changes once instead of twice.
+# to leave undocumented. This one is a fixed constant in a single place.
+#
+# B2 arrived, added `[audit].durability`, and deliberately did NOT bring this
+# with it. Bundling would have changed the config surface once instead of
+# twice -- a real argument, and a "while we're here" one. The substantive test
+# is whether anything now NEEDS the timeout configurable, and nothing does:
+# five seconds was ~47,000x an append before B2 and is ~2,900x one after, and
+# the worst contention B2 creates -- sixteen threads at ~1.7ms each, ~27ms --
+# is still two orders of magnitude inside it. Adding a knob nobody needs to
+# justify a knob somebody does is backwards.
 _LOCK_TIMEOUT_SECONDS = 5.0
 _LOCK_POLL_SECONDS = 0.005
 
@@ -42,6 +49,28 @@ _LOCK_POLL_SECONDS = 0.005
 # A fixed window finds no line boundary inside a record larger than itself,
 # so it would fail on exactly the record a probe produces.
 _TAIL_WINDOW_BYTES = 4096
+
+# The two durability levels, and what each promises.
+#
+#   "fsync" -- the record is on STABLE STORAGE before append() returns. It
+#     survives the host losing power, which is what makes README's "write the
+#     decision down, BEFORE anything happens" true rather than nearly true.
+#   "flush" -- the record is in the kernel's page cache before append()
+#     returns. It survives this process being killed, not the host. This is
+#     what shipped before B2, kept reachable and named.
+#
+# Named for the SYSCALL rather than for a promise ("safe"/"fast"): an operator
+# choosing a level is choosing what survives what, and calling the other one
+# "unsafe" would overstate it -- page-cache durability is a real property, and
+# it is what this system shipped with until now.
+#
+# Two levels, not three. `fdatasync` is the usual cheaper `fsync`, and it is
+# measured indistinguishable here -- 1687us against 1649us, inside the noise --
+# because an append CHANGES THE FILE SIZE, so the metadata flush it exists to
+# skip happens anyway. A level that costs a decision and buys nothing
+# measurable is worse than no level.
+DURABILITY_LEVELS = ("fsync", "flush")
+DEFAULT_DURABILITY = "fsync"
 
 # Field order is fixed so the hash is reproducible across processes.
 _BODY_FIELDS = (
@@ -154,8 +183,28 @@ def _head_from_tail(handle: BinaryIO) -> tuple[int, str]:
 
 
 class AuditLog:
-    def __init__(self, path: Path, *, lock_timeout: float = _LOCK_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        lock_timeout: float = _LOCK_TIMEOUT_SECONDS,
+        durability: str = DEFAULT_DURABILITY,
+    ) -> None:
+        if durability not in DURABILITY_LEVELS:
+            # Never a fallback, in EITHER direction. Falling back to "flush"
+            # silently weakens the log, which is the failure config/schema.py's
+            # parse_tool_schema exists to prevent; falling back to "fsync"
+            # silently ignores what a caller wrote, which is how a deployment
+            # acquires a throughput profile nobody chose.
+            raise ValueError(
+                f"audit durability must be one of {DURABILITY_LEVELS}, "
+                f"got {durability!r}"
+            )
         self.path = Path(path)
+        # PUBLIC, alongside `path`: broker/__main__.py's build() returns its
+        # BrokerComponents, so a test can assert that the configured level
+        # actually reached the log rather than mocking the constructor call.
+        self.durability = durability
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # The IN-PROCESS half of the exclusion. `append` also takes an flock on
         # the file itself, which would be sufficient on its own -- two file
@@ -242,8 +291,39 @@ class AuditLog:
                 # Written and FLUSHED inside the lock. Releasing before the
                 # bytes are out would let the next writer read a tail that is
                 # still in a userspace buffer.
+                #
+                # The fsync below is NOT what makes that true, and it is worth
+                # saying so because this is the kind of thing that gets
+                # misremembered as load-bearing: B6's inter-process correctness
+                # is the PAGE CACHE serving the next process's tail read, which
+                # flush() is what provides. fsync is about power loss. Deleting
+                # the fsync would not break B6; deleting the flush would.
                 handle.write((json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
                 handle.flush()
+                if self.durability == "fsync":
+                    # B2. flush() reaches the kernel; this reaches the device.
+                    #
+                    # INSIDE the lock, which the `with` gives for free -- the
+                    # flock is released by the close at the end of the block.
+                    # Releasing it early to shorten the ~1.7ms hold would let
+                    # the next writer chain onto a record that is still only in
+                    # the page cache, and a content-linked chain that loses N
+                    # while keeping N+1 has a prev_hash nobody can supply.
+                    os.fsync(handle.fileno())
+                    if seq == 0:
+                        # This append CREATED the file -- `seq` is the head's,
+                        # so zero means the log had no records. fsync on the
+                        # file makes its CONTENTS durable and says nothing
+                        # about the DIRECTORY ENTRY that makes it findable, so
+                        # without this a power loss can lose the whole log,
+                        # including record 1, whose append() already returned
+                        # and whose action therefore went ahead. ~1.4ms, once
+                        # per log, on the one append that needs it.
+                        directory = os.open(self.path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory)
+                        finally:
+                            os.close(directory)
                 return record
 
     def verify_chain(self) -> tuple[bool, int | None]:

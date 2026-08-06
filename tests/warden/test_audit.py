@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -433,3 +434,157 @@ def test_a_held_lock_times_out_as_an_oserror(tmp_path):
     finally:
         holder.kill()
         holder.wait(timeout=30)
+
+
+# --- B2: durability -------------------------------------------------------
+#
+# Designed in docs/superpowers/specs/2026-08-06-p2b2-audit-durability-design.md.
+# These assert the SYSCALL, not the physics: there is no way to power-cycle a
+# host from pytest. What they pin is that the log's own descriptor is fsynced,
+# on the append, before append() returns -- and that the parent directory is
+# fsynced on the one append that creates the file.
+
+
+def _fsync_spy(seen: list[int]):
+    """Records the inode behind every fsynced fd, then really fsyncs."""
+    real = os.fsync
+
+    def spy(fd: int) -> None:
+        seen.append(os.fstat(fd).st_ino)
+        real(fd)
+
+    return spy
+
+
+def test_an_append_fsyncs_the_log_before_returning(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    _append(log)  # record 1 also fsyncs the directory; keep this append clean
+    seen: list[int] = []
+    with patch.object(os, "fsync", _fsync_spy(seen)):
+        _append(log)
+    assert os.stat(path).st_ino in seen
+
+
+def test_flush_durability_does_not_fsync(tmp_path):
+    """The level that shipped before B2, kept reachable and named."""
+    log = AuditLog(tmp_path / "audit.jsonl", durability="flush")
+    seen: list[int] = []
+    with patch.object(os, "fsync", _fsync_spy(seen)):
+        record = _append(log)
+    assert seen == []
+    # Still a real, readable, chained record -- "flush" weakens durability and
+    # nothing else.
+    assert record["seq"] == 1
+    assert log.records() == [record]
+    assert log.verify_chain() == (True, None)
+
+
+def test_the_first_record_also_fsyncs_the_directory(tmp_path):
+    """fsync on the file makes its CONTENTS durable, not its directory entry.
+
+    Without this, a power loss shortly after a log is first created loses the
+    whole file -- including record 1, whose append() already returned and whose
+    action therefore went ahead.
+    """
+    path = tmp_path / "audit.jsonl"
+    seen: list[int] = []
+    with patch.object(os, "fsync", _fsync_spy(seen)):
+        _append(AuditLog(path))
+    assert os.stat(path).st_ino in seen
+    assert os.stat(tmp_path).st_ino in seen
+
+
+def test_later_records_do_not_fsync_the_directory(tmp_path):
+    """Once per log, on the append that creates it -- not 1.4ms on every one."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    _append(log)
+    seen: list[int] = []
+    with patch.object(os, "fsync", _fsync_spy(seen)):
+        _append(log)
+    assert os.stat(tmp_path).st_ino not in seen
+
+
+def test_an_unrecognised_durability_is_refused_by_the_constructor(tmp_path):
+    """Never a fallback, in EITHER direction. Falling back to "flush" silently
+    weakens the log; falling back to "fsync" silently ignores what was written.
+    """
+    with pytest.raises(
+        ValueError,
+        match=r"audit durability must be one of \('fsync', 'flush'\), got 'fsyncc'",
+    ):
+        AuditLog(tmp_path / "audit.jsonl", durability="fsyncc")
+
+
+def test_a_failed_fsync_refuses_the_append_as_an_oserror(tmp_path):
+    """Into the machinery that already exists: spine.py catches OSError at all
+    four of its _append sites and control.py catches it around record_mint, so
+    a failing disk becomes a 503 with nothing executed.
+
+    The written line STAYS. This log does not delete bytes it did not like --
+    the same rule _head_from_tail states for a torn trailing line. The
+    consequence is stated rather than fixed: the file over-reports by one
+    record, and the enforcement failed in the safe direction.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+
+    def failing(fd: int) -> None:
+        raise OSError("input/output error")
+
+    with patch.object(os, "fsync", failing):
+        with pytest.raises(OSError, match="input/output error"):
+            _append(log)
+    assert len(log.records()) == 1
+
+
+_LOCK_PROBE = """
+import fcntl, sys
+handle = open(sys.argv[1], "a+b")
+try:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("held")
+else:
+    print("free")
+"""
+
+
+def test_the_fsync_happens_while_the_lock_is_still_held(tmp_path):
+    """The load-bearing ordering, and the reason the lock hold went 16x.
+
+    Releasing the flock before the fsync would let writer B read the tail,
+    chain onto record N and have its own append() return while N is still only
+    in the page cache. The chain is CONTENT-linked, so losing N while keeping
+    N+1 leaves a prev_hash pointing at a record nobody has -- unrepairable by
+    replay, backup or anything else, and the precise failure B6 rejected the
+    Redis-CAS design for.
+
+    A fresh interpreter, never multiprocessing: tests/ has no __init__.py and
+    pytest.ini sets --import-mode=importlib, so a spawn child cannot re-import
+    the test module, and forking a multi-threaded pytest process is a
+    documented deadlock hazard.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    _append(log)  # so the append under test fires exactly one fsync
+
+    seen: list[str] = []
+    real = os.fsync
+
+    def probing(fd: int) -> None:
+        seen.append(
+            subprocess.run(
+                [sys.executable, "-c", _LOCK_PROBE, str(path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            ).stdout.strip()
+        )
+        real(fd)
+
+    with patch.object(os, "fsync", probing):
+        _append(log)
+
+    assert seen == ["held"]
