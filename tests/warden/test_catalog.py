@@ -119,6 +119,38 @@ def test_the_shipped_demo_manifest_loads(seeded_db):
     assert catalog.target_kind("send_email") == "mail"
 
 
+def test_data_class_reads_the_binding_not_the_result(seeded_db):
+    """The spine charges a task's data class BEFORE execute() runs, so the
+    class has to be knowable from config alone. It is: every adapter kind
+    holds it as a binding property, which is why `warden config check` can
+    already report a tool that declares none."""
+    from tests.support.catalog import demo_catalog
+
+    catalog = demo_catalog(
+        docstore_url="http://d", db_path=seeded_db,
+        mailer_url="http://m", client=None,
+    )
+    assert catalog.data_class("query_customers") == "pii"
+    assert catalog.data_class("read_document") == "public"
+    # send_email declares none, which is legitimate for a write -- see
+    # cli/main.py's note. None must reach the store as "add nothing", not as
+    # a class literally named "None".
+    assert catalog.data_class("send_email") is None
+
+
+def test_data_class_of_an_unknown_tool_raises(seeded_db):
+    """Same failure as describe(), so the spine cannot get a silent None for
+    a tool the catalog never heard of and charge it as classless."""
+    from tests.support.catalog import demo_catalog
+
+    catalog = demo_catalog(
+        docstore_url="http://d", db_path=seeded_db,
+        mailer_url="http://m", client=None,
+    )
+    with pytest.raises(UnknownTool):
+        catalog.data_class("no_such_tool")
+
+
 def test_the_shipped_manifest_reproduces_the_subject_join(seeded_db):
     """The prefix must join to the token's counterparties. Without its colon
     the ALLOWED read is denied rows.scope, the task never becomes tainted,

@@ -107,6 +107,21 @@ class ToolCatalog:
             return True
         return entry.schema.validate(args)
 
+    def data_class(self, tool: str) -> str | None:
+        """The class this tool's reads carry, from its [binding].
+
+        Read from config rather than from ToolResult because the spine charges
+        it BEFORE execute() runs -- a concurrent egress has to be able to see
+        that a PII read is in flight, not only that one finished.
+
+        Deliberately NOT a field on ToolTarget: the policy input document is
+        an interface, and no rule judges the class a call is about to
+        produce, only the ones a task already holds. Raises UnknownTool for
+        the same reason describe() does -- a silent None here would charge an
+        unrecognised tool as classless.
+        """
+        return self._entry(tool).adapter.data_class
+
     def describe(self, tool: str, args: dict) -> ToolTarget:
         return self._entry(tool).adapter.describe(args)
 

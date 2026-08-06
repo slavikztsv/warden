@@ -113,6 +113,16 @@ class Adapter(Protocol):
     # a Protocol cannot express as "optional for some implementers".
     def __init__(self, *, binding: dict, client) -> None: ...
 
+    # The class this adapter's reads carry, from its [binding]. Declared on
+    # the protocol rather than left as a convention every concrete adapter
+    # happens to follow, because two callers now depend on it: `warden config
+    # check` reports a tool that declares none, and ToolCatalog.data_class
+    # feeds it to the task-state charge BEFORE execute() runs -- which is what
+    # lets a concurrent egress see that a PII read is in flight rather than
+    # only that one finished. None is legitimate, and means a write.
+    @property
+    def data_class(self) -> str | None: ...
+
     def describe(self, args: dict) -> ToolTarget: ...
 
     def execute(self, args: dict) -> ToolResult: ...
