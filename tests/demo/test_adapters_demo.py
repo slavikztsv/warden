@@ -1,9 +1,9 @@
 import httpx
 import pytest
 
-from warden.broker.adapters.base import ToolTarget, UnknownTool
 from demo.mocks.seed_db import seed_customers
 from tests.support.catalog import demo_catalog
+from warden.broker.adapters.base import ToolTarget, UnknownTool
 
 
 @pytest.fixture

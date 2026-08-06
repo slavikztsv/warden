@@ -43,7 +43,6 @@ from warden.broker.spine import (
 )
 from warden.broker.taint import TaintTracker
 
-
 # The top-level packages `warden[mcp]` installs, or that installing it pulls
 # in transitively. `httpx2` is the transitive case: `pyproject.toml`'s `mcp`
 # extra names only `mcp==2.0.0`, but `mcp/__init__.py` itself imports
@@ -76,6 +75,12 @@ def _render(outcome: Outcome) -> JSONResponse:
     rather than reading as retryable.
     """
     if outcome.kind is Kind.EXECUTED:
+        # EXECUTED is the one kind the spine constructs with a result, and it
+        # constructs it from what execute() returned -- see spine.py's EXECUTED
+        # branch, which is unreachable unless catalog.execute() came back. The
+        # assert states that invariant where a reader (and a type checker) meets
+        # it, rather than leaving `result` merely Optional across all 14 kinds.
+        assert outcome.result is not None
         return JSONResponse(
             {"content": outcome.result.content, "rows": outcome.result.rows}
         )

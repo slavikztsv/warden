@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -79,24 +80,24 @@ def test_loads_a_manifest_and_interpolates_bindings(tmp_path):
 
 
 def test_an_unset_binding_variable_is_a_startup_failure(tmp_path):
-    with pytest.raises(ConfigError, match="DOCSTORE_URL"):
+    with pytest.raises(ConfigError, match=re.escape("DOCSTORE_URL")):
         load_catalog(write(tmp_path, MANIFEST), env={}, client=None)
 
 
 def test_an_unknown_adapter_kind_is_a_startup_failure(tmp_path):
     text = MANIFEST.replace('kind = "docstore"', 'kind = "graphql"')
-    with pytest.raises(ConfigError, match="graphql"):
+    with pytest.raises(ConfigError, match=re.escape("graphql")):
         load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
 
 
 def test_a_tool_without_an_args_table_is_a_startup_failure(tmp_path):
     text = MANIFEST.split("[tools.read_document.args]")[0]
-    with pytest.raises(ConfigError, match="read_document"):
+    with pytest.raises(ConfigError, match=re.escape("read_document")):
         load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
 
 
 def test_a_missing_manifest_is_a_startup_failure(tmp_path):
-    with pytest.raises(ConfigError, match="tools.toml"):
+    with pytest.raises(ConfigError, match=re.escape("tools.toml")):
         load_catalog(tmp_path / "tools.toml", env={}, client=None)
 
 
@@ -154,7 +155,7 @@ to      = { type = "array", items = "string", required = true }
 subject = { type = "string", required = true }
 body    = { type = "string", required = true }
 """
-    with pytest.raises(ConfigError, match="send_email"):
+    with pytest.raises(ConfigError, match=re.escape("send_email")):
         load_catalog(write(tmp_path, text), env={"MAILER_URL": "http://m"}, client=None)
 
 
@@ -173,7 +174,7 @@ def test_a_misspelled_binding_key_is_a_startup_failure(tmp_path):
     where `data_class` belongs used to load cleanly and silently disable the
     PII data-flow control -- the tool's results would never taint the task."""
     text = MANIFEST.replace("data_class = \"public\"", "dataclass = \"public\"")
-    with pytest.raises(ConfigError, match="dataclass"):
+    with pytest.raises(ConfigError, match=re.escape("dataclass")):
         load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
 
 
@@ -185,7 +186,7 @@ def test_a_binding_key_that_belongs_to_a_different_adapter_kind_is_a_startup_fai
     text = MANIFEST.replace(
         'data_class = "public"', 'data_class = "public"\nfilter_arg = "x"'
     )
-    with pytest.raises(ConfigError, match="filter_arg"):
+    with pytest.raises(ConfigError, match=re.escape("filter_arg")):
         load_catalog(write(tmp_path, text), env={"DOCSTORE_URL": "x"}, client=None)
 
 
@@ -215,7 +216,7 @@ to      = { type = "array", items = "string", required = true }
 subject = { type = "string", required = true }
 body    = { type = "string", required = true }
 """
-    with pytest.raises(ConfigError, match="send_email"):
+    with pytest.raises(ConfigError, match=re.escape("send_email")):
         load_catalog(write(tmp_path, text), env={"MAILER_URL": "http://m"}, client=None)
 
 
@@ -232,7 +233,7 @@ def test_an_unknown_tool_table_key_is_refused(tmp_path):
         '[tools.lookup.args]\n'
         'doc_id = { type = "string", required = true }\n'
     )
-    with pytest.raises(ConfigError, match="descriptoin"):
+    with pytest.raises(ConfigError, match=re.escape("descriptoin")):
         load_catalog(manifest, env={}, client=None)
 
 
@@ -265,5 +266,5 @@ def test_a_non_string_description_is_refused(tmp_path):
         '[tools.lookup.args]\n'
         'doc_id = { type = "string", required = true }\n'
     )
-    with pytest.raises(ConfigError, match="description"):
+    with pytest.raises(ConfigError, match=re.escape("description")):
         load_catalog(manifest, env={}, client=None)

@@ -13,7 +13,6 @@ import json
 import socket
 import subprocess
 import time
-from pathlib import Path
 
 import httpx
 import pytest
@@ -22,17 +21,17 @@ from fastapi.testclient import TestClient
 from demo.agent.llm import Cassette
 from demo.agent.loop import run_task
 from demo.agent.tools import BrokeredDispatcher
+from demo.mocks import docstore, mailer, sinkhole
+from demo.mocks.seed_db import seed_customers
+from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
+from tests.support.catalog import demo_catalog
+from tools.opa_version import resolve_opa
 from warden.broker.app import create_app
 from warden.broker.audit import AuditLog
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
 from warden.broker.taint import TaintTracker
-from demo.mocks import docstore, mailer, sinkhole
-from demo.mocks.seed_db import seed_customers
-from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
-from tests.support.catalog import demo_catalog
-from tools.opa_version import resolve_opa
 
 pytestmark = pytest.mark.integration
 

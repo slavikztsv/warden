@@ -14,6 +14,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from warden.broker.adapters.base import Adapter
+from warden.broker.adapters.docstore import DocstoreAdapter
+from warden.broker.adapters.http import HttpAdapter
+from warden.broker.adapters.mail import MailAdapter
+from warden.broker.adapters.sql import SqlAdapter
+
 TARGET_KIND_BY_ADAPTER: Mapping[str, str] = {
     "docstore": "doc",
     "sql": "db",
@@ -21,12 +27,7 @@ TARGET_KIND_BY_ADAPTER: Mapping[str, str] = {
     "mail": "mail",
 }
 
-from warden.broker.adapters.docstore import DocstoreAdapter
-from warden.broker.adapters.http import HttpAdapter
-from warden.broker.adapters.mail import MailAdapter
-from warden.broker.adapters.sql import SqlAdapter
-
-ADAPTERS: dict[str, type] = {
+ADAPTERS: dict[str, type[Adapter]] = {
     "docstore": DocstoreAdapter,
     "http": HttpAdapter,
     "mail": MailAdapter,

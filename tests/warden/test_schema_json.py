@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import pytest
 from jsonschema import Draft202012Validator
 
 from warden.broker.config.loader import ConfigError
 from warden.broker.config.schema import ArgSpec, ToolSchema
 from warden.broker.schema_json import json_schema
-from types import MappingProxyType
 
 
 def build(args: dict, unknown_args: str = "reject") -> ToolSchema:

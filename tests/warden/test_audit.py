@@ -1,6 +1,5 @@
 import json
 import threading
-from pathlib import Path
 
 from warden.broker.audit import GENESIS_HASH, AuditLog, canonical_json
 

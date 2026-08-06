@@ -1,7 +1,6 @@
 """The run log exists to be shown to someone, so its claims must hold."""
 
 import json
-from pathlib import Path
 
 import pytest
 

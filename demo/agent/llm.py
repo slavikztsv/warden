@@ -153,9 +153,10 @@ class GeminiClient:
         on the function NAME, where OpenRouter matches on a tool_call_id.
       · the model's own turn has role "model", not "assistant".
 
-    `google-genai` is imported lazily and is deliberately absent from
-    requirements.txt: the broker, the policy layer and all tests run without
-    it, and CI never installs it. The tests drive this
+    `google-genai` is imported lazily and is deliberately absent from the
+    default install -- it lives only in demo/pyproject.toml's `live` extra and
+    requirements-live.txt, so the broker, the policy layer and all tests run
+    without it, and CI never installs it. The tests drive this
     class through a stub, which pins the request shape and the turn
     alternation but cannot prove the live API accepts it.
     """
@@ -284,7 +285,7 @@ class GeminiClient:
                 return self._client.models.generate_content(
                     model=self._model, contents=self._history, config=config
                 )
-            except Exception as exc:  # noqa: BLE001 - vendor error types vary
+            except Exception as exc:
                 text = str(exc)
                 code = getattr(exc, "code", None)
 
@@ -446,8 +447,8 @@ class OpenRouterClient:
 
     OpenRouter speaks the OpenAI chat-completions shape, which is plain JSON
     over HTTP, so this talks to it with `httpx` and adds NO dependency. That is
-    worth more than convenience: `google-genai` is absent from
-    requirements.txt on purpose, so the other live client cannot be
+    worth more than convenience: `google-genai` is confined to demo's `live`
+    extra on purpose, so the other live client cannot be
     exercised in CI. This one can be, and is — the provider with no SDK is the
     only one with real test coverage.
 
@@ -545,7 +546,6 @@ class OpenRouterClient:
         import re
         import time as _time
 
-        import httpx
 
         last = None
         for attempt in range(self._retries):

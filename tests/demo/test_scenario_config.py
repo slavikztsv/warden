@@ -47,9 +47,9 @@ def test_the_declared_token_matches_the_golden_run():
     """If these drift, the frozen audit log stops being reproducible."""
     import json
     task = tomllib.loads((SCENARIO / "task.toml").read_text())["task"]
-    records = [json.loads(l) for l in
+    records = [json.loads(line) for line in
                (SCENARIO.parents[1] / "tests" / "golden" / "audit-4711.jsonl")
-               .read_text().splitlines() if l.strip()]
+               .read_text().splitlines() if line.strip()]
     assert {r["task_id"] for r in records} == {task["task_id"]}
     assert {r["agent_id"] for r in records} == {task["agent_id"]}
     assert {r["purpose"] for r in records} == {task["purpose"]}

@@ -201,9 +201,9 @@ def test_taint_marker_appears_before_the_first_record_that_already_holds_pii():
     # not below it.
     output = render_replay([r for r in RECORDS if r["task_id"] == "4711"])
     lines = output.splitlines()
-    doc_line = next(i for i, l in enumerate(lines) if "read_document" in l)
-    query_line = next(i for i, l in enumerate(lines) if "query_customers" in l)
-    taint_lines = [i for i, l in enumerate(lines) if "TAINT" in l]
+    doc_line = next(i for i, line in enumerate(lines) if "read_document" in line)
+    query_line = next(i for i, line in enumerate(lines) if "query_customers" in line)
+    taint_lines = [i for i, line in enumerate(lines) if "TAINT" in line]
     assert taint_lines == [doc_line + 1] == [query_line - 1]
 
 
@@ -325,9 +325,9 @@ def test_the_full_demo_sequence_tells_the_right_story(tmp_path):
 
     # The taint marker sits directly under the 1-row lookup that caused it,
     # not under the blocked bulk query that follows it.
-    causing_idx = next(i for i, l in enumerate(lines) if "rows≈1)" in l)
-    next_idx = next(i for i, l in enumerate(lines) if "rows≈10312)" in l)
-    taint_idxs = [i for i, l in enumerate(lines) if "TAINT" in l]
+    causing_idx = next(i for i, line in enumerate(lines) if "rows≈1)" in line)
+    next_idx = next(i for i, line in enumerate(lines) if "rows≈10312)" in line)
+    taint_idxs = [i for i, line in enumerate(lines) if "TAINT" in line]
     assert taint_idxs == [causing_idx + 1] == [next_idx - 1]
 
     # Both the tool-layer and the proxy-layer exfil attempts to the same
@@ -345,9 +345,9 @@ def test_taint_marker_is_between_the_causing_record_and_the_next(tmp_path):
     records = _build_demo_records(tmp_path / "demo.jsonl")
     output = render_replay(records)
     lines = output.splitlines()
-    causing_idx = next(i for i, l in enumerate(lines) if "rows≈1)" in l)
-    next_idx = next(i for i, l in enumerate(lines) if "rows≈10312)" in l)
-    taint_idxs = [i for i, l in enumerate(lines) if "TAINT" in l]
+    causing_idx = next(i for i, line in enumerate(lines) if "rows≈1)" in line)
+    next_idx = next(i for i, line in enumerate(lines) if "rows≈10312)" in line)
+    taint_idxs = [i for i, line in enumerate(lines) if "TAINT" in line]
     assert len(taint_idxs) == 1
     assert taint_idxs[0] == causing_idx + 1
     assert taint_idxs[0] == next_idx - 1
@@ -575,7 +575,6 @@ def test_run_task_uses_the_supplied_instruction():
     An out-of-scope request can arrive by injection, by bug, or because the
     operator asked for too much; the loop must be able to express all three.
     """
-    import pytest
 
     from demo.agent.loop import SYSTEM_TASK, run_task
 
@@ -607,9 +606,9 @@ def test_explain_refuses_an_alternative_task_without_a_live_model():
     Replaying fixed model output under a different instruction would show steps
     the instruction had no part in causing — a demo that lies about itself.
     """
-    import pytest
-
     from pathlib import Path
+
+    import pytest
 
     from demo.cli.explain import TASKS, _pick_task
 
@@ -663,8 +662,8 @@ def test_the_precedence_list_covers_every_rule_the_policy_can_return():
     fires."""
     import re
 
-    from warden.broker.pdp import DENY_PRECEDENCE
     from demo.scenario.paths import POLICY_BUNDLE
+    from warden.broker.pdp import DENY_PRECEDENCE
 
     rego = (POLICY_BUNDLE / "authz.rego").read_text()
     emitted = set(re.findall(r'deny_reasons contains "([^"]+)"', rego))

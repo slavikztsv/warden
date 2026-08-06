@@ -240,7 +240,6 @@ def list_tools(client, token):
 
 def test_the_surface_is_absent_unless_enabled(tmp_path):
     from tests.warden.test_app import build
-
     from warden.broker.identity import Signer
 
     signer = Signer.generate()
@@ -383,7 +382,7 @@ def test_the_spine_runs_on_the_event_loop_not_a_worker_thread(tmp_path):
     signer = Signer.generate()
     with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
         client,
-        audit,
+        _audit,
     ):
         loop_thread = client.portal.call(threading.get_ident)
         spine = client.app.state.spine
@@ -409,7 +408,7 @@ def test_a_null_argument_object_reads_as_no_arguments(tmp_path):
     signer = Signer.generate()
     with build_with_mcp(tmp_path, signer, {"allow": True, "deny_reasons": []}) as (
         client,
-        audit,
+        _audit,
     ):
         spine = client.app.state.spine
         real = spine.handle_tool_call

@@ -7,6 +7,8 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from demo.mocks.seed_db import seed_customers
+from tests.support.catalog import demo_catalog
 from warden.broker.adapters.base import ToolResult
 from warden.broker.app import create_app
 from warden.broker.audit import AuditLog
@@ -14,8 +16,6 @@ from warden.broker.control import create_control_app
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.taint import TaintTracker
-from demo.mocks.seed_db import seed_customers
-from tests.support.catalog import demo_catalog
 
 
 @pytest.fixture

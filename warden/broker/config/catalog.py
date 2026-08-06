@@ -19,11 +19,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from warden.broker.adapters.base import ToolResult, ToolTarget, UnknownTool
+from warden.broker.adapters.base import Adapter, ToolResult, ToolTarget, UnknownTool
 from warden.broker.adapters.registry import ADAPTERS, TARGET_KIND_BY_ADAPTER, build_adapter
 from warden.broker.config.loader import ConfigError, interpolate
 from warden.broker.config.schema import ToolSchema, parse_tool_schema
-
 
 # Every key a [tools.<tool>] table may carry. The [args] vocabulary and the
 # [binding] keys each have an allowlist already (schema.py's _ARG_KEYS,
@@ -55,7 +54,7 @@ class CatalogEntry:
     kind: str
     target_kind: str
     schema: ToolSchema
-    adapter: object
+    adapter: Adapter
     # Advertised to a model by the MCP surface, and unused by every other
     # caller. Empty is legal here and rejected by `warden config check` only
     # when that surface is switched on.
@@ -121,7 +120,7 @@ def _interpolate_binding(binding: dict, env: Mapping[str, str], where: str) -> d
     the bare, tool-less message interpolate() raises on its own -- the
     difference between one manifest to check and a deployment with a dozen
     tools sharing that same variable name."""
-    resolved = {}
+    resolved: dict[str, object] = {}
     for key, value in binding.items():
         try:
             if isinstance(value, str):
@@ -204,7 +203,10 @@ def load_catalog(path: Path, env: Mapping[str, str], client) -> ToolCatalog:
             raise ConfigError(f"{path}: tool {tool!r} must be a table")
         _check_tool_keys(tool, table)
         kind = table.get("kind")
-        if kind not in TARGET_KIND_BY_ADAPTER:
+        # `not in` on a Mapping[str, str] proves this is one of the four literal
+        # keys, hence a str -- but tomllib hands back Any, so the narrowing has
+        # to be said out loud for the four uses below.
+        if not isinstance(kind, str) or kind not in TARGET_KIND_BY_ADAPTER:
             raise ConfigError(
                 f"tool {tool!r}: unknown adapter kind {kind!r}; "
                 f"expected one of {sorted(TARGET_KIND_BY_ADAPTER)}"

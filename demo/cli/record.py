@@ -41,8 +41,8 @@ import httpx
 from demo.agent.llm import live_client_from_env
 from demo.agent.loop import run_task
 from demo.agent.tools import DirectDispatcher
-from demo.cli.runlog import RunLog
 from demo.cli.explain import TASKS, _misdirected_mail, _mock_transport
+from demo.cli.runlog import RunLog
 from demo.mocks import docstore, mailer, sinkhole
 from demo.mocks.seed_db import seed_customers
 
@@ -122,7 +122,7 @@ def _record(task: str, attempts: int, record_any: bool, db: Path, run) -> int:
     for number in range(1, attempts + 1):
         try:
             transcript, harm = attempt(task, db)
-        except Exception as exc:  # noqa: BLE001 — one bad sample must not end the run
+        except Exception as exc:
             print(f"  [{number}/{attempts}] error: {str(exc)[:90]}", flush=True)
             continue
         # Injection scenarios are recorded only when the model actually

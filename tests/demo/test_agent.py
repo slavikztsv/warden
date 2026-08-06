@@ -276,7 +276,7 @@ def test_advertised_schemas_agree_with_the_brokers_shape_check():
 # attempt, when no retry followed.
 #
 # These skip when google-genai is absent, which is the normal case: it is
-# deliberately not in requirements.txt and CI never installs it. So they run
+# deliberately outside the default install and CI never installs it. So they run
 # locally, where --live runs, and skip in CI.
 # ---------------------------------------------------------------------------
 def _gemini_stub(responses):
@@ -410,7 +410,7 @@ def test_the_gemini_client_is_built_with_a_bounded_request_timeout(monkeypatch):
     nothing in the process was going to notice.
 
     This does NOT importorskip("google.genai"): CI never installs the package
-    (deliberately absent from requirements.txt), so an importorskip'd version
+    (deliberately outside the default install), so an importorskip'd version
     of this test SKIPS in CI, and nothing else in the suite references
     http_options -- deleting it from GeminiClient.__init__ would still be
     green. Instead a fake google.genai is installed into sys.modules, so

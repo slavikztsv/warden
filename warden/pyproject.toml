@@ -10,6 +10,19 @@ requires-python = ">=3.11"
 # Deliberately minimal, and asserted so by tests/test_entry_points.py. The
 # enforcement point has no business holding a model credential, and no
 # business carrying the SDK that would use one.
+#
+# This list is the authoritative runtime set. A second file used to restate all
+# four of these pins alongside pytest, which left two places declaring the same
+# versions and nothing saying which won; it is now requirements-dev.txt and
+# carries only what the runtime does not need.
+#
+# httpx stays on 0.28.x deliberately. Starlette's TestClient warns that it
+# wants `httpx2`; that is a new major package, the broker uses httpx for real
+# outbound traffic as well as in tests, and swapping both at once is a
+# migration rather than a bump. The warning is a deprecation, not a break.
+# Note that enabling the `mcp` extra below brings httpx2 into the process
+# anyway, alongside this pin rather than in place of it -- they are separate
+# distributions under separate top-level names and coexist.
 dependencies = [
   "fastapi==0.141.1",
   "uvicorn[standard]==0.52.0",

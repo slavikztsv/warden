@@ -32,30 +32,36 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
-
-import httpx
 
 # starlette's TestClient import warns about its httpx pin the moment the
 # module loads, which would make this deprecation notice the first line of
 # every demo run. The in-process clients here are the demo's transport, not
 # the product's, so the warning is noise to a viewer: silence exactly it.
 import warnings
+from pathlib import Path
+
+import httpx
 
 warnings.filterwarnings(
     "ignore", message=r"Using `httpx` with `starlette\.testclient`"
 )
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
 from demo.agent.llm import Cassette, live_client_from_env
 from demo.agent.loop import STOPPED_MARKER, SYSTEM_TASK, run_task
 from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
+from demo.cli.runlog import RunLog
+from demo.mocks import docstore, mailer, sinkhole
+from demo.mocks.seed_db import seed_customers
+from demo.scenario.catalog import demo_catalog
+from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
+from demo.scenario.task import PROMPTS, SCENARIO, TASK
+from tools.opa_version import resolve_opa
 from warden.broker.app import create_app
 from warden.broker.audit import AuditLog
 from warden.broker.config.catalog import ToolCatalog
@@ -63,14 +69,7 @@ from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
 from warden.broker.taint import TaintTracker
-from demo.cli.runlog import RunLog
 from warden.cli.replay import render_replay
-from demo.scenario.catalog import demo_catalog
-from demo.scenario.paths import POLICY_BUNDLE, POLICY_DATA
-from demo.scenario.task import PROMPTS, SCENARIO, TASK
-from demo.mocks import docstore, mailer, sinkhole
-from demo.mocks.seed_db import seed_customers
-from tools.opa_version import resolve_opa
 
 W = 76
 SHOW_WHY = True
@@ -1453,7 +1452,7 @@ def _main(argv: list[str], run=None) -> int:
             try:
                 with contextlib.redirect_stdout(quiet):
                     row = _matrix_row(name, spec, db, live, scratch, reset)
-            except Exception as exc:  # noqa: BLE001 - any scenario may fail live
+            except Exception as exc:
                 # KeyboardInterrupt is deliberately NOT caught: an operator
                 # stopping a run means stop, not "mark it failed and carry on".
                 print(f"      failed: {_short(exc)}", flush=True)

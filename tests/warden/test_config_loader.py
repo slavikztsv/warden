@@ -7,6 +7,7 @@ not enforcing.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -89,7 +90,7 @@ def test_an_unset_variable_is_a_startup_failure(tmp_path):
     nothing and every decision would become pdp.unavailable at runtime,
     discovered in production rather than at boot."""
     text = COMPLETE.replace('"http://opa:8181"', '"${OPA_URL}"')
-    with pytest.raises(ConfigError, match="OPA_URL"):
+    with pytest.raises(ConfigError, match=re.escape("OPA_URL")):
         load_broker_config(write(tmp_path, text), env={})
 
 
@@ -100,25 +101,25 @@ def test_interpolate_handles_several_and_leaves_other_text_alone():
 
 def test_a_missing_section_names_itself(tmp_path):
     text = COMPLETE.replace("[audit]\npath = \"/data/audit.jsonl\"\n", "")
-    with pytest.raises(ConfigError, match="audit"):
+    with pytest.raises(ConfigError, match=re.escape("audit")):
         load_broker_config(write(tmp_path, text), env={})
 
 
 def test_a_missing_key_names_itself(tmp_path):
     text = COMPLETE.replace('opa_url       = "http://opa:8181"\n', "")
-    with pytest.raises(ConfigError, match="policy.opa_url"):
+    with pytest.raises(ConfigError, match=re.escape("policy.opa_url")):
         load_broker_config(write(tmp_path, text), env={})
 
 
 def test_a_wrong_type_is_rejected(tmp_path):
     text = COMPLETE.replace('issuer = "warden-broker"', "issuer = 300")
-    with pytest.raises(ConfigError, match="tokens.issuer"):
+    with pytest.raises(ConfigError, match=re.escape("tokens.issuer")):
         load_broker_config(write(tmp_path, text), env={})
 
 
 def test_a_malformed_listen_address_is_rejected(tmp_path):
     text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "0.0.0.0"')
-    with pytest.raises(ConfigError, match="broker.listen"):
+    with pytest.raises(ConfigError, match=re.escape("broker.listen")):
         load_broker_config(write(tmp_path, text), env={})
 
 
@@ -126,18 +127,18 @@ def test_empty_bundle_roots_is_rejected(tmp_path):
     """No roots means the digest covers nothing, so every audit record would
     stamp the same value whatever the policy said."""
     text = COMPLETE.replace('bundle_roots  = ["/policies"]', "bundle_roots  = []")
-    with pytest.raises(ConfigError, match="policy.bundle_roots"):
+    with pytest.raises(ConfigError, match=re.escape("policy.bundle_roots")):
         load_broker_config(write(tmp_path, text), env={})
 
 
 def test_a_missing_file_names_the_path(tmp_path):
-    with pytest.raises(ConfigError, match="absent.toml"):
+    with pytest.raises(ConfigError, match=re.escape("absent.toml")):
         load_broker_config(tmp_path / "absent.toml", env={})
 
 
 def test_invalid_toml_names_the_file(tmp_path):
     path = write(tmp_path, "[broker\n")
-    with pytest.raises(ConfigError, match="warden.toml"):
+    with pytest.raises(ConfigError, match=re.escape("warden.toml")):
         load_broker_config(path, env={})
 
 
@@ -145,21 +146,21 @@ def test_invalid_toml_names_the_file(tmp_path):
 def test_an_empty_string_literal_is_rejected(tmp_path):
     """An empty string in the config is as bad as an empty environment variable."""
     text = COMPLETE.replace('"http://opa:8181"', '""')
-    with pytest.raises(ConfigError, match="policy.opa_url.*must not be empty"):
+    with pytest.raises(ConfigError, match=r"policy\.opa_url.*must not be empty"):
         load_broker_config(write(tmp_path, text), env={})
 
 
 def test_an_empty_interpolated_string_is_rejected(tmp_path):
     """Setting OPA_URL= (empty) in the environment should also fail."""
     text = COMPLETE.replace('"http://opa:8181"', '"${OPA_URL}"')
-    with pytest.raises(ConfigError, match="policy.opa_url.*must not be empty"):
+    with pytest.raises(ConfigError, match=r"policy\.opa_url.*must not be empty"):
         load_broker_config(write(tmp_path, text), env={"OPA_URL": ""})
 
 
 def test_empty_bundle_root_entry_is_rejected(tmp_path):
     """An empty path in bundle_roots must be rejected."""
     text = COMPLETE.replace('bundle_roots  = ["/policies"]', 'bundle_roots  = [""]')
-    with pytest.raises(ConfigError, match="policy.bundle_roots.*must not be empty"):
+    with pytest.raises(ConfigError, match=r"policy\.bundle_roots.*must not be empty"):
         load_broker_config(write(tmp_path, text), env={})
 
 
@@ -167,7 +168,7 @@ def test_empty_bundle_root_entry_is_rejected(tmp_path):
 def test_ipv6_without_brackets_is_rejected(tmp_path):
     """A bare IPv6 address like ::1 splits incorrectly and must be rejected."""
     text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "::1"')
-    with pytest.raises(ConfigError, match="broker.listen.*host contains"):
+    with pytest.raises(ConfigError, match=r"broker\.listen.*host contains"):
         load_broker_config(write(tmp_path, text), env={})
 
 
@@ -181,14 +182,14 @@ def test_ipv6_with_brackets_is_accepted(tmp_path):
 def test_port_zero_is_rejected(tmp_path):
     """Port 0 is not usable for binding."""
     text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "0.0.0.0:0"')
-    with pytest.raises(ConfigError, match="broker.listen.*port must be 1-65535"):
+    with pytest.raises(ConfigError, match=r"broker\.listen.*port must be 1-65535"):
         load_broker_config(write(tmp_path, text), env={})
 
 
 def test_port_out_of_range_is_rejected(tmp_path):
     """Ports above 65535 are invalid."""
     text = COMPLETE.replace('listen       = "0.0.0.0:8080"', 'listen       = "0.0.0.0:70000"')
-    with pytest.raises(ConfigError, match="broker.listen.*port must be 1-65535"):
+    with pytest.raises(ConfigError, match=r"broker\.listen.*port must be 1-65535"):
         load_broker_config(write(tmp_path, text), env={})
 
 
@@ -250,19 +251,19 @@ def test_control_interpolates_from_the_environment(tmp_path):
 
 def test_control_an_unset_variable_is_a_startup_failure(tmp_path):
     text = CONTROL_COMPLETE.replace('"/data/agent.key"', '"${PRIVATE_KEY_PATH}"')
-    with pytest.raises(ConfigError, match="PRIVATE_KEY_PATH"):
+    with pytest.raises(ConfigError, match=re.escape("PRIVATE_KEY_PATH")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
 def test_control_a_missing_control_section_names_itself(tmp_path):
     text = CONTROL_COMPLETE.replace('[control]\nlisten = "0.0.0.0:8081"\n', "")
-    with pytest.raises(ConfigError, match="control"):
+    with pytest.raises(ConfigError, match=re.escape("control")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
 def test_control_a_missing_identity_section_names_itself(tmp_path):
     text = CONTROL_COMPLETE.replace('[identity]\nprivate_key = "/data/agent.key"\n', "")
-    with pytest.raises(ConfigError, match="identity"):
+    with pytest.raises(ConfigError, match=re.escape("identity")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
@@ -272,36 +273,36 @@ def test_control_a_missing_tokens_section_names_itself(tmp_path):
     control.toml missing it must refuse to start rather than mint under
     DEFAULT_TTL_SECONDS silently."""
     text = CONTROL_COMPLETE.replace('[tokens]\nissuer      = "warden-broker"\nttl_seconds = 300\n', "")
-    with pytest.raises(ConfigError, match="tokens"):
+    with pytest.raises(ConfigError, match=re.escape("tokens")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
 def test_control_a_missing_key_names_itself(tmp_path):
     text = CONTROL_COMPLETE.replace('private_key = "/data/agent.key"\n', "")
-    with pytest.raises(ConfigError, match="identity.private_key"):
+    with pytest.raises(ConfigError, match=re.escape("identity.private_key")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
 def test_control_a_malformed_listen_address_is_rejected(tmp_path):
     text = CONTROL_COMPLETE.replace('listen = "0.0.0.0:8081"', 'listen = "0.0.0.0"')
-    with pytest.raises(ConfigError, match="control.listen"):
+    with pytest.raises(ConfigError, match=re.escape("control.listen")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
 def test_control_a_missing_file_names_the_path(tmp_path):
-    with pytest.raises(ConfigError, match="absent.toml"):
+    with pytest.raises(ConfigError, match=re.escape("absent.toml")):
         load_control_config(tmp_path / "absent.toml", env={})
 
 
 def test_control_invalid_toml_names_the_file(tmp_path):
     path = write_control(tmp_path, "[control\n")
-    with pytest.raises(ConfigError, match="control.toml"):
+    with pytest.raises(ConfigError, match=re.escape("control.toml")):
         load_control_config(path, env={})
 
 
 def test_control_an_empty_value_is_rejected(tmp_path):
     text = CONTROL_COMPLETE.replace('"/data/agent.key"', '""')
-    with pytest.raises(ConfigError, match="identity.private_key.*must not be empty"):
+    with pytest.raises(ConfigError, match=r"identity\.private_key.*must not be empty"):
         load_control_config(write_control(tmp_path, text), env={})
 
 
@@ -310,14 +311,14 @@ def test_control_a_wrong_type_ttl_is_rejected(tmp_path):
     ControlConfig: ttl_seconds is control-plane-only, so its type guard
     belongs -- and is tested -- here now."""
     text = CONTROL_COMPLETE.replace("ttl_seconds = 300", 'ttl_seconds = "300"')
-    with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
+    with pytest.raises(ConfigError, match=re.escape("tokens.ttl_seconds")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
 def test_control_a_boolean_ttl_is_rejected(tmp_path):
     """bool is an int subclass; ttl_seconds = true should error, not become 1."""
     text = CONTROL_COMPLETE.replace("ttl_seconds = 300", "ttl_seconds = true")
-    with pytest.raises(ConfigError, match="tokens.ttl_seconds"):
+    with pytest.raises(ConfigError, match=re.escape("tokens.ttl_seconds")):
         load_control_config(write_control(tmp_path, text), env={})
 
 
@@ -355,7 +356,7 @@ def test_mcp_is_read_when_present(tmp_path):
 def test_a_non_boolean_enabled_is_refused(tmp_path):
     path = write_complete_config(tmp_path)
     path.write_text(path.read_text() + '\n[mcp]\nenabled = "yes"\n')
-    with pytest.raises(ConfigError, match="mcp.enabled"):
+    with pytest.raises(ConfigError, match=re.escape("mcp.enabled")):
         load_broker_config(path, env={})
 
 

@@ -145,7 +145,19 @@ import functools
 import os
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    # Annotation-only, and it has to be guarded this way rather than imported
+    # plainly: `httpx2` arrives with the optional `mcp` extra, and this module
+    # must import cleanly without it so `warden mcp` can report a missing extra
+    # as one error line instead of a traceback. `from __future__ import
+    # annotations` above means the annotations below are never evaluated at
+    # runtime, so the name only has to exist for a type checker -- which is
+    # exactly what this block provides, and what its absence cost: ruff read
+    # `-> httpx2.AsyncClient` as an undefined name, correctly.
+    import httpx2
 
 # The wire key the SDK stamps onto every 2026-07-28 result's `_meta`
 # (mcp_types._types.SERVER_INFO_META_KEY). Named once, not re-spelled at each

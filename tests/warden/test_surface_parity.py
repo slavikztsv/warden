@@ -103,11 +103,11 @@ pytest.importorskip("mcp", reason="requires the warden[mcp] extra")
 # one of mcp==2.0.0's own pinned dependencies, so it is never absent when
 # "mcp" is present. Same convention as test_mcp_surface.py's own post-skip
 # imports.
-from mcp.server import ServerRequestContext  # noqa: E402
-from mcp_types._types import CallToolRequestParams  # noqa: E402
-from mcp_types.version import LATEST_MODERN_VERSION  # noqa: E402
+from mcp.server import ServerRequestContext
+from mcp_types._types import CallToolRequestParams
+from mcp_types.version import LATEST_MODERN_VERSION
 
-from warden.broker.adapters.base import ToolResult  # noqa: E402
+from warden.broker.adapters.base import ToolResult
 
 VOLATILE = {"seq", "ts", "prev_hash", "hash"}
 
@@ -317,11 +317,10 @@ def test_both_surfaces_write_the_same_record_after_a_durable_allow_whose_execute
     "nothing ran" message) fails this the same way a record disagreement
     would.
     """
-    from warden.broker.refusals import after_the_fact
-
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
     from warden.broker.identity import Signer
+    from warden.broker.refusals import after_the_fact
 
     signer = Signer.generate()
     token = token_for(signer)
@@ -415,10 +414,10 @@ def test_both_surfaces_write_nothing_on_a_describe_backend_fault(tmp_path):
     still do. Unlike AFTER_EXECUTE, there is no durable record to name, so
     both renderings are the SAME static string (refusals.NOTHING_RAN) and
     are compared directly, not per-call."""
-    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
-    from warden.broker.config.schema import ArgSpec, ToolSchema
     from tests.warden.test_app import build_with_mcp, invoke, token_for
     from tests.warden.test_mcp_surface import call_tool
+    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
+    from warden.broker.config.schema import ArgSpec, ToolSchema
     from warden.broker.identity import Signer
     from warden.broker.refusals import NOTHING_RAN
 
@@ -674,12 +673,12 @@ def test_explicit_null_args_is_denied_on_http_and_can_execute_on_mcp(tmp_path):
     divergence this test pins: not a wording nicety, but one door executing
     a tool call the other door refuses to even evaluate.
     """
-    from warden.broker.adapters.base import ToolResult, ToolTarget
-    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
-    from warden.broker.config.schema import ToolSchema
     from mcp_types import CLIENT_CAPABILITIES_META_KEY, PROTOCOL_VERSION_META_KEY
 
     from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.adapters.base import ToolResult, ToolTarget
+    from warden.broker.config.catalog import CatalogEntry, ToolCatalog
+    from warden.broker.config.schema import ToolSchema
     from warden.broker.identity import Signer
 
     class NoArgsAdapter:

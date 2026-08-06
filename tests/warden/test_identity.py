@@ -44,7 +44,7 @@ def test_token_expires_after_five_minutes(signer, verifier):
 
 
 def test_tampered_payload_is_rejected(signer, verifier):
-    header, payload, signature = mint(signer).split(".")
+    header, _payload, signature = mint(signer).split(".")
     other = mint(signer, purpose="admin-everything")
     forged = f"{header}.{other.split('.')[1]}.{signature}"
     with pytest.raises(TokenInvalid):

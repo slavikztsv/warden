@@ -1,0 +1,24 @@
+# Development and test dependencies. NOT the runtime set.
+#
+# What runs in production is declared in warden/pyproject.toml (four packages,
+# pinned exactly) and demo/pyproject.toml. This file used to restate those four
+# alongside pytest, which meant two files pinned the same versions and neither
+# said which was authoritative -- so it is now only what the runtime does NOT
+# need.
+#
+# CI installs from this file rather than pinning the same versions inline in
+# .github/workflows/ci.yml. That is not tidiness: the Python tests step went red
+# on a missing `jsonschema` precisely because a test's dependency was declared
+# in no file at all, only ever installed by hand. A dependency the tests need
+# belongs somewhere reviewable.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+# The generated-schema property test (tests/warden/test_schema_json.py) checks
+# warden's own JSON Schema output against a real validator. jsonschema also
+# arrives as a transitive of the `mcp` extra, but relying on that is what broke
+# CI: the extra is optional, so a test that imports jsonschema directly must
+# declare it directly.
+jsonschema==4.26.0
+# The build gates. Both are dev-only and neither is imported by any module.
+ruff==0.16.1
+mypy==2.3.0

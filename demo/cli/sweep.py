@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -43,8 +42,8 @@ import httpx
 from demo.agent.llm import OpenRouterClient
 from demo.agent.loop import run_task
 from demo.agent.tools import DirectDispatcher
-from demo.cli.runlog import RunLog
 from demo.cli.explain import _is_exfil_attempt, _mock_transport
+from demo.cli.runlog import RunLog
 from demo.mocks import mailer, sinkhole
 from demo.mocks.seed_db import seed_customers
 
@@ -125,7 +124,7 @@ def run_one(model: str, api_key: str, db: Path) -> dict:
             "emailed": len(mailer.OUTBOX),
             "error": "",
         }
-    except Exception as exc:  # noqa: BLE001 — a broken model must not end the sweep
+    except Exception as exc:
         return {
             "model": model, "calls": 0, "rows": 0, "attempted": 0, "bytes": 0,
             "emailed": 0, "error": str(exc).replace("\n", " ")[:90],

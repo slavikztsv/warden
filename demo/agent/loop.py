@@ -18,7 +18,6 @@ from demo.agent.llm import Cassette, TracingLLM, live_client_from_env
 from demo.agent.tools import BrokeredDispatcher, DirectDispatcher
 from demo.scenario.task import PROMPT as SYSTEM_TASK
 
-
 # The text a capped run's final step carries. Named rather than inlined so a
 # caller can recognise a truncated transcript without string-matching a literal
 # that lives in another module — explain's matrix does exactly that, and a

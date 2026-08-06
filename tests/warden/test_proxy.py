@@ -1,7 +1,6 @@
 import asyncio
-import socket
-
 import base64
+import socket
 
 import httpx
 import pytest
@@ -9,7 +8,13 @@ import pytest
 from warden.broker.audit import AuditLog
 from warden.broker.identity import Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
-from warden.broker.proxy import _audit_refusal, authorize_connect, parse_authority, proxy_token, serve_proxy
+from warden.broker.proxy import (
+    _audit_refusal,
+    authorize_connect,
+    parse_authority,
+    proxy_token,
+    serve_proxy,
+)
 from warden.broker.taint import TaintTracker
 
 
@@ -62,7 +67,7 @@ def test_disallowed_destination_is_refused(tmp_path, signer):
 
 
 def test_allowed_destination_is_permitted(tmp_path, signer):
-    allowed, rule = authorize_connect(
+    allowed, _rule = authorize_connect(
         authority="api.anthropic.com:443",
         token_str=token(signer),
         verifier=Verifier(signer.public_key_pem()),

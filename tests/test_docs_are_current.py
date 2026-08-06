@@ -22,7 +22,17 @@ DOCS = [REPO_ROOT / "README.md", *(REPO_ROOT / "docs").glob("*.md")]
 CURRENT_DOCS = DOCS
 
 STALE = ("python -m cli.", "python -m agent.", "python -m broker",
-         "./scripts/demo.sh", "broker/backends.py")
+         "./scripts/demo.sh", "broker/backends.py",
+         # requirements.txt became requirements-dev.txt when its four runtime
+         # pins turned out to be a byte-identical restatement of
+         # warden/pyproject.toml's, leaving two files pinning the same versions
+         # and nothing saying which won. Six source comments named the old file
+         # to mean "not a declared dependency", and nothing would have caught
+         # them going stale -- the same gap that let broker/app.py survive in
+         # five comments after the decision sequence moved to broker/spine.py.
+         # Safe as a bare substring: "requirements-live.txt" does not contain
+         # it, because the "requirements" there is followed by "-live".
+         "requirements.txt")
 
 # policies/authz.rego moved -- it did not get renamed. Task 20 put it at
 # warden/policies/authz.rego, so the plain substring "policies/authz.rego"
@@ -60,7 +70,7 @@ def test_no_stale_invocation_or_path(doc):
 # never happened to mention either deleted/renamed path, so adding them to
 # the shared STALE tuple above would not change docs coverage, only widen
 # what source comments are held to.
-SOURCE_STALE = STALE + ("docker-compose.yml", "cli/warden.py")
+SOURCE_STALE = (*STALE, "docker-compose.yml", "cli/warden.py")
 
 
 def source_files() -> list[Path]:
@@ -94,7 +104,8 @@ def test_the_readme_replay_block_matches_the_golden():
     golden = (REPO_ROOT / "tests" / "golden" / "replay-4711.txt").read_text()
     block = re.search(r"```\n(task 4711.*?)\n```", (REPO_ROOT / "README.md").read_text(),
                       re.S).group(1)
-    mask = lambda s: re.sub(r"head sha256:[0-9a-f…]*", "head sha256:…", s)
+    def mask(s):
+        return re.sub(r"head sha256:[0-9a-f…]*", "head sha256:…", s)
     assert mask(block).splitlines() == mask(golden.rstrip("\n")).splitlines()
 
 

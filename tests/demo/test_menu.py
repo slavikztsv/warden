@@ -141,7 +141,7 @@ def run(answers, *, env=None, docker=True, result=0):
         try:
             return next(answers)
         except StopIteration:
-            raise EOFError
+            raise EOFError from None
 
     code = menu.main(
         [], read=read, dispatch=dispatch, env=env if env is not None else READY,
@@ -200,7 +200,7 @@ def test_an_unavailable_option_is_still_selectable():
     """Detect and label, never block -- the command itself reports the real
     failure, and a reviewer without Docker can still see what would happen."""
     docker_option = next(o for o in menu.OPTIONS if o.needs == "docker")
-    code, calls = run([docker_option.key], env={}, docker=False)
+    _code, calls = run([docker_option.key], env={}, docker=False)
     assert calls == [list(docker_option.argv)]
 
 

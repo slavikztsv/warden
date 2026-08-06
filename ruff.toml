@@ -1,0 +1,56 @@
+# Lint configuration. There is no root pyproject.toml -- `warden/`, `demo/` and
+# `tools/` are each their own distribution, and the seam test exists to keep the
+# first from learning about the second -- so the linter's config lives here, at
+# the root it actually scans.
+#
+# `target-version` is not optional here. Without it ruff assumes an older Python
+# than this project requires and reports `BaseExceptionGroup` as an undefined
+# name: five findings, all of them the linter being wrong rather than the code.
+target-version = "py311"
+line-length = 100
+
+[lint]
+# Ruff's default rule set (E4, E7, E9, F) plus the families that have already
+# earned their place by catching something real in this codebase's history:
+# unused-noqa, unsorted imports, and the flake8-bugbear checks. Not a maximal
+# selection -- a rule nobody will honour is a rule that gets blanket-ignored,
+# and this project has enough documented deliberate weirdness to make several
+# popular families pure noise.
+select = ["E4", "E7", "E9", "F", "I", "B", "RUF"]
+
+# `B008` and `B006` are about mutable/call defaults in signatures. FastAPI's
+# whole idiom is `Depends()` in a default, and this codebase's frozen dataclasses
+# use a `McpConfig()` default that is safe precisely because it is frozen.
+ignore = ["B008"]
+
+# `ℹ` is the advisory marker `warden config check` prints for a finding that is
+# not a reason to fail, next to `✗` for one that is. Tests assert on the exact
+# character, so RUF001 calling it a confusable `i` is the linter mistaking a
+# deliberate glyph for a typo.
+allowed-confusables = ["ℹ"]
+
+# Not selected, and worth saying why rather than leaving it to be "fixed" later:
+# `S110` (try-except-pass) would fire on the proxy's and the spine's
+# `except OSError: pass`, which are the most-argued lines in the product -- a
+# refusal must still happen when it cannot be recorded, reasoned out at each site
+# and in docs/THREAT_MODEL.md. Selecting the `S` family to then suppress its one
+# useful-here rule in two files buys nothing.
+
+[lint.per-file-ignores]
+# A `warnings.filterwarnings()` call sits between this module's imports and has
+# to: it silences a Starlette deprecation that fires when `fastapi.testclient`
+# is IMPORTED, so registering the filter afterwards would be too late. E402 is
+# right that imports belong at the top and wrong about the one file whose
+# correctness depends on an import being lower down.
+"demo/cli/explain.py" = ["E402"]
+
+# Tests reach into privates on purpose -- driving `on_call_tool` without a
+# transport, asserting a phantom task entry is not created -- and several build
+# deliberately malformed input that reads as a bug out of context.
+"tests/**" = ["B017", "B011"]
+
+[lint.isort]
+# `warden` is first-party; `demo` and `tools` are separate distributions that
+# depend on it. Naming all three keeps import blocks stable regardless of which
+# one is being linted.
+known-first-party = ["warden", "demo", "tools", "tests"]

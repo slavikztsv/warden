@@ -170,7 +170,8 @@ def _audit_refusal(*, audit, policy_digest: str, host: str, port: int, rule: str
             policy_bundle_digest=policy_digest,
         )
     except OSError:
-        pass  # noqa: the refusal below still happens; losing the record is not a reason to allow
+        # The refusal below still happens; losing the record is not a reason to allow.
+        pass
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -199,7 +200,7 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         return
 
 
-def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
+async def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             # Parsing runs inside its own guard. asyncio's StreamReader raises
@@ -303,4 +304,4 @@ def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
             if not writer.is_closing():
                 writer.close()
 
-    return asyncio.start_server(handle, host, port)
+    return await asyncio.start_server(handle, host, port)

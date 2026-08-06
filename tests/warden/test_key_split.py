@@ -39,9 +39,14 @@ from fastapi.testclient import TestClient
 
 import warden.broker.__main__ as broker_main
 import warden.broker.control_main as control_main
-from warden.broker.config.loader import BrokerConfig, ControlConfig, load_broker_config, load_control_config
-from warden.broker.identity import Signer, Verifier
 from demo.mocks.seed_db import seed_customers
+from warden.broker.config.loader import (
+    BrokerConfig,
+    ControlConfig,
+    load_broker_config,
+    load_control_config,
+)
+from warden.broker.identity import Signer, Verifier
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -362,7 +367,7 @@ tools = "demo/scenario/tools.toml"
         "DOCSTORE_URL": "http://d", "DB_PATH": "data/customers.db",
         "MAILER_URL": "http://m",
     })
-    app, components = broker_main.build(config, client=stub_client())
+    _app, components = broker_main.build(config, client=stub_client())
     assert components.policy_digest.startswith("sha256:")
 
 
@@ -514,8 +519,8 @@ def test_openssl_generated_keys_are_the_keys_the_code_loads(tmp_path, monkeypatc
 # than a live probe. It is still worth pinning: the entire property rests on
 # broker-control never being attached to agent-net, and that is one word in
 # one file. Deliberately parsed by hand rather than with PyYAML -- PyYAML is
-# not in requirements.txt, and a topology check that silently skips in CI is
-# worse than no check.
+# not in requirements-dev.txt, and a topology check that silently skips in CI
+# is worse than no check.
 
 
 def _compose_service_block(name: str) -> str:

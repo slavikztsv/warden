@@ -103,6 +103,16 @@ class Adapter(Protocol):
     # data on each concrete class, the same shape as REQUIRED_ARGS.
     BINDING_KEYS: tuple[str, ...] = ()
 
+    # Every adapter is constructed exactly this way, by build_adapter() in
+    # broker/adapters/registry.py, from the resolved [binding] table and the
+    # one shared httpx client. Declared here because the registry types its
+    # values as `type[Adapter]`, and without this the protocol claims adapters
+    # take no arguments at all -- a contract every concrete adapter breaks.
+    # `client` is untyped on purpose: the SQL adapter ignores it entirely and
+    # defaults it, and the three HTTP-shaped ones want an httpx.Client, which
+    # a Protocol cannot express as "optional for some implementers".
+    def __init__(self, *, binding: dict, client) -> None: ...
+
     def describe(self, args: dict) -> ToolTarget: ...
 
     def execute(self, args: dict) -> ToolResult: ...

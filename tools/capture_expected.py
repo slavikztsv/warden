@@ -33,8 +33,8 @@ CORPUS = REPO_ROOT / "tests" / "golden" / "decisions"
 
 sys.path.insert(0, str(REPO_ROOT))
 
-from warden.broker.pdp import DENY_PRECEDENCE  # noqa: E402
 from tools.opa_version import resolve_opa  # noqa: E402
+from warden.broker.pdp import DENY_PRECEDENCE  # noqa: E402
 
 # 7 demo cases derived from the frozen audit log (tools/build_corpus.py) +
 # 7 hand-authored adversarial cases. Kept as one named constant, imported by

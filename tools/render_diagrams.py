@@ -39,6 +39,7 @@ serves one SVG to light and dark readers alike.
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "assets"
@@ -424,7 +425,7 @@ def architecture():
     for lines in stages:
         pipe.append(d.box(CX - bw / 2, y, bw, bh, lines, "plumbing"))
         y += bh + 54
-    ident, taint, cat, pdp = pipe
+    ident, _taint, _cat, pdp = pipe
     aud = d.box(CX - bw / 2, y, bw, 62,
                 ["5 · Record", "before anything runs", "audit.py"], "store", "store")
 
@@ -468,13 +469,13 @@ def architecture():
     d.edge(proxy.at("bottom"), ident.at("top", (proxy.cx - ident.x) / ident.w),
            src=proxy, dst=ident)
 
-    for a, b in zip(pipe, pipe[1:]):
+    for a, b in itertools.pairwise(pipe):
         d.edge(a.at("bottom"), b.at("top"), src=a, dst=b)
     d.edge(pdp.at("bottom"), aud.at("top"), src=pdp, dst=aud, label="allow")
     d.edge(pdp.at("right"), opa.at("left"), src=pdp, dst=opa, label="input · decision")
     d.edge(aud.at("bottom"), (CX, ad[0].y - ZONE_PAD), src=aud,
            label="written before execution")
-    for a, t in zip(ad, tg):
+    for a, t in zip(ad, tg, strict=False):
         d.edge(a.at("bottom"), t.at("top"), src=a, dst=t)
     d.fit()
     return d
@@ -1261,7 +1262,7 @@ def main():
     rp = OUT / "repo-map.svg"
     rp.write_text(repo_map(), encoding="utf-8")
     rpng = export_png(rp)
-    print(f"wrote docs/assets/repo-map.svg" + (f" +{rpng.name}" if rpng else ""))
+    print("wrote docs/assets/repo-map.svg" + (f" +{rpng.name}" if rpng else ""))
     for line in illustrations():
         print(f"wrote docs/assets/{line}")
     if not failed and export_png(OUT / "architecture.svg") is None:

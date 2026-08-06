@@ -81,7 +81,7 @@ def test_up_seeds_the_database_from_the_scenario_row_count(stub_steps):
     main_module._cmd_up(namespace("unprotected"))
 
     assert len(stub_steps["seed"]) == 1
-    path, count = stub_steps["seed"][0]
+    _path, count = stub_steps["seed"][0]
     assert count == SCENARIO["seed_rows"]
 
 

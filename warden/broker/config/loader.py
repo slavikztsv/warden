@@ -1,8 +1,8 @@
 """Reads the broker's wiring from TOML.
 
 tomllib is stdlib from 3.11, so this costs the enforcement point no
-dependency -- which is the same reason a model SDK is not in
-requirements.txt.
+dependency -- which is the same reason a model SDK is not among the four
+packages warden/pyproject.toml declares.
 
 Every failure raises ConfigError, and the entrypoint lets it kill the
 process. A broker that starts with a half-understood config writes audit

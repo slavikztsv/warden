@@ -31,9 +31,9 @@ from pathlib import Path
 
 import pytest
 
-from warden.broker.pdp import DENY_PRECEDENCE
 from tools.capture_expected import EXPECTED_CASE_COUNT
 from tools.opa_version import resolve_opa
+from warden.broker.pdp import DENY_PRECEDENCE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CORPUS = REPO_ROOT / "tests" / "golden" / "decisions"

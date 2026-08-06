@@ -67,7 +67,7 @@ def main() -> int:
         print(f"expected {len(DEMO_CASES)} records, found {len(records)}", file=sys.stderr)
         return 1
     CORPUS.mkdir(parents=True, exist_ok=True)
-    for name, record in zip(DEMO_CASES, records):
+    for name, record in zip(DEMO_CASES, records, strict=False):
         (CORPUS / f"{name}.json").write_text(
             json.dumps(policy_input(record), indent=2, sort_keys=True) + "\n"
         )

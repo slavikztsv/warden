@@ -221,6 +221,12 @@ def render_call(outcome: Outcome) -> types.CallToolResult:
     spine, so this only chooses words -- and takes them from refusals.py, so
     the HTTP door says the same ones."""
     if outcome.kind is Kind.EXECUTED:
+        # EXECUTED is the one kind the spine constructs with a result, and it
+        # constructs it from what execute() returned -- see spine.py's EXECUTED
+        # branch, which is unreachable unless catalog.execute() came back. The
+        # assert states that invariant where a reader (and a type checker) meets
+        # it, rather than leaving `result` merely Optional across all 14 kinds.
+        assert outcome.result is not None
         return _text(outcome.result.content, is_error=False)
     if outcome.kind in DENIED:
         # A refusal, addressed to the model: it names the rule, and it arrives
