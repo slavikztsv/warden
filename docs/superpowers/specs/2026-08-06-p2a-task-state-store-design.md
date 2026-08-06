@@ -203,15 +203,18 @@ means, or A2 will invent it:
 
 | When | Behaviour | Why |
 |---|---|---|
-| `charge` raises | Refuse, record nothing, render 503 | Nothing has happened yet, and this system refuses when it cannot decide |
+| `peek` or `charge` raises | Refuse, record nothing, render 503 | Nothing has happened yet, and this system refuses when it cannot decide |
 | `reconcile` raises | Post-execute fault carrying the durable allow's `seq` | The action happened; a caller must not retry, and the existing `AFTER_EXECUTE` rendering says exactly that |
 | `release` / `abandon` raises | Swallowed | The reservation's deadline already collects it — this is what decision 4 buys |
 
-Two new `Kind` members — `STATE_UNAVAILABLE_ON_CHARGE` and
+Two new `Kind` members — `STATE_UNAVAILABLE_BEFORE_EXECUTE` and
 `STATE_UNAVAILABLE_AFTER_EXECUTE` — mapped into the `AUDIT_UNAVAILABLE` and
 `AFTER_EXECUTE` rendering groups respectively, so neither invents a new status
-code or message. Both are reachable in tests through a fake store that raises,
-so neither is untested dead code.
+code or message. They are named for **whether the action happened**, not for
+which method failed, because that is precisely what decides the rendering: the
+first covers both `peek` and `charge`, and every path it covers has acted on
+nothing. Both are reachable in tests through a fake store that raises, so
+neither is untested dead code.
 
 Recording nothing on a charge failure follows the two precedents already in the
 file rather than inventing a third rule: `DESCRIBE_BACKEND_FAULT` records
