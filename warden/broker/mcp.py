@@ -8,13 +8,21 @@ disagree with the one the broker already has, and then "what did that call
 do" would have two answers. The words both surfaces use live in
 warden/broker/refusals.py for the same reason.
 
-Both handlers are `async def` and call the spine DIRECTLY. That is a security
-requirement, not a style choice. A sync handler would be run on a worker
-thread, which puts the spine's taint snapshot and the read it authorises on
-two different threads with a scheduling boundary between them -- and two
-calls for one task that interleave there both read the same starting row
-budget and both pass. The spine contains no `await`, so calling it inline
-from the event loop cannot interleave at all.
+Both handlers are `async def` and hand the spine to the shared executor. The
+spine itself is still a plain synchronous callable, and what orders two
+concurrent callers for one task is the store's atomic charge, not this call
+being inline -- see warden/broker/spine.py and warden/broker/taint.py, which
+both say the synchrony stopped being the control when P2-A landed.
+
+This module used to claim the opposite: that calling the spine inline was a
+security requirement, because a sync handler "would be run on a worker
+thread" and split the taint snapshot from the read it authorises. Both
+halves were wrong by the time A6 was written. There is no taint snapshot any
+more, there is a charge; and the SDK does not threadpool a synchronous
+handler at all -- mcp/server/runner.py awaits `entry.handler(...)`
+unconditionally, with no `iscoroutinefunction` branch, so a plain `def` here
+would raise rather than be dispatched. The handlers stay `async def`, and
+tests/warden/test_surface_parity.py is what pins that.
 
 Two renderings matter more than the rest.
 
@@ -61,9 +69,11 @@ Python 3 has no implicit relative imports, so a module named `mcp` inside
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Mapping
+from concurrent.futures import Executor
 from typing import Any
 
 from fastapi import FastAPI
@@ -440,7 +450,12 @@ class _EraGate:
 
 
 def mount_mcp(
-    app: FastAPI, *, spine: Spine, catalog: ToolCatalog, config: McpConfig
+    app: FastAPI,
+    *,
+    spine: Spine,
+    catalog: ToolCatalog,
+    config: McpConfig,
+    executor: Executor,
 ) -> None:
     """Mounts the surface onto an existing app, sharing its one spine.
 
@@ -476,7 +491,13 @@ def mount_mcp(
                 return types.ListToolsResult(
                     tools=[_tool(name) for name in sorted(catalog.names())]
                 )
-            outcome = spine.list_tools(_credential(ctx))
+            # Offloaded for the same reason handle_tool_call is, and not
+            # because a listing is slow: an unauthenticated one APPENDS a
+            # sentinel audit record, and a file write on the event loop is
+            # what this change exists to remove.
+            outcome = await asyncio.get_running_loop().run_in_executor(
+                executor, spine.list_tools, _credential(ctx)
+            )
             if outcome.kind is Kind.LISTED:
                 return types.ListToolsResult(
                     tools=[_tool(name) for name in outcome.tools]
@@ -506,7 +527,13 @@ def mount_mcp(
             # produce one: a body that does not parse never reaches a handler.
             arguments: dict[str, Any] = params.arguments or {}
             return render_call(
-                spine.handle_tool_call(_credential(ctx), params.name, arguments)
+                await asyncio.get_running_loop().run_in_executor(
+                    executor,
+                    spine.handle_tool_call,
+                    _credential(ctx),
+                    params.name,
+                    arguments,
+                )
             )
         except MCPError:
             raise

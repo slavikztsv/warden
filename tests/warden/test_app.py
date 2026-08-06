@@ -78,6 +78,7 @@ def build_with_mcp(
     opa_handler=None,
     catalog=None,
     host="testserver",
+    seed_rows=120,
 ):
     """build(), with the MCP surface mounted -- and entered as a context
     manager, because a routed sub-app's lifespan never runs on its own and the
@@ -97,11 +98,13 @@ def build_with_mcp(
     `catalog` overrides the demo catalog for a test that needs a tool shaped a
     particular way. Both injected at construction like every other
     collaborator here, so no test has to reach through the app afterwards.
+    `seed_rows` matches build()'s, so a budget test can size a read against
+    data.limits.max_rows_per_task rather than against 120.
     """
     from warden.broker.config.loader import McpConfig
 
     db = tmp_path / "customers.db"
-    seed_customers(db, count=120)
+    seed_customers(db, count=seed_rows)
 
     if opa_handler is None:
         def opa_handler(request):
@@ -1485,3 +1488,55 @@ def test_the_row_budget_is_honoured_exactly_once_under_ten_concurrent_readers(
     # update) nor under (a reservation left dangling by a denial).
     assert spine.task_state("4711")["rows_charged_so_far"] == 50
     assert len(audit.records()) == threads
+
+
+def test_the_tool_api_runs_the_spine_off_the_event_loop(tmp_path, signer):
+    """A6. Every collaborator the spine calls blocks -- the PDP's httpx
+    client, the audit write, every adapter's execute() -- so calling it
+    inline meant the broker served one tool call at a time per process, and
+    the egress proxy shares that loop, so a slow read stalled every CONNECT
+    behind it.
+
+    Asserted as a thread identity rather than a duration. The spine is still
+    a plain synchronous callable and the sequence inside it is unchanged;
+    what changed is who calls it. The row budget does not depend on this
+    either way -- it is ordered by the store's atomic charge, which
+    test_the_row_budget_is_honoured_exactly_once_under_ten_concurrent_readers
+    pins from ten real OS threads.
+    """
+    import threading
+
+    client, _audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    spine = client.app.state.spine
+    seen = []
+    real = spine.handle_tool_call
+
+    def recording(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    spine.handle_tool_call = recording
+
+    with client:
+        loop_thread = client.portal.call(threading.get_ident)
+        response = client.post(
+            "/v1/tools/read_document/invoke",
+            json={"args": {"doc_id": "a"}},
+            headers={"Authorization": f"Bearer {token_for(signer)}"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert len(seen) == 1
+    assert seen[0] != loop_thread, "the spine ran on the event loop thread"
+
+
+def test_the_executor_is_the_brokers_own_not_asyncios_default(tmp_path, signer):
+    """asyncio.to_thread would use the loop's DEFAULT executor: size
+    min(32, cpu_count + 4), invisible, machine-dependent, and shared with
+    anything else in the process that reaches for it. The broker names its
+    own pool and sizes it from [broker] worker_threads, because a security
+    product does not get an undocumented concurrency limit."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    client, _audit = build(tmp_path, signer, {"allow": True, "deny_reasons": []})
+    assert isinstance(client.app.state.executor, ThreadPoolExecutor)

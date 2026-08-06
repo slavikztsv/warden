@@ -37,7 +37,7 @@ from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.policy_digest import policy_bundle_digest
 from warden.broker.proxy import serve_proxy
 from warden.broker.taint import InMemoryTaskStateStore
-from warden.broker.wiring import BrokerComponents
+from warden.broker.wiring import BrokerComponents, build_executor
 
 
 def _silence_telemetry() -> None:
@@ -131,6 +131,10 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         # unreadable bundle must crash before the first decision, not be
         # discovered halfway through serving one.
         policy_digest=policy_bundle_digest(config.bundle_roots),
+        # One pool, both surfaces -- the same reason they share one spine and
+        # one store. Two pools would be two independent concurrency limits on
+        # one event loop, and neither would be the number an operator set.
+        executor=build_executor(config.worker_threads),
     )
     app = create_app(
         # DOCSTORE_URL, DB_PATH and MAILER_URL are read from the process
@@ -146,6 +150,11 @@ def build(config: BrokerConfig, *, client: httpx.Client | None = None):
         # so it has no reservation whose task lifetime this would set.
         mcp=config.mcp,
         state_grace_seconds=config.task_state.ttl_grace_seconds,
+        # Out of BrokerComponents' kwargs for the same reason those two are,
+        # and one more: as_proxy_kwargs() is splatted into authorize_connect,
+        # which is keyword-only with no **kwargs. Passed explicitly to each
+        # surface instead.
+        executor=components.executor,
         **components.as_app_kwargs(),
     )
     return app, components
@@ -158,12 +167,24 @@ async def main() -> None:
     app, components = build(config)
     proxy_host, proxy_port = config.proxy_listen
     api_host, api_port = config.listen
-    proxy_server = await serve_proxy(proxy_host, proxy_port, **components.as_proxy_kwargs())
+    proxy_server = await serve_proxy(
+        proxy_host,
+        proxy_port,
+        executor=components.executor,
+        **components.as_proxy_kwargs(),
+    )
     agent_api = uvicorn.Server(
         uvicorn.Config(app, host=api_host, port=api_port, log_level="warning")
     )
     async with proxy_server:
-        await agent_api.serve()
+        try:
+            await agent_api.serve()
+        finally:
+            # wait=True: a thread part-way through execute() is holding a
+            # reservation, and dropping it on the floor leaks one until its
+            # deadline collects it. Draining is what makes a clean shutdown
+            # clean rather than merely quick.
+            components.executor.shutdown(wait=True)
 
 
 if __name__ == "__main__":

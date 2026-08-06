@@ -370,11 +370,24 @@ def test_an_authenticated_call_is_decided_once_not_twice(tmp_path):
     assert [r["decision"] for r in audit.records()] == ["allow"]
 
 
-def test_the_spine_runs_on_the_event_loop_not_a_worker_thread(tmp_path):
-    """The handler is `async def` and calls the spine inline, so the taint
-    snapshot and the read it authorises happen on one thread with no
-    scheduling boundary between them. A sync handler would be dispatched to a
-    worker thread and put them on two."""
+def test_the_mcp_surface_runs_the_spine_off_the_event_loop(tmp_path):
+    """The exact inverse of what this test used to assert, and the reversal
+    is recorded here rather than left for a reader to reconstruct.
+
+    It used to demand the spine run ON the loop thread, on the grounds that
+    "the taint snapshot and the read it authorises happen on one thread with
+    no scheduling boundary between them". That premise was already gone
+    before A6: P2-A replaced the snapshot with an atomic charge, and
+    warden/broker/spine.py and warden/broker/taint.py both now say in as many
+    words that the synchrony is a fact about the implementation rather than a
+    control. What orders two concurrent callers for one task is the store,
+    and test_the_row_budget_is_honoured_exactly_once_through_the_mcp_surface
+    below is what pins that for THIS surface.
+
+    So this now guards the opposite property: the MCP front door must not be
+    the one surface still blocking the event loop while it waits on OPA, the
+    audit write and an adapter.
+    """
     from tests.warden.test_app import build_with_mcp, token_for
     from warden.broker.identity import Signer
 
@@ -387,13 +400,14 @@ def test_the_spine_runs_on_the_event_loop_not_a_worker_thread(tmp_path):
         loop_thread = client.portal.call(threading.get_ident)
         spine = client.app.state.spine
         real = spine.handle_tool_call
-        spine.handle_tool_call = lambda *a: (
+        spine.handle_tool_call = lambda *a, **k: (
             threads.append(threading.get_ident()),
-            real(*a),
+            real(*a, **k),
         )[1]
         call_tool(client, token_for(signer), "read_document", {"doc_id": "a"})
 
-    assert threads == [loop_thread]
+    assert len(threads) == 1
+    assert threads[0] != loop_thread, "the spine ran on the event loop thread"
 
 
 def test_a_null_argument_object_reads_as_no_arguments(tmp_path):
@@ -1358,3 +1372,84 @@ def test_every_modern_era_version_is_served(tmp_path, version):
 
     assert response.json()["error"]["code"] == -32600, version
     assert [r["rule"] for r in records] == ["unauthenticated"], version
+
+
+def test_the_row_budget_is_honoured_exactly_once_through_the_mcp_surface(tmp_path):
+    """Section A's exit criterion, through the SECOND front door.
+
+    tests/warden/test_app.py proves this for the tool API. A property proven
+    on one surface and assumed on the other is exactly the drift
+    test_surface_parity.py exists to prevent, and both doors now hand the
+    spine to a threadpool -- so the wiring that could get it wrong is no
+    longer shared all the way down.
+
+    Ten concurrent tools/call requests for one task against a 50-row budget,
+    ten rows each. The PDP stub applies R5's real arithmetic to whatever
+    task_state it is handed and blocks on a barrier BEFORE answering, so
+    every caller has charged and none has decided -- precisely the window a
+    snapshot-then-record sequence loses updates in.
+
+    Exactly five may succeed, and it has to be a PREFIX rather than a count:
+    the charge is what orders the callers, so each is handed a distinct
+    multiple of ten and the budget stops the sixth. Asserting the final total
+    alone would be satisfied by an implementation that allowed all ten and
+    under-counted.
+
+    A refusal arrives as `is_error`, not as a protocol error: a policy denial
+    is returned as a TOOL EXECUTION error so the model can read it and adapt.
+
+    Note what makes this test possible at all. The barrier blocks the thread
+    the spine runs on, and ten of them have to be in flight at once. Before
+    A6 the spine ran inline on the single event loop, so the first caller's
+    barrier would have blocked the loop that the other nine needed to reach
+    it. This test deadlocks against an inline spine -- which is also why the
+    barrier carries a timeout rather than blocking forever.
+    """
+    import asyncio
+    import json as _json
+
+    import httpx
+
+    from tests.warden.test_app import build_with_mcp, token_for
+    from warden.broker.identity import Signer
+
+    callers = 10
+    barrier = threading.Barrier(callers, timeout=20)
+
+    def opa_handler(request):
+        payload = _json.loads(request.read())
+        state = payload["input"]["task_state"]
+        target = payload["input"]["target"]
+        # Every caller has charged by the time any of them is answered.
+        barrier.wait()
+        total = state["rows_charged_so_far"] + target.get("estimated_rows", 0)
+        if total > 50:
+            return httpx.Response(
+                200, json={"result": {"allow": False, "deny_reasons": ["rows.bounded"]}}
+            )
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    signer = Signer.generate()
+    with build_with_mcp(
+        tmp_path, signer, None, opa_handler=opa_handler, seed_rows=10
+    ) as (client, audit):
+        token = token_for(signer)
+
+        async def one_call():
+            async with open_session(client, token) as session:
+                return await session.call_tool("query_customers", {"filter": "all"})
+
+        async def all_calls():
+            return await asyncio.gather(*(one_call() for _ in range(callers)))
+
+        results = run_on_the_apps_loop(client, all_calls)
+
+        allowed = [r for r in results if not r.is_error]
+        assert len(allowed) == 5, f"expected exactly five allows, got {len(allowed)}"
+        assert len(results) - len(allowed) == callers - 5
+
+        spine = client.app.state.spine
+        # Exactly on the bound: neither over (a lost update) nor under (a
+        # reservation a denial left dangling).
+        assert spine.task_state("4711")["rows_charged_so_far"] == 50
+        assert len(audit.records()) == callers

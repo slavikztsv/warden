@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import time
+from concurrent.futures import Executor
 
 from warden.broker.audit import AuditLog
 from warden.broker.identity import TokenInvalid, Verifier
@@ -213,7 +215,23 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         return
 
 
-async def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
+async def serve_proxy(
+    host: str, port: int, *, executor: Executor | None = None, **deps
+) -> asyncio.AbstractServer:
+    """The forward proxy, sharing the broker's spine collaborators.
+
+    `executor` is a NAMED keyword-only parameter rather than another entry in
+    `**deps`, and that is load-bearing: `deps` is forwarded verbatim into
+    `authorize_connect`, which is keyword-only with no `**kwargs`, so an
+    extra key there raises TypeError inside every CONNECT -- at request time,
+    with the broker still reporting healthy. warden/broker/wiring.py's
+    docstring records that exact incident.
+
+    None falls back to asyncio's default pool, which is the right answer for
+    a caller that supplied none (a test). __main__ always passes the shared
+    one, so in production the proxy and the tool API queue on the same
+    threads and therefore have one concurrency limit rather than two.
+    """
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             # Parsing runs inside its own guard. asyncio's StreamReader raises
@@ -264,8 +282,24 @@ async def serve_proxy(host: str, port: int, **deps) -> asyncio.AbstractServer:
             # A raise here would drop the connection with no response and no
             # record. Deny explicitly instead, so the attempt is still visible.
             try:
-                allowed, rule = authorize_connect(
-                    authority=authority, token_str=token_str, **deps
+                # Off the loop, like the tool API's spine call. authorize_connect
+                # verifies, reads task state, asks OPA over a blocking client and
+                # appends an audit record -- so running it inline meant one slow
+                # PDP call stalled every other CONNECT and every tool call
+                # sharing this loop.
+                #
+                # functools.partial because run_in_executor passes positional
+                # arguments only and authorize_connect is keyword-only. Awaiting
+                # the future re-raises whatever it raised, in this thread, so the
+                # two guards below still catch exactly what they always did.
+                allowed, rule = await asyncio.get_running_loop().run_in_executor(
+                    executor,
+                    functools.partial(
+                        authorize_connect,
+                        authority=authority,
+                        token_str=token_str,
+                        **deps,
+                    ),
                 )
             except OSError:
                 # The audit log itself failed. We cannot record, so we cannot

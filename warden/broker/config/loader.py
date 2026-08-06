@@ -91,6 +91,19 @@ class BrokerConfig:
     # lives in ControlConfig only.
     issuer: str
     catalog_path: Path
+    # How many threads serve requests. This IS the broker's concurrency
+    # limit, and it is configuration rather than a machine fact on purpose:
+    # asyncio's default executor is min(32, cpu_count + 4), which is
+    # invisible, machine-dependent, and shared with anything else in the
+    # process that reaches for it. A product whose pitch is stating its own
+    # limits does not get to have an undocumented one.
+    #
+    # ONE pool serves the tool API and the egress proxy, which already share
+    # one event loop. A burst of slow tool calls therefore delays CONNECT
+    # authorization -- strictly better than before, when one slow read
+    # blocked every CONNECT completely, and it fails in the safe direction:
+    # a queued CONNECT waits, it is never wrongly allowed.
+    worker_threads: int = 16
     mcp: McpConfig = McpConfig()
     task_state: TaskStateConfig = TaskStateConfig()
 
@@ -257,6 +270,7 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
         audit_path=Path(_string(audit, "audit", "path", env)),
         issuer=_string(tokens, "tokens", "issuer", env),
         catalog_path=Path(_string(catalog, "catalog", "tools", env)),
+        worker_threads=_positive(broker, "broker", "worker_threads", 16),
         mcp=McpConfig(
             enabled=_flag(mcp, "mcp", "enabled"),
             path=_string(mcp, "mcp", "path", env) if "path" in mcp else "/mcp",

@@ -434,3 +434,35 @@ def test_a_malformed_task_state_section_names_itself(tmp_path):
     path.write_text('task_state = "not a table"\n\n' + path.read_text())
     with pytest.raises(ConfigError, match=r"\[task_state\]"):
         load_broker_config(path, env={})
+
+
+def _with_broker_key(tmp_path: Path, line: str) -> Path:
+    """COMPLETE's [broker] table comes first, so a key appended to the
+    document would land under [catalog]. Inject under the header instead."""
+    return write(tmp_path, COMPLETE.replace("[broker]\n", f"[broker]\n{line}\n", 1))
+
+
+def test_worker_threads_defaults_when_absent(tmp_path):
+    config = load_broker_config(write_complete_config(tmp_path), env={})
+    assert config.worker_threads == 16
+
+
+def test_worker_threads_is_read_when_present(tmp_path):
+    path = _with_broker_key(tmp_path, "worker_threads = 4")
+    assert load_broker_config(path, env={}).worker_threads == 4
+
+
+def test_a_zero_worker_pool_is_refused(tmp_path):
+    """A zero-thread pool accepts work and runs none of it, so every request
+    would hang forever with the broker still reporting healthy. Same argument
+    _positive already makes for max_in_flight_seconds: a config that silently
+    disables the thing it configures is a boot failure, not a default."""
+    path = _with_broker_key(tmp_path, "worker_threads = 0")
+    with pytest.raises(ConfigError, match=re.escape("broker.worker_threads")):
+        load_broker_config(path, env={})
+
+
+def test_a_non_integer_worker_pool_is_refused(tmp_path):
+    path = _with_broker_key(tmp_path, 'worker_threads = "lots"')
+    with pytest.raises(ConfigError, match=re.escape("broker.worker_threads")):
+        load_broker_config(path, env={})

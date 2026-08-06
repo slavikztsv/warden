@@ -14,9 +14,12 @@ way it does.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import functools
 import time
 from collections.abc import Callable
+from concurrent.futures import Executor
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -60,6 +63,27 @@ def now() -> int:
     """Wall-clock seconds -- the default clock create_app falls back to
     when a caller does not inject one of its own."""
     return int(time.time())
+
+
+@functools.cache
+def _fallback_executor() -> Executor:
+    """The pool used when no caller supplied one.
+
+    Process-wide and built once, NOT one per app. Production always injects
+    the pool from __main__.build() -- sized by [broker] worker_threads, and
+    shared with the proxy so a task's two surfaces have one concurrency
+    limit rather than two. This path exists for an embedding or a test, and
+    a suite that constructs hundreds of apps must not construct hundreds of
+    thread pools; a ThreadPoolExecutor's threads live until it is shut down,
+    and nothing shuts down an app that was never entered as a context
+    manager.
+
+    Nothing shuts this one down either, deliberately: it belongs to the
+    process, and the interpreter joins its threads on exit.
+    """
+    from warden.broker.wiring import build_executor
+
+    return build_executor()
 
 
 def _render(outcome: Outcome) -> JSONResponse:
@@ -165,6 +189,15 @@ def create_app(
     # because the proxy has nothing to apply it to: a CONNECT charges nothing,
     # so there is no reservation whose task lifetime this would set.
     state_grace_seconds: int = 3600,
+    # The pool the spine runs on. None means "make one", which is the path
+    # tests and any single-surface embedding take. Production passes the
+    # shared pool built in __main__.build(), because the proxy must run on
+    # the same one -- a task's calls are one budget, and two pools would be
+    # two independent concurrency limits on one event loop.
+    #
+    # Whoever supplies it owns its shutdown; an app that made its own shuts
+    # it down in its lifespan.
+    executor: Executor | None = None,
 ) -> FastAPI:
     app = FastAPI(title="warden broker")
     # Captured before anything can replace it, so the check below is against
@@ -184,6 +217,10 @@ def create_app(
     # one spine per app, which is what makes two front doors incapable of
     # deciding differently.
     app.state.spine = spine
+    # Set BEFORE the MCP branch below, which needs it: both front doors run
+    # the spine on the same pool, for the same reason they share one spine.
+    executor = executor or _fallback_executor()
+    app.state.executor = executor
 
     if mcp is not None and mcp.enabled:
         # Imported here, not at module scope: the SDK is an optional extra
@@ -204,7 +241,7 @@ def create_app(
                 "install warden[mcp]"
             ) from exc
 
-        mount_mcp(app, spine=spine, catalog=catalog, config=mcp)
+        mount_mcp(app, spine=spine, catalog=catalog, config=mcp, executor=executor)
 
         # Asserted, not assumed: a second surface added later would overwrite
         # this and silently stop the first one's session manager from ever
@@ -233,17 +270,36 @@ def create_app(
         # Authenticate BEFORE anything else about the request is read. A
         # credential that does not hold up must never cause the body to be
         # parsed -- see Spine.authenticate()'s docstring -- so this checks
-        # for, and immediately returns on, a refusal before the one await
-        # below ever runs.
+        # for, and immediately returns on, a refusal before the body is read
+        # below.
+        loop = asyncio.get_running_loop()
         credential = _credential(request)
-        authentication = spine.authenticate(credential, tool)
+        # Offloaded like the call below it, and not because it is slow: a
+        # refusal here APPENDS a sentinel audit record, and a file write on
+        # the event loop is one of the things this change exists to remove.
+        authentication = await loop.run_in_executor(
+            executor, spine.authenticate, credential, tool
+        )
         if isinstance(authentication, Outcome):
             return _render(authentication)
 
-        # The only await, and it is here rather than in the spine: past this
-        # line the whole sequence is synchronous, so the snapshot-to-record
-        # window cannot be interleaved by construction.
         args = await _parse_args(request)
-        return _render(spine.handle_tool_call(credential, tool, args))
+        # The spine is still a plain synchronous callable and the sequence
+        # inside it is still synchronous; what changed is that it no longer
+        # runs on the event loop. Before this, every collaborator it calls
+        # blocked -- the PDP's httpx client, the audit write, every adapter's
+        # execute() -- so the broker served one tool call at a time per
+        # process and the egress proxy, which shares this loop, stalled
+        # behind each one.
+        #
+        # The row budget is unaffected either way. It is ordered by the
+        # store's atomic charge, not by this call being inline; spine.py's
+        # module docstring says so, and the ten-thread test in
+        # tests/warden/test_app.py pins it from real OS threads.
+        return _render(
+            await loop.run_in_executor(
+                executor, spine.handle_tool_call, credential, tool, args
+            )
+        )
 
     return app
