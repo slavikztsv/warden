@@ -3,8 +3,8 @@
 This module is the HTTP surface only: it authenticates nothing and decides
 nothing itself. It pulls a bearer credential and a JSON body off the wire,
 hands them to warden.broker.spine.Spine -- which holds the actual security
-property, the verify -> snapshot -> validate -> decide -> record -> execute
-sequence -- and renders whatever Outcome comes back into a response. The
+property, the verify -> validate -> describe -> charge -> decide -> record
+-> execute sequence -- and renders whatever Outcome comes back into a response. The
 reasoning behind each failure branch (a malformed body, a describe()
 failure, an audit write that cannot be made durable, ...) moved to spine.py
 along with the code that handles it; see that module's docstring and its

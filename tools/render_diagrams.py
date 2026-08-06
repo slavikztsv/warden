@@ -390,7 +390,7 @@ def architecture():
     its own arrow to OPA, which invited the obvious wrong question: does the
     proxy have a second policy? It does not. `broker/__main__.py` starts both
     surfaces in one process and hands the proxy the same verifier, the same
-    PolicyDecisionPoint, the same TaintTracker and the same AuditLog. So both
+    PolicyDecisionPoint, the same TaskStateStore and the same AuditLog. So both
     now sit inside one zone and both feed the same spine.
 
     What is genuinely asymmetric stays labelled rather than smoothed over:
@@ -979,7 +979,7 @@ FLOW_STEPS = [
      "Runs with TASK_TOKEN, BROKER_URL and HTTP_PROXY set; asks the model, proposes tool calls",
      "Untrusted by design: it reads documents an attacker can influence"),
     ("warden/broker/spine.py  handle_tool_call()", "enforce",
-     "verify → snapshot → validate → decide → record → execute",
+     "verify → validate → describe → charge → decide → record → execute",
      "Every call judged against the token AND everything the task has done so far"),
     ("warden/policies/authz.rego", "core",
      "Answers allow, or deny_reasons naming the rule that objected",

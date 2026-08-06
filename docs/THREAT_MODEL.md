@@ -66,27 +66,40 @@ confused-deputy problem, not a content problem.
 These were discovered while building and reviewing, and are stated rather than
 quietly fixed. Each is a real property of the system as shipped.
 
-- **The row bound is concurrency-safe by construction only under a single
-  worker, not by any lock.** The broker's handler is `async def`, and its only
-  `await` (parsing the request body) runs *before* the taint snapshot is
-  taken; everything from the snapshot through `taint.record_read` — decide,
-  audit, execute, record — is synchronous. On a single-threaded event loop
-  that makes the read-decide-record sequence atomic with respect to other
-  requests: nothing can interleave inside it, because nothing yields control
-  during it. This was found the hard way: an earlier version took the
-  snapshot *before* the request body was parsed, putting that `await` inside
-  what was supposed to be the critical section, so two concurrent calls for
-  the same task could both read `rows_charged_so_far` before either recorded
-  its own read — a live TOCTOU, not a latent one, and it would interleave on
-  one worker, one event loop, no threads required. Moving the snapshot to
-  after the last `await` closed it. The safety is still fragile: change the
-  handler to `def` (Starlette then uses a threadpool), introduce an async
-  HTTP client anywhere between the snapshot and `record_read`, or run a
-  second worker, and the race reopens silently — no test would catch it
-  short of the concurrency test added for this specific case. A structural
-  fix needs a lock inside `TaintTracker`. **Single-worker deployment is a
-  requirement, not a default: two workers share no lock, so the single-event-
-  loop argument does not extend to them.**
+- **The row bound is safe within a process, and two processes still share
+  nothing.** A call now CHARGES `describe()`'s row estimate against the task
+  before the decision, atomically, and settles it afterwards — so the bound no
+  longer depends on the handler happening not to suspend. Ten concurrent reads
+  at one `task_id` against a 50-row budget produce five allows and five
+  `rows.bounded` refusals, and reverting the charge to a plain read allows all
+  ten.
+
+  This was found the hard way twice over. First as a live TOCTOU: an earlier
+  version took the task-state snapshot *before* the request body was parsed,
+  putting an `await` inside what was supposed to be the critical section, so
+  two concurrent calls for one task could both read the budget before either
+  recorded its own read — on one worker, one event loop, no threads required.
+  Moving the snapshot after the last `await` closed that, but left the safety
+  resting on a property of the call graph: change the handler to `def`,
+  introduce an async HTTP client anywhere in the sequence, or run a second
+  worker, and it reopened silently.
+
+  What remains is narrower and structural rather than fragile. The store
+  holding the reservations is in-process, so **two workers still share no
+  budget** — a second worker reopens the race, and single-worker deployment
+  remains a requirement until a shared store ships. But no change to the
+  spine's own concurrency can reopen it, because the ordering is now the
+  store's atomicity rather than the absence of an `await`.
+
+  Two consequences of charging, stated because they are deliberate rather than
+  incidental. A task's budget is briefly **stricter** than its reads: a
+  reserved-but-unused row counts until reconciliation, so a task that reserved
+  fifty and received three is over-charged for the duration of the call. And a
+  broker killed between charging and settling leaks a reservation — bounded,
+  not permanent, because each carries a deadline (60s by default) after which
+  it is collected. A rolling restart under load therefore makes an in-flight
+  task's budget briefly tighter, never looser.
+
 - **The mail counterparty control was bypassable through the HTTP tool.**
   `mail.counterparty` guards `target.kind == "mail"`, and the shipped
   configuration listed `mailer.internal` in both `egress_allow` and
@@ -251,15 +264,16 @@ quietly fixed. Each is a real property of the system as shipped.
     subverted agent map the policy surface for free: `DENY_PRECEDENCE`
     (`warden/broker/pdp.py`) is ordered so each reported rule is a *positive*
     assertion — "this specific control fired," never "something, unnamed,
-    objected" — a denied call is refused before `TaintTracker.record_read`
-    ever runs, so probing costs nothing against the row budget, and nothing
+    objected" — a denied call releases its charge in full — rows and
+    data class both — so probing costs nothing against the row budget, and nothing
     rate-limits a task's refusals, so a script can walk every rule's boundary
     in a loop for free. Keeping the rule names is deliberate; the residual is
     stated rather than closed. A per-task denial counter would make a search
-    of this kind visible in replay. It is not built — it would need a field on
-    `TaintTracker` and a decision about whether it enters the policy input,
-    both of which the durable task-state work in [ROADMAP.md](ROADMAP.md)
-    touches anyway, so it is planned there rather than built twice.
+    of this kind visible in replay. It is not built — it would need a
+    counter on the task-state store and a decision about whether it enters
+    the policy input. The store now exists (P2·A) and a per-task counter is a
+    natural third field beside the rows and the classes, so it stays planned
+    as D6 rather than built here.
   - **A non-object `arguments` value is refused with zero audit records on
     MCP, while the same caller mistake on the HTTP door is an audited
     `input.malformed` deny.** `tools/call` with `arguments` set to a string or

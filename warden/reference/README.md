@@ -65,10 +65,11 @@ file under `warden/` ever contains one of this repo's own demo strings
    repo's demo uses `"public"` and `"pii"`; the vocabulary is yours to define
    — whatever `authz.rego`'s PII-sink rule, R7, checks it against) that
    labels what a *successful call to this tool* puts into the task. Every
-   adapter attaches it to the result it returns, and the broker feeds that
-   into `broker/taint.py`'s `TaintTracker`: from that call onward, the task
-   is recorded as holding that data class, and every later call is judged
-   against it — that is how the demo's second beat (read a customer record,
+   adapter declares it, and the broker charges it against the task in
+   `broker/taint.py` — from the moment the call is authorised, not from the
+   moment it returns, so a read still in flight already counts. From there
+   the task is recorded as holding that data class and every later call is
+   judged against it — that is how the demo's second beat (read a customer record,
    then get denied posting it to an unapproved sink) actually happens.
 
    **Omitting `data_class` means the tool's results never taint the task —

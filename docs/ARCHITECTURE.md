@@ -89,19 +89,19 @@ against a fully compromised broker.
 ## System architecture
 
 <p align="center">
-  <img src="../docs/assets/architecture.png" alt="The request pipeline: verify token, snapshot task state, validate, decide against OPA, record, then execute through an adapter" width="100%">
+  <img src="../docs/assets/architecture.png" alt="The request pipeline: verify token, validate arguments, describe the target, charge the task, decide against OPA, record, then execute through an adapter" width="100%">
 </p>
 
 | Component | Responsibility | Trust level | Failure impact |
 |---|---|---|---|
 | `broker/app.py` | Tool API on `:8080`. HTTP surface only: parses the request, calls `broker/spine.py`, renders whatever it returns | Thin, but still in the request path | A rendering bug can misreport a decision `spine.py` already made correctly |
 | `broker/mcp.py` | MCP front door, on the same `:8080` at a configured path, **off by default**. Like `broker/app.py` it only renders: calls `broker/spine.py`, renders whatever it returns. Unlike `broker/app.py`, it also fronts the SDK's own transport, so it carries the era gate refusing every protocol revision but the modern one and a duplicated version header | Thin, but still in the request path | A rendering bug can misreport a decision `spine.py` already made correctly |
-| `broker/spine.py` | Orders the whole decision, for every front door mounted on the broker: verify → snapshot → validate → describe → decide → audit → execute | TCB for enforcement | Total. Compromise invalidates every decision it makes |
+| `broker/spine.py` | Orders the whole decision, for every front door mounted on the broker: verify → validate → describe → charge → decide → record → execute | TCB for enforcement | Total. Compromise invalidates every decision it makes |
 | `broker/proxy.py` | Forward proxy on `:3128`, the only egress path off `agent-net`. Authorizes `CONNECT` and then pipes bytes | TCB for enforcement | Egress becomes unavailable; no traffic is authorized |
 | `broker/identity.py` | Verifies Ed25519 task tokens. Loads the **public key only** | Trusted; holds no secret | Every call is refused as `unauthenticated` and recorded |
 | `broker/pdp.py` | Posts the input document to OPA and maps `deny_reasons` to a single reported rule | Trusted transport + fail-closed mapping | Denies everything as `pdp.unavailable` |
 | OPA server | Evaluates `authz.rego` against `data.json`. Pure decision function — holds no state | Trusted decision point | Denies everything (via `pdp.unavailable`) |
-| `broker/taint.py` | Per-task data classes held and rows returned. In-memory, process-lifetime | Trusted state | Budgets and taint reset; data-flow rules stop firing correctly |
+| `broker/taint.py` | Per-task data classes held and rows charged. In-memory, evicted on a TTL | Trusted state | Budgets and taint reset; data-flow rules stop firing correctly |
 | `broker/audit.py` | Append-only hash-chained decision log at `/data/audit.jsonl` | Trusted record | Tool API returns 503 and **nothing executes** |
 | `broker/adapters/` | Two jobs per tool: `describe()` turns args into a policy target; `execute()` acts. Both read the same validated args | Transport, not decision | The individual tool fails (502); the recorded allow stands |
 | `broker/config/` | Loads `warden.toml` and the deployment's `tools.toml`; cross-checks catalog against policy data | Trusted config | Boot fails loudly before a socket is opened |
@@ -116,16 +116,24 @@ holding a model credential and carries no model SDK to use one
 (`warden/pyproject.toml` lists exactly four dependencies, and a CI test fails
 the build if a vendor SDK ever appears among them).
 
-**State.** All security state is in-process and in-memory: taint and row
-budgets in `TaintTracker`, keyed by `task_id`. The only durable state is the
-audit log and the SQLite database. There is no queue and no asynchronous
-decision path — a decision is made, recorded and acted on within one request.
+**State.** All security state is in-process and in-memory: data classes held
+and row budgets in `InMemoryTaskStateStore`, keyed by `task_id`. The only
+durable state is the audit log and the SQLite database. There is no queue and
+no asynchronous decision path — a decision is made, recorded and acted on
+within one request.
 
-**Concurrency.** The tool API handler is `async def` and its only `await`
-(parsing the body) runs *before* the taint snapshot. Everything from the
-snapshot through `record_read` is synchronous, so on a single event loop the
-read-decide-record sequence cannot interleave. Only the proxy's byte-piping is
-concurrent, and it happens after the decision.
+**Concurrency.** Two calls for one task cannot both pass the same budget,
+because a call *charges* its estimate before the decision rather than reading
+a total and writing one afterwards. The charge is atomic, and it is what orders
+concurrent callers: each is handed the state as it was before its own charge,
+so the longest prefix that fits the budget is allowed and the rest are refused
+by `rows.bounded`.
+
+This used to be a property of the call graph instead — the handler's only
+`await` ran before the snapshot, and everything after it was synchronous — and
+that argument is no longer load-bearing. The sequence is still synchronous
+today, but making it async (A6) would remove a performance ceiling rather than
+a control.
 
 ---
 
@@ -141,8 +149,9 @@ concurrent, and it happens after the decision.
    expired means 401 **and an audit record** under the sentinel principal with
    rule `unauthenticated` — an unrecorded refusal would make a probe
    indistinguishable from a run that never happened.
-4. **The body is parsed, then task state is snapshotted** — in that order, so
-   no `await` sits inside the critical section.
+4. **The body is parsed.** Task state is not read yet: there is nothing to
+   price until `describe()` has run, and the read that matters happens as part
+   of the charge in step 7.
 5. **Arguments are shape-checked** against the catalog's declared schema before
    anything interprets them, so `describe()` and `execute()` cannot disagree
    about what the target is.
@@ -150,17 +159,29 @@ concurrent, and it happens after the decision.
    `path`, `estimated_rows`, `subjects`, `recipients`. An unknown tool denies
    `tools.allowed`; a client-caused failure denies `input.malformed`; a genuine
    server bug returns 502 with nothing recorded against the agent.
-7. **Policy is evaluated.** The full input document — principal, action,
+7. **The call is charged.** `describe()`'s `estimated_rows` and the tool's
+   declared data class are reserved against the task, atomically, and what
+   comes back is the state as it was *before* this charge — which is what the
+   policy input and the audit record both carry. A view including the call's
+   own class would make a task's first PII read trip `egress.pii_sink` and deny
+   itself. Exactly one of three settlements follows: reconcile on success
+   (commit the true count), release on refusal (rows *and* class — a denied
+   call leaves no trace), abandon on a failed `execute()` (rows back, class
+   kept, because the adapter reached the source).
+
+8. **Policy is evaluated.** The full input document — principal, action,
    target, task state — goes to OPA. A transport error, an incoherent response,
    or `allow: true` alongside a non-empty `deny_reasons` all resolve to
    `pdp.unavailable`, which denies.
-8. **The decision is made durable before it is acted on.** A deny is recorded
+9. **The decision is made durable before it is acted on.** A deny is recorded
    and returns 403 naming the rule. An allow is recorded *first*; if that write
    fails the request returns 503 and nothing executes.
-9. **The adapter executes.** A failure here does not overwrite the durable
+10. **The adapter executes.** A failure here does not overwrite the durable
    allow — the record stands as the true account of what was authorized, and
    the response reports 502.
-10. **Task state is updated** with the result's data class and row count.
+11. **The charge is settled** — reconciled to the result's true row count, or
+   abandoned if `execute()` failed. Either way the reservation stops holding
+   budget the moment the call is over.
 
 ```mermaid
 sequenceDiagram
@@ -254,9 +275,10 @@ what the *task* is carrying, which is a property no single request contains.
 | Scope | Per `task_id`, from the token. A new `task_id` is a new budget |
 | Granularity | Task-level, not per string — summarising or re-encoding does not launder a data class |
 | Storage | In-memory in the broker process |
-| Expiry | Process lifetime. Tokens expire in 5 minutes; the state does not expire on its own |
-| Concurrency | Safe by construction under **one worker** — no lock. Two workers share no state and reopen a TOCTOU on the row budget |
-| Distributed | Not supported. Horizontal scaling needs shared state that is not built |
+| What the number means | Rows **charged**: settled reads plus reservations still in flight. A reserved-but-unused row counts until reconciliation, deliberately |
+| Expiry | Two clocks. A reservation expires after `max_in_flight_seconds` (60), so a broker killed mid-call self-heals. A whole task expires `ttl_grace_seconds` (3600) after its last token's `exp` |
+| Concurrency | Safe within a process, by an atomic charge rather than by the handler happening not to suspend |
+| Distributed | Not supported. Two brokers share no store, so horizontal scaling still needs one that is not built |
 
 ---
 
@@ -344,7 +366,7 @@ usable token was presented). Both deny, and both are recorded.
 │   │   ├── proxy.py            # egress proxy; the only route off agent-net
 │   │   ├── pdp.py              # OPA client; every failure mode denies
 │   │   ├── identity.py         # Ed25519 task tokens; verify-only in the broker
-│   │   ├── taint.py            # per-task data classes and row budget
+│   │   ├── taint.py            # per-task data classes and row budget (charged, not counted)
 │   │   ├── audit.py            # append-only hash-chained decision log
 │   │   ├── control_main.py     # the control plane: the only process that mints
 │   │   ├── adapters/           # describe() + execute() per tool kind

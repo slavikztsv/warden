@@ -1,6 +1,7 @@
 """The decision sequence, as a value rather than a response.
 
-verify -> snapshot -> validate -> decide -> record -> execute. Nothing here
+verify -> validate -> describe -> charge -> decide -> record -> execute.
+Nothing here
 knows about HTTP or any wire protocol: it returns an Outcome, and a surface
 renders it. That is what stops two front doors onto one broker from
 disagreeing about what a call was.

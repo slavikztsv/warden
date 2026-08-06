@@ -149,18 +149,19 @@ Everything the demo can do: **[docs/DEMO.md](docs/DEMO.md)**.
 ## How it works
 
 <p align="center">
-  <img src="docs/assets/architecture.png" alt="broker-control, on its own network, signs an Ed25519 token and hands it to the untrusted agent runtime, which proposes but never decides. The agent reaches warden, one process and one worker, through two surfaces: the tool API on 8080 for declared tools, and the egress proxy on 3128 for all other HTTP. Both feed the same spine: verify signature and expiry, snapshot rows read and data held, validate (tool calls only), decide by asking OPA, which evaluates authz.rego (the rules) against data.json (your tools, purposes and limits), then record before anything runs. Only then do the adapters execute against the protected systems." width="100%">
+  <img src="docs/assets/architecture.png" alt="broker-control, on its own network, signs an Ed25519 token and hands it to the untrusted agent runtime, which proposes but never decides. The agent reaches warden, one process and one worker, through two surfaces: the tool API on 8080 for declared tools, and the egress proxy on 3128 for all other HTTP. Both feed the same spine: verify signature and expiry, validate arguments (tool calls only), describe the target, charge the rows and the data class against the task, decide by asking OPA, which evaluates authz.rego (the rules) against data.json (your tools, purposes and limits), then record before anything runs. Only then do the adapters execute against the protected systems." width="100%">
 </p>
 
 **The order is the security property:**
 
-> ### `verify → snapshot → validate → decide → record → execute`
+> ### `verify → validate → describe → charge → decide → record → execute`
 
 | Step | The question it answers | If it fails |
 |---|---|---|
 | **verify** | Is this token real, and has it expired? Checked against the public key. | `401`, recorded as `unauthenticated` |
-| **snapshot** | How much has this task read already, and is it holding customer data? | cannot fail, it reads memory |
-| **validate** | Do the arguments have the declared shape, and what do they really point at? | denies `input.malformed` |
+| **validate** | Do the arguments have the declared shape? Checked before anything interprets them. | denies `input.malformed` |
+| **describe** | What does this call really point at, and how many rows would it return? A `COUNT(*)`, with nothing materialised. | denies `input.malformed`, or `502` on a server fault |
+| **charge** | Hold that row count, and the data class this tool produces, against the task — before deciding. Returns what the task held *before* this call. | `503`, and nothing runs |
 | **decide** | Ask OPA, giving it the token, the target and the task's history so far. | denies `pdp.unavailable` |
 | **record** | Write the decision down, **before** anything happens. | `503`, and nothing runs |
 | **execute** | Do the thing. | `502`; the record of the allow still stands |
@@ -201,7 +202,7 @@ audit log is therefore the rule that actually fired.
 | `tools.allowed` | The token does not grant this tool |
 | `egress.allowlist` | This host is not on the list for this kind of task |
 | `egress.pii_sink` | The task is holding customer data and this destination was never approved for it |
-| `rows.bounded` | The rows already read plus the rows now asked for exceed the task's budget |
+| `rows.bounded` | The rows already charged plus the rows now asked for exceed the task's budget |
 | `rows.scope` | The read names a customer the token never mentioned |
 | `mail.counterparty` | The recipient is not one the task declared up front |
 
@@ -255,8 +256,16 @@ Five minutes is the least interesting thing about it. Every token names:
 | `exp` | Five minutes by default, and it is a number in `control.toml` |
 
 **Five of the seven rules read a claim from the token directly.** The sixth,
-`rows.bounded`, counts against a budget kept under the token's `task_id`. Take
+`rows.bounded`, charges against a budget kept under the token's `task_id`. Take
 the token away and there is almost nothing left to judge against.
+
+**That budget counts what a task has committed to reading, not what came back.**
+A call is priced by the same `COUNT(*)` the policy is shown, and that price is
+held from the moment the call is authorised until it returns — then swapped for
+the true number. So a read still in flight already counts against the task, and
+a task that reserved fifty rows and received three is charged three once it
+settles. The stricter reading is the point: without it, several reads issued at
+once each see a budget none of them has spent yet, and all of them pass.
 
 ### What if a task legitimately runs longer than the TTL?
 
@@ -271,6 +280,12 @@ Minting a **new** `task_id` does reset them. That is the whole reason the agent
 must never reach the minter: it would not need to defeat the row budget, only to
 ask for a fresh task. Renewal works by construction, but nothing in this repo
 calls it on a timer, so treat it as designed-for rather than demonstrated.
+
+There is one bound on "does not reset them", and it is a real one: a task's
+state is evicted an hour after its last token expires (`ttl_grace_seconds`),
+because otherwise nothing ever removes it and a long-lived broker leaks an
+entry per task forever. Renewing keeps extending that. Going quiet for longer
+than the grace does not — the next mint under the same `task_id` starts clean.
 
 ---
 
@@ -547,9 +562,13 @@ material, and any of it can move in a month.
 Real properties of the system as shipped, found while building and stated rather
 than quietly fixed. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the full account.
 
-- **The row budget is only safe with one worker.** Nothing locks it. Two workers
-  could both read the budget before either records its own read, and both would
-  pass. That is a TOCTOU race, and it returns silently the moment you scale out.
+- **The row budget is shared within a process, not between them.** A call now
+  reserves its estimate before it runs and reconciles the true count
+  afterwards, so concurrent reads for one task cannot both pass the same
+  budget — ten simultaneous readers against a 50-row budget get five allows
+  and five refusals, and a test pins it. But the store holding those
+  reservations is in-process: two brokers still do not share one, so scaling
+  out needs the shared store that is not built yet.
 - **Containment comes from the network layout, and CI never tests it.** The
   isolated network and the split keypair need Docker to exercise. Treat that part
   as reviewed by eye, not proven by a test.

@@ -49,9 +49,12 @@ change the sequencing.
 
 ### Already stated in the README
 
-**The row budget is process-local and unlocked.**
-[`taint.py`](../warden/broker/taint.py) holds a `defaultdict` of task state. Two
-workers do not share it; two requests in one worker do not lock it.
+**The row budget is process-local and unlocked.** ~~[`taint.py`](../warden/broker/taint.py)
+holds a `defaultdict` of task state. Two workers do not share it; two requests
+in one worker do not lock it.~~ **Half closed by P2·A.** Two requests in one
+worker now do lock it, and more than lock it — a call charges its estimate
+atomically before the decision. Two workers still do not share it, which is
+A2.
 
 **Containment is never tested.** `tests/demo/test_isolation.sh` needs Docker and
 [CI](../.github/workflows/ci.yml) does not run it.
@@ -85,6 +88,16 @@ It is **replace an implicit global serialization with an explicit per-task
 critical section**, which is what then permits both real concurrency and more than
 one worker. Doing the second without the first would be a regression.
 
+**P2·A did the first, and not with a lock.** A per-task critical section
+spanning `execute()` would have to be held across a network call — a
+distributed lease needing fencing, where an expiry mid-call is a correctness
+hole — and it would serialise a single task's tool calls, which is exactly what
+an agent making parallel calls does not want. Charging the estimate before the
+decision and settling it afterwards gets the same guarantee with no lock held
+across anything slow: the store's atomic charge is the whole of the ordering.
+A6 may now make the spine async without removing a control, because the control
+is no longer the synchrony.
+
 **The audit log is O(n²) and is not crash-durable.** `_head()` calls `records()`,
 which reads and JSON-parses the entire file, on **every append**
 ([`audit.py:64`](../warden/broker/audit.py)). Ten thousand decisions means ten
@@ -94,9 +107,13 @@ property the whole design turns on, is durable against a process crash but not
 against a host loss. The claim is stronger than the code. Its `threading.Lock` is
 also process-local, so a second worker breaks the chain rather than slowing it.
 
-**Task state is never evicted.** `TaintTracker._tasks` is a `defaultdict` that
-only ever grows; nothing removes a finished task. A long-lived broker leaks one
-entry per task forever. Small, unglamorous, and a genuine availability bug.
+**Task state is never evicted.** ~~`TaintTracker._tasks` is a `defaultdict`
+that only ever grows; nothing removes a finished task. A long-lived broker leaks
+one entry per task forever. Small, unglamorous, and a genuine availability
+bug.~~ **Closed by P2·A (A5).** Entries carry an expiry set from the last
+token's `exp` plus a configured grace, and a sweep drops them. The trade is
+stated rather than hidden: a task silent for longer than the grace starts
+clean.
 
 ### One drift risk worth naming separately
 
@@ -147,7 +164,7 @@ Three things about that design belong here, in the roadmap, because they are
 decisions rather than details:
 
 **The MCP surface is a front door on the existing spine, not a service in front of
-it.** `verify → snapshot → validate → decide → record → execute` is extracted once
+it.** `verify → validate → describe → charge → decide → record → execute` is extracted once
 and called by both `POST /v1/tools/{tool}/invoke` and MCP's `tools/call`. A
 separate translating process would be free to drift from the thing it translates
 for; a shared spine cannot, and a test pins that the two surfaces produce
@@ -197,21 +214,52 @@ The load-bearing one. Everything in the "production" definition depends on it.
 
 | | Work | Size |
 |---|---|---|
-| A1 | Extract a `TaskStateStore` interface behind `TaintTracker`; keep the in-memory one as the default for single-process runs and tests | S |
-| A2 | Redis implementation with an atomic reserve-check-increment (one Lua script, so the check and the increment cannot be split) | M |
-| A3 | Change budget semantics from *count what was returned* to **reserve the estimate, then reconcile the actual**. `describe()` already produces `estimated_rows`; today it is only judged, never held. Without a reservation, N concurrent 50-row reads all pass a 50-row budget | M |
-| A4 | Release a reservation when `execute()` fails, so a backend outage does not consume a task's budget | S |
-| A5 | TTL eviction keyed on token expiry, closing the unbounded-growth leak | S |
+| A1 | Extract a `TaskStateStore` interface; keep the in-memory one as the default for single-process runs and tests. **Done** — `TaintTracker` is gone; the interface is five methods, and `charge_id`/`now` are caller-supplied so A2's Lua script can implement it unchanged | S |
+| A2 | Redis implementation with an atomic reserve-then-increment (one Lua script). **Open, and narrower than this line said** — the check does NOT move into the script; see below | M |
+| A3 | Change budget semantics from *count what was returned* to **reserve the estimate, then reconcile the actual**. **Done** — and it covers `data_classes_held` too, which this table never mentioned and which had the identical hole | M |
+| A4 | Release a reservation when `execute()` fails, so a backend outage does not consume a task's budget. **Done** — and the data class is deliberately NOT released with it | S |
+| A5 | TTL eviction keyed on token expiry, closing the unbounded-growth leak. **Done** — plus a second, shorter clock: a per-reservation deadline, so a broker killed mid-call self-heals in seconds rather than at task end | S |
 | A6 | Make the spine genuinely async: `httpx.AsyncClient` in the PDP, adapters off the loop via a threadpool, `authorize_connect` awaitable | M |
 
 **Exit:** four workers behind a load balancer, a concurrency test that fires N
 simultaneous reads at one `task_id` and asserts the budget is honoured exactly
 once, and the `report` scenario's numbers reproduced unchanged under all four.
 
-A3 is the one to argue about before building. It makes the budget stricter than
-it is today — a reserved-but-unused row still counts until reconciliation — and
-that is a deliberate change in what the number means, not a bug fix. It should be
-written down as such.
+**The concurrency test exists and the numbers are unchanged; the four workers
+are what A2 still owes.** Ten simultaneous reads at one `task_id` against a
+50-row budget produce five allows and five `rows.bounded` refusals, asserted as
+a prefix rather than a count, and the mutation that reverts the charge to a
+plain read allows all ten. Sequential runs are arithmetically identical to the
+old semantics — each call reconciles before the next charges — so every golden
+decision and the `report` scenario reproduce exactly.
+
+A3 was the one to argue about before building, and the argument is written down
+in
+[2026-08-06-p2a-task-state-store-design.md](superpowers/specs/2026-08-06-p2a-task-state-store-design.md)
+with the alternatives it beat. Three of its six decisions depart from what this
+section said, which is why they are recorded rather than assumed:
+
+**A2's "reserve-check-increment" cannot put the check in the script.** The limit
+is `data.limits.max_rows_per_task` — OPA's data, not the broker's. A Lua script
+that checked it would need the budget in two places, which is the drift class D5
+already names for the policy digest, and would make `rows.bounded` a decision
+the store made rather than the decision function. The charge is an
+unconditional atomic increment returning the state *before* it; OPA judges that
+with arithmetic and a rego file that did not change.
+
+**`data_classes_held` had the same hole and § A never mentioned it.** It guards
+R4 `egress.pii_sink` — a PII read in flight while a concurrent egress sees "no
+classes held" is a worse outcome than an overspent budget. It is charged at the
+same point, from the tool's binding, which is knowable before `execute()` on all
+four adapter kinds. It is monotonic under failure but not under refusal: a
+denied call leaves no trace (or one refusal could poison a task deliberately),
+while a failed `execute()` keeps the class and returns the rows.
+
+**The field is now `rows_charged_so_far`.** The quantity is different and
+non-monotonic — a concurrent call records a total that a later reconcile brings
+back down — and a name promising otherwise sits in the one artifact whose pitch
+is that it says what really happened. Version skew fails closed in both
+directions: either half reading the other's spelling denies `input.malformed`.
 
 ### B · An audit log that survives production
 
