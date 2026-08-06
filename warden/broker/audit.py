@@ -51,6 +51,21 @@ class AuditLog:
         # conflicting records, which `verify_chain` would otherwise report
         # as tampering.
         self._lock = threading.Lock()
+        # The chain head, or None until the first append reads it.
+        #
+        # Populated LAZILY, on first append, and deliberately not here.
+        # `warden verify-chain` exists to be pointed at a CORRUPT log and
+        # report "chain BROKEN: malformed record" -- and warden/cli/replay.py
+        # constructs this object BEFORE the guard that produces that verdict.
+        # A constructor that parsed the file would raise first, so the one
+        # tool whose whole job is inspecting broken chains would traceback
+        # instead of reporting one.
+        #
+        # The cost is one read per process, which is what happened on every
+        # append before. The win was never the first append; it was the
+        # four-thousandth, where re-parsing the whole log cost 37ms inside
+        # the lock every concurrent caller queues on.
+        self._head_cache: tuple[int, str] | None = None
 
     def records(self) -> list[dict]:
         if not self.path.exists():
@@ -62,11 +77,19 @@ class AuditLog:
         ]
 
     def _head(self) -> tuple[int, str]:
-        existing = self.records()
-        if not existing:
-            return 0, GENESIS_HASH
-        last = existing[-1]
-        return last["seq"], last["hash"]
+        """The (seq, hash) the next record links to.
+
+        Read from the file once and cached thereafter. Only ever called from
+        `append`, under the lock -- so the first-append read cannot race a
+        concurrent second append, and the cache is never populated twice.
+        """
+        if self._head_cache is None:
+            existing = self.records()
+            last = existing[-1] if existing else None
+            self._head_cache = (
+                (last["seq"], last["hash"]) if last else (0, GENESIS_HASH)
+            )
+        return self._head_cache
 
     def append(
         self,
@@ -100,7 +123,8 @@ class AuditLog:
                 "prev_hash": prev_hash,
             }
             record = dict(body)
-            record["hash"] = record_hash(body)
+            digest = record_hash(body)
+            record["hash"] = digest
             with self.path.open("a", encoding="utf-8") as handle:
                 # sort_keys, matching canonical_json. Without it the file's
                 # byte layout tracks dict insertion order, so a target built
@@ -109,6 +133,14 @@ class AuditLog:
                 # checks as clean.
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
                 handle.flush()
+            # AFTER the write returns, never before: if it raised, the cache
+            # still describes what is actually on disk, so the next append
+            # computes from the true head rather than from a record that was
+            # never written. Advancing first would break the chain at the
+            # NEXT successful append -- one call removed from its cause.
+            # Built from the typed locals rather than read back out of
+            # `record`, whose values are `object` to a type checker.
+            self._head_cache = (seq + 1, digest)
             return record
 
     def verify_chain(self) -> tuple[bool, int | None]:

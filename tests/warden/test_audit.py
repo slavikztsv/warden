@@ -1,5 +1,9 @@
 import json
 import threading
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from warden.broker.audit import GENESIS_HASH, AuditLog, canonical_json
 
@@ -105,6 +109,69 @@ def test_injected_field_is_detected_as_tampering(tmp_path):
     ok, bad_seq = AuditLog(path).verify_chain()
     assert ok is False
     assert bad_seq == 1
+
+
+def test_appending_does_not_re_read_the_log(tmp_path):
+    """B1. `_head()` used to read and JSON-parse the WHOLE file on every
+    append -- inside the lock, which is what every concurrent caller queues
+    on. Measured before the change: 0.76ms per append at 100 records, 8.0ms
+    at 1000, 37.1ms at 4000, and 71.8s for 4000 appends.
+
+    That cost is why this landed before the spine moved onto a threadpool.
+    Offloading onto a lock whose cost grows without bound would have moved
+    the ceiling rather than removed it.
+
+    Asserted as a call count, not a duration: the property is "does not
+    read", and a timing assertion would be flaky as well as weaker.
+
+    The FIRST append is allowed its one read -- that is where the cache is
+    populated, and it happens once per process. Every append after it must
+    read nothing.
+    """
+    log = AuditLog(tmp_path / "audit.jsonl")
+    _append(log)  # populates the cache
+
+    reads = []
+    real_records = log.records
+
+    def counting_records():
+        reads.append(1)
+        return real_records()
+
+    log.records = counting_records  # instance attribute shadows the method
+    for _ in range(5):
+        _append(log)
+
+    assert reads == [], f"append re-read the log {len(reads)} times"
+
+    del log.records
+    assert log.verify_chain() == (True, None)
+    assert [record["seq"] for record in log.records()] == [1, 2, 3, 4, 5, 6]
+
+
+def test_a_failed_write_does_not_advance_the_cached_head(tmp_path):
+    """The cache is advanced AFTER the write returns, never before.
+
+    Advancing first would leave it one record ahead of the file, and the
+    chain would break at the NEXT successful append -- a corruption one call
+    removed from the thing that caused it, which is the hardest kind to
+    diagnose from the one artifact this system exists to produce.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    first = _append(log)
+
+    with patch.object(Path, "open", side_effect=OSError("disk full")):
+        with pytest.raises(OSError):
+            _append(log)
+
+    second = _append(log)
+    assert second["seq"] == 2, "the failed write consumed a sequence number"
+    assert second["prev_hash"] == first["hash"]
+    assert log.verify_chain() == (True, None)
+    # And re-read from disk, so the assertion is about the file rather than
+    # about the cache agreeing with itself.
+    assert AuditLog(path).verify_chain() == (True, None)
 
 
 def test_written_lines_are_key_sorted(tmp_path):
