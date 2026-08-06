@@ -1414,3 +1414,74 @@ def test_a_store_failure_after_execute_reports_the_durable_allow(tmp_path, signe
     assert len(records) == 1 and records[0]["decision"] == "allow"
     from warden.broker.refusals import after_the_fact
     assert response.json()["message"] == after_the_fact(records[0]["seq"])
+
+
+def test_the_row_budget_is_honoured_exactly_once_under_ten_concurrent_readers(
+    tmp_path, signer
+):
+    """§A's exit criterion: N simultaneous reads at one task_id, budget
+    honoured exactly once.
+
+    Ten threads each read 10 rows against a 50-row budget. The PDP stub
+    applies R5's real arithmetic to whatever task_state it is handed, and
+    blocks on a barrier BEFORE answering -- so every caller has charged and
+    none has decided, which is precisely the window the old
+    snapshot-then-record sequence lost updates in.
+
+    Exactly five may be allowed, and it must be a prefix rather than a
+    count: the charge is what orders the callers, so each one is handed a
+    distinct multiple of ten and the budget stops the sixth. Asserting the
+    final total alone would be satisfied by an implementation that allowed
+    all ten and under-counted.
+
+    Driven against the spine directly rather than through TestClient,
+    because the spine's synchronous entry point IS what a threadpooled or
+    multi-worker deployment calls concurrently -- that is the shape this
+    work exists to make safe, and TestClient would serialise it away.
+    """
+    import threading
+
+    from warden.broker.spine import Kind
+
+    threads = 10
+    barrier = threading.Barrier(threads, timeout=10)
+
+    def opa_handler(request):
+        payload = json.loads(request.read())
+        state = payload["input"]["task_state"]
+        target = payload["input"]["target"]
+        # Every caller has charged by the time any of them is answered.
+        barrier.wait()
+        total = state["rows_charged_so_far"] + target.get("estimated_rows", 0)
+        if total > 50:
+            return httpx.Response(
+                200, json={"result": {"allow": False, "deny_reasons": ["rows.bounded"]}}
+            )
+        return httpx.Response(200, json={"result": {"allow": True, "deny_reasons": []}})
+
+    client, audit = build(tmp_path, signer, None, opa_handler=opa_handler, seed_rows=10)
+    spine = client.app.state.spine
+    token = token_for(signer)
+
+    outcomes = []
+    lock = threading.Lock()
+
+    def call():
+        outcome = spine.handle_tool_call(token, "query_customers", {"filter": "all"})
+        with lock:
+            outcomes.append(outcome.kind)
+
+    workers = [threading.Thread(target=call) for _ in range(threads)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    allowed = outcomes.count(Kind.EXECUTED)
+    assert allowed == 5, f"expected exactly five allows, got {outcomes}"
+    assert outcomes.count(Kind.POLICY_DENIED) == threads - 5
+
+    # And the budget landed exactly on the bound -- neither over (a lost
+    # update) nor under (a reservation left dangling by a denial).
+    assert spine.task_state("4711")["rows_charged_so_far"] == 50
+    assert len(audit.records()) == threads
