@@ -145,6 +145,13 @@ Deny by default. The **broker is the PEP**, **OPA is the PDP**, and the broker a
 
 `action.type` is `tool_call` or `egress`. `target.kind` is one of `doc`, `db`, `http`, `mail`.
 
+> **Stale as shipped.** Four more exist: `tool_list` and `mcp_handshake` (the
+> spine's refusals for a listing and for an unsupported MCP protocol era), and
+> `mint` (P2·B7 — the control plane's record of what a token authorised, whose
+> `target.kind` is `token` and whose `target` *is* the grant). The renderer in
+> `warden/cli/replay.py` is the authority on the live set; a type with no branch
+> there prints `?()`.
+
 ### 5.2 The six rules
 
 1. **Default deny** — `default allow := false`.

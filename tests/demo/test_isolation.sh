@@ -16,6 +16,41 @@ docker compose -f compose.yml -f demo/compose.demo.yml --profile protected up -d
 sleep 3
 
 fail=0
+
+# LIVENESS FIRST, and it is not a formality. Every check below asserts that
+# something FAILS, so "ok: minting via broker-control:8081 was blocked" prints
+# identically whether the network boundary held or the service never started —
+# and this script is the only CI job that boots broker-control at all. B7 gave
+# that service two new ways to die at boot: control.toml's [audit] section is
+# mandatory now, and build() opens the audit log. Without this, a control plane
+# that cannot start would turn the containment proof green.
+#
+# From the HOST, not from agent-runtime: broker-control publishes 8081 to the
+# host precisely because agent-net has no route to it, which is the property
+# the checks below are about.
+if curl -sf --max-time 5 -X POST http://127.0.0.1:8081/v1/tokens \
+     -H 'content-type: application/json' \
+     -d '{"agent_id":"probe","task_id":"0000","purpose":"liveness","allowed_tools":[],"data_classes":[],"counterparties":[]}' \
+     >/dev/null 2>&1; then
+  echo "ok:   broker-control is up and minting (so a blocked mint below means the network, not a dead service)"
+else
+  echo "FAIL: broker-control did not mint from the host — every 'was blocked' result below is meaningless"
+  fail=1
+fi
+
+# And the mint it just did must be IN THE BROKER'S LOG. Two containers, two
+# [audit].path strings that nothing in the product compares, one bind mount:
+# this is the only check anywhere that they actually resolve to the same file.
+# It is also the cheapest real-Docker version of the two-writer interleave
+# test — the control plane wrote a record into a chain the broker is also
+# writing to, and the CONNECT grep below reads the same file afterwards.
+if grep -q '"type": *"mint"' data/audit.jsonl 2>/dev/null; then
+  echo "ok:   the mint was recorded in the broker's own audit log"
+else
+  echo "FAIL: broker-control minted but wrote no record the broker's log can see"
+  fail=1
+fi
+
 # curl -f is required: with the proxy reachable, a denied request returns an
 # HTTP error page rather than failing to connect, and plain `curl` would exit 0.
 check() {  # name, expected-to-fail command

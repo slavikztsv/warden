@@ -336,14 +336,20 @@ directions: either half reading the other's spelling denies `input.malformed`.
 | B4 | Teach `warden verify-chain` about segments | S |
 | B5 | A pluggable sink: the file, plus structured stdout for a log shipper, plus an optional append-only external store | M |
 | B6 | ~~Multi-writer sequencing — either a dedicated writer, or move seq allocation into the same store as A2~~. **Done, and neither of those.** Both lose to the same fact: the chain is *content*-linked, so handing out a number is not the hard part. A Redis `INCR` cannot supply `prev_hash` at all; a Redis CAS on the head that succeeds and then dies before its file write leaves a `prev_hash` whose record **nobody has** — unrepairable by replay, backup or anything else. `seq` and `prev_hash` are now allocated under an `flock` on the log file itself: the only lock whose scope is exactly the resource, and the only one the kernel releases when the holder dies | M |
-| B7 | Audit the **mint**. Today nothing records what authority was granted, so the log cannot answer "what was task 4711 allowed to do" — only what it tried. **Unblocked by B6, and it was never independent of it** — see below | S |
+| B7 | ~~Audit the **mint**~~. **Done.** The control plane now appends a `mint` record — `action.type = "mint"`, `target.kind = "token"`, the grant itself in `target` — to the same chain the broker writes decisions into, *before* returning the token, and refuses to mint at all if it cannot record. It reuses the existing thirteen body fields with two honest sentinels (`policy_bundle_digest = "none"`, and a `task_state` that is the minter's view rather than the task's), so **zero interfaces changed**. `warden replay` renders it as `mint(N tools)` above the first tool call, with the granted tools on a `⊕ GRANT` line beneath | S |
 
 **Exit:** a million-record log appends in constant time, verifies across rotation,
-and B7's record appears in `warden replay` above the first tool call.
+and B7's record appears in `warden replay` above the first tool call. **The last
+clause is met**; constant-time append is met by B6; rotation is B3/B4 and is not.
 
-B7 is small and disproportionately valuable. The audit log's whole pitch is that
-it says what was authorised rather than what was reported afterwards, and the
-grant itself is currently the one authorisation it does not contain.
+B7 was small and disproportionately valuable, and it is done. The audit log's
+whole pitch is that it says what was authorised rather than what was reported
+afterwards, and the grant was the one authorisation it did not contain. It is
+the record for the *most powerful* action in the system, too: naming a fresh
+`task_id` resets both the taint state and the row budget (see
+[THREAT_MODEL.md](THREAT_MODEL.md)), and that was the only thing here that left
+no trace. B7 does not narrow who may mint — that is still topology, and still
+out of scope — it makes what was minted visible.
 
 **B7 was listed here as independent, and it was not.** The mint does not happen
 in the broker: it happens in [control_main.py](../warden/broker/control_main.py),

@@ -214,6 +214,9 @@ listen = "0.0.0.0:8081"
 [identity]
 private_key = "/data/agent.key"
 
+[audit]
+path = "/data/audit.jsonl"
+
 [tokens]
 issuer      = "warden-broker"
 ttl_seconds = 300
@@ -231,6 +234,7 @@ def test_control_loads_every_field(tmp_path):
     assert isinstance(config, ControlConfig)
     assert config.listen == ("0.0.0.0", 8081)
     assert config.private_key == Path("/data/agent.key")
+    assert config.audit_path == Path("/data/audit.jsonl")
     assert config.issuer == "warden-broker"
     assert config.ttl_seconds == 300
 
@@ -274,6 +278,44 @@ def test_control_a_missing_tokens_section_names_itself(tmp_path):
     DEFAULT_TTL_SECONDS silently."""
     text = CONTROL_COMPLETE.replace('[tokens]\nissuer      = "warden-broker"\nttl_seconds = 300\n', "")
     with pytest.raises(ConfigError, match=re.escape("tokens")):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_audit_section_names_itself(tmp_path):
+    """B7: the control plane writes a mint record, so it needs a log to write
+    it into, and it must not start without one.
+
+    MANDATORY rather than optional-and-off, unlike [mcp] and [task_state]:
+    _optional_section's own docstring scopes itself to "a surface that is off
+    by default". Recording what was granted is not a surface -- it is the
+    property that makes the log able to answer "what was task 4711 allowed to
+    do", and a control plane that silently does not have it is the exact
+    failure B7 exists to remove.
+    """
+    text = CONTROL_COMPLETE.replace('[audit]\npath = "/data/audit.jsonl"\n', "")
+    with pytest.raises(ConfigError, match=re.escape("audit")):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+def test_control_a_missing_audit_path_names_itself(tmp_path):
+    text = CONTROL_COMPLETE.replace('path = "/data/audit.jsonl"\n', "")
+    with pytest.raises(ConfigError, match=re.escape("audit.path")):
+        load_control_config(write_control(tmp_path, text), env={})
+
+
+@pytest.mark.parametrize("ttl", ["0", "-1", "-300"])
+def test_control_a_non_positive_ttl_refuses_to_load(tmp_path, ttl):
+    """A token minted with a non-positive TTL is expired before it is issued.
+
+    Always a broken deployment; what makes it a BOOT failure now is that B7's
+    control plane verifies what it just signed in order to record the grant,
+    so a zero TTL becomes an intermittent 500 on the mint route -- measured,
+    4 mints in 200,000 raised TokenInvalid("token expired") because a second
+    ticked over between signing and verifying. Refusing at load removes the
+    failure rather than rendering it.
+    """
+    text = CONTROL_COMPLETE.replace("ttl_seconds = 300", f"ttl_seconds = {ttl}")
+    with pytest.raises(ConfigError, match=r"tokens\.ttl_seconds must be positive"):
         load_control_config(write_control(tmp_path, text), env={})
 
 

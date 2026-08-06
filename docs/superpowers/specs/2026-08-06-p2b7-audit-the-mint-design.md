@@ -11,8 +11,8 @@ and therefore § A's exit criterion, which still has nothing to start a second
 worker with. See *What this does not do*.
 **Verified against:** CPython 3.12 on ext4 under WSL2. Every number below was
 measured: the record's field set, the chain verdict, the four candidate
-renderings, the TTL race (4 failures in 20 000 mints), and the control plane's
-import graph (7 modules today, 13 the wrong way, 8 the right way). Six of them
+renderings, the TTL race (4 failures in 200 000 mints), and the control plane's
+import graph (7 modules today, 13 the wrong way, 9 the right way). Six of them
 changed a decision.
 
 ---
@@ -65,7 +65,7 @@ these down is to keep catching it earlier.
 2. **A `ttl_seconds` the loader accepts makes the route fail intermittently.**
    `_integer` type-checks only, so `0` and `-1` both load. Verifying the token
    you just signed then fires the expiry check on it: `-1` fails every mint;
-   `0` failed **4 of 20 000**. Two independent fixes, both taken. **Decisions 2
+   `0` failed **4 of 200 000**. Two independent fixes, both taken. **Decisions 2
    and 7.**
 3. **`WALKTHROUGH.md:539`'s "8 records" is not an unrelated eight.** Part 4
    starts a real `warden control` (`:361`), mints task 4711 through it with
@@ -75,7 +75,7 @@ these down is to keep catching it earlier.
 4. **Importing the shared record vocabulary from `spine.py` doubles the signing
    process's import graph.** Measured: 7 warden modules today, **13** if
    `control.py` reaches `spine`/`refusals` (dragging in `taint` and
-   `adapters.base`), **8** via a stdlib-only module. No key material moves, so
+   `adapters.base`), **9** via a stdlib-only module. No key material moves, so
    this is not a security violation — it is the enforcement stack loaded into
    the one process whose two module docstrings are entirely about staying
    minimal. **Decision 9.**
@@ -551,7 +551,7 @@ Importing them from `spine.py` is worse than it looks. Measured, the
 ```
 today                                     7 modules
 + spine (directly, or via refusals)      13 modules   <- adds taint, adapters.base
-+ audit and a stdlib-only module          8 modules
++ audit and a stdlib-only module          9 modules
 ```
 
 Thirteen puts the whole enforcement stack — the taint store, the adapters base

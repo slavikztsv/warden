@@ -21,17 +21,31 @@ from pathlib import Path
 
 import uvicorn
 
+from warden.broker.audit import AuditLog
 from warden.broker.config.loader import ControlConfig, load_control_config
 from warden.broker.control import create_control_app
 from warden.broker.identity import Signer
 
 
 def build(config: ControlConfig):
-    """Loads the minting key and builds the control app."""
+    """Loads the minting key, opens the audit log, and builds the control app.
+
+    `config.issuer` goes to BOTH the signer and the app, which builds the
+    verifier that reads back what was just signed. Passing it only to the
+    signer leaves the verifier on identity.py's module default, and every
+    deployment configuring a different issuer 500s on its first mint.
+
+    The AuditLog is the same file the broker writes -- config.audit_path must
+    name it, and nothing checks that they agree (see ControlConfig). Opening
+    it here rather than inside the app keeps this the one place a process
+    decides where its records go, matching broker/__main__.py.
+    """
     signer = Signer.from_private_key_file(
         config.private_key, issuer=config.issuer, default_ttl_seconds=config.ttl_seconds
     )
-    return create_control_app(signer=signer)
+    return create_control_app(
+        signer=signer, audit=AuditLog(config.audit_path), issuer=config.issuer
+    )
 
 
 def main() -> None:

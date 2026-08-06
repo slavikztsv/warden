@@ -44,7 +44,10 @@ things that per-call permission checks do not have:
   perfectly ordinary internal host on the egress allowlist.
 - **A decision record written before the action.** Every allow, deny and
   unauthenticated probe is appended to a hash-chained log, and the log is
-  written *first* — if it cannot be written, the action does not happen.
+  written *first* — if it cannot be written, the action does not happen. So is
+  every **grant**: the control plane records what a token authorised before it
+  hands the token over, so the log answers "what was this task allowed to do"
+  and not only "what did it try".
 
 **Out of scope**, deliberately: malicious code inside the agent runtime,
 covert channels within an approved destination (there is no TLS interception),
@@ -147,9 +150,13 @@ that was not made.
 
 ## Decision lifecycle
 
-1. **A token is minted.** `broker-control` signs an Ed25519 token naming the
-   agent, task, purpose, allowed tools and counterparties, with a 5-minute TTL.
-   The agent has no route to this service and cannot mint its own.
+1. **A token is minted, and the grant is recorded.** `broker-control` signs an
+   Ed25519 token naming the agent, task, purpose, allowed tools and
+   counterparties, with a 5-minute TTL, then appends a `mint` record carrying
+   that grant to the same hash chain the broker writes decisions into — before
+   returning the token. If it cannot record, it does not grant: the mint
+   returns 503 and no token is issued. The agent has no route to this service
+   and cannot mint its own.
 2. **The agent proposes an action** — `POST /v1/tools/{tool}/invoke` with
    `Authorization: Bearer <token>`, or a `CONNECT` to the proxy carrying
    `Proxy-Authorization`.
@@ -349,8 +356,11 @@ usable token was presented). Both deny, and both are recorded.
   the volume breach it primarily is.
 - **Loading** — `authz.rego` and `data.json` are bind-mounted read-only into
   both OPA and the broker. The broker digests the same two files at startup and
-  stamps `policy_bundle_digest` into every audit record, so a decision can
-  always be traced to the exact bundle that produced it.
+  stamps `policy_bundle_digest` into every audit record it writes, so a
+  decision can always be traced to the exact bundle that produced it. The
+  control plane's `mint` records carry the literal `none` there: it loads no
+  bundle, and no bundle produced them — see `mint.unconditional`, the rule
+  those records name.
 - **Updating** — restart-time. There is no hot reload, and no policy
   versioning beyond the bundle digest and git history.
 - **Testing** — 53 Rego unit tests, including cases that evaluate the *shipped*

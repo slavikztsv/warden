@@ -14,7 +14,7 @@ from warden.broker.adapters.base import ToolResult
 from warden.broker.app import create_app
 from warden.broker.audit import AuditLog
 from warden.broker.control import create_control_app
-from warden.broker.identity import Signer, Verifier
+from warden.broker.identity import ISSUER, Signer, Verifier
 from warden.broker.pdp import PolicyDecisionPoint
 from warden.broker.taint import InMemoryTaskStateStore
 
@@ -376,8 +376,12 @@ def test_audit_write_failure_on_a_deny_is_reported_not_hidden(tmp_path, signer):
     assert "Errno" not in body["message"]
 
 
-def test_control_plane_mints_a_usable_token(signer):
-    client = TestClient(create_control_app(signer=signer))
+def test_control_plane_mints_a_usable_token(tmp_path, signer):
+    client = TestClient(
+        create_control_app(
+            signer=signer, audit=AuditLog(tmp_path / "audit.jsonl"), issuer=ISSUER
+        )
+    )
     response = client.post(
         "/v1/tokens",
         json={

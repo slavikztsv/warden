@@ -135,11 +135,20 @@ def write_control_toml(
     listen: str = "0.0.0.0:8081",
     issuer: str = "warden-broker",
     ttl_seconds: int = 300,
+    audit_path: Path | None = None,
 ) -> Path:
     """issuer here must match write_warden_toml's issuer for a token minted
     under one to verify under the other -- see
     test_a_configured_issuer_mismatch_is_rejected_end_to_end. ttl_seconds is
-    control-plane-only: the broker's config has no such field."""
+    control-plane-only: the broker's config has no such field.
+
+    audit_path defaults under tmp_path, NOT to the deployment's
+    /data/audit.jsonl. control_main.build() now constructs an AuditLog, and
+    AuditLog.__init__ does `self.path.parent.mkdir(parents=True,
+    exist_ok=True)` -- so a /data default would have every one of these tests
+    try to create /data on the machine running them.
+    """
+    audit_path = audit_path if audit_path is not None else tmp_path / "audit.jsonl"
     path = tmp_path / "control.toml"
     path.write_text(f"""
 [control]
@@ -147,6 +156,9 @@ listen = "{listen}"
 
 [identity]
 private_key = "{private_key}"
+
+[audit]
+path = "{audit_path}"
 
 [tokens]
 issuer      = "{issuer}"

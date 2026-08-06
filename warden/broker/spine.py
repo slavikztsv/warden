@@ -35,8 +35,6 @@ its own copy to drift.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -44,6 +42,7 @@ from enum import Enum
 
 from warden.broker.adapters.base import ToolResult, ToolTarget, UnknownTool
 from warden.broker.identity import TaskToken, TokenInvalid
+from warden.broker.record_fields import args_digest, empty_task_state
 from warden.broker.taint import TaskStateStore
 
 UNAUTHENTICATED = "unauthenticated"
@@ -106,20 +105,14 @@ FAULT = frozenset({
 })
 
 
-def _empty_state() -> dict:
-    # A fresh dict per call, deliberately -- not a shared module-level
-    # constant. AuditLog.append does `record = dict(body)`, a SHALLOW copy,
-    # so a record built from one shared mutable dict would let every
-    # unauthenticated refusal's stored task_state alias the same object.
-    # Nothing aliases it today because _refuse() discards the record it
-    # gets back, but the next caller to keep that return value would not
-    # know it was holding a landmine.
-    return {"data_classes_held": [], "rows_charged_so_far": 0}
-
-
-def args_digest(args: dict) -> str:
-    canonical = json.dumps(args, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+# `args_digest` and `empty_task_state` live in record_fields.py now. They are
+# shared with warden/broker/control.py, which cannot import THIS module:
+# measured, reaching spine.py takes the control plane's import graph from 7
+# warden modules to 13 -- taint and adapters.base included -- in the one
+# process that holds the private signing key. record_fields.py imports
+# nothing but the standard library, and the graph stays at 9. Importing them
+# by name above keeps every existing `from warden.broker.spine import
+# args_digest` working.
 
 
 @dataclass(frozen=True)
@@ -490,7 +483,7 @@ class Spine:
                 args_digest="sha256:none",
                 decision="deny",
                 rule=rule,
-                task_state=_empty_state(),
+                task_state=empty_task_state(),
                 policy_bundle_digest=self._digest,
             )
         except OSError:
@@ -515,7 +508,7 @@ class Spine:
                 args_digest="sha256:none",
                 decision="deny",
                 rule=UNAUTHENTICATED,
-                task_state=_empty_state(),
+                task_state=empty_task_state(),
                 policy_bundle_digest=self._digest,
             )
         except OSError as exc:

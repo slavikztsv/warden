@@ -21,8 +21,11 @@ GOLDEN = REPO_ROOT / "tests" / "golden"
 CORPUS = GOLDEN / "decisions"
 
 # From the token `warden-demo up` mints (demo/cli/main.py's `_mint_token`).
-# Not in the audit record, because a record states what was decided, not
-# what the token permitted.
+# Not in these records, because a DECISION record states what was decided,
+# not what the token permitted. B7 changed that for the log as a whole -- the
+# control plane now writes a `mint` record whose `target` IS the grant -- but
+# not for the seven here: this file reads the FROZEN golden chain, which was
+# captured before B7 and is never regenerated.
 TOKEN_FIELDS = {
     "allowed_tools": ["read_document", "query_customers", "http_fetch", "send_email"],
     "counterparties": ["customer:8812"],
@@ -70,7 +73,14 @@ def policy_input(record: dict) -> dict:
         },
         "action": {
             "type": record["action"]["type"],
-            "tool": record["action"]["tool"],
+            # `.get`, because not every record type has a tool: `tool_list`,
+            # `mcp_handshake` and B7's `mint` each carry a type alone.
+            # Defensive and unreachable today -- the golden chain is seven
+            # tool_calls and main()'s count gate below returns 1 before this
+            # is ever called on anything else -- but an unguarded subscript
+            # here would be a KeyError rather than a diagnosis if the golden
+            # were ever recaptured from a run that has one.
+            "tool": record["action"].get("tool", record["action"]["type"]),
             "args_digest": record["args_digest"],
         },
         "target": record["target"],

@@ -20,7 +20,7 @@ file under `warden/` ever contains one of this repo's own demo strings
 
 ## What a customer does
 
-1. **Write `warden.toml`.** Five sections: where the broker listens, the
+1. **Write `warden.toml`.** Six sections: where the broker listens, the
    public half of your keypair (never the private half — see
    `docs/THREAT_MODEL.md`), where OPA lives and which policy bundle it evaluates,
    where the audit log goes, and the path to your tool catalog.
@@ -49,7 +49,38 @@ file under `warden/` ever contains one of this repo's own demo strings
    tools = "/config/tools.toml"
    ```
 
-2. **Declare your tools in `tools.toml`.** One `[tools.<name>]` table per
+2. **Write `control.toml`.** The control plane is a separate process — the only
+   one that loads the private key, and therefore the only one that can mint.
+   Four sections: where it listens, the private half of your keypair, where the
+   audit log goes, and the token issuer and TTL it mints under.
+   `demo/scenario/control.toml` is a complete example.
+
+   ```toml
+   [control]
+   listen = "0.0.0.0:8081"
+
+   [identity]
+   private_key = "/data/agent.key"
+
+   [audit]
+   path = "/data/audit.jsonl"
+
+   [tokens]
+   issuer      = "warden-broker"
+   ttl_seconds = 300
+   ```
+
+   Two values here **must** equal their `warden.toml` counterparts, and they
+   fail in opposite ways. `[tokens].issuer` fails loudly — the broker verifies
+   against its own configured issuer, so a mismatch rejects every token.
+   `[audit].path` fails **quietly**: the control plane records every grant into
+   the chain the broker writes decisions into, and nothing compares the two
+   strings. Point them at different files and you get two chains, no error, and
+   a mint that never appears above the first tool call it authorised. Both
+   processes need write access to that path; the control plane returns 503 and
+   mints nothing when it cannot record.
+
+3. **Declare your tools in `tools.toml`.** One `[tools.<name>]` table per
    tool. Each names an *adapter* kind — `docstore`, `sql`, `http` or `mail`
    (the full vocabulary is `warden/broker/adapters/registry.py`'s
    `TARGET_KIND_BY_ADAPTER`) — a `[tools.<name>.binding]` telling that
@@ -103,7 +134,7 @@ file under `warden/` ever contains one of this repo's own demo strings
    omission is caught before a model meets it rather than discovered the same
    way an unset `data_class` is (see above).
 
-3. **Mirror your tools' target kinds in `data.json`.** The policy never
+4. **Mirror your tools' target kinds in `data.json`.** The policy never
    reasons about tool *names* — `warden/policies/authz.rego`'s R0 and R1b
    deny any call whose declared target kind disagrees with the catalog, and
    every other rule (R3 through R7) keys off `target.kind`
@@ -115,7 +146,7 @@ file under `warden/` ever contains one of this repo's own demo strings
    `pii`) and the per-task row-volume limit. `demo/scenario/data.json` is
    the worked example; it is under thirty lines.
 
-4. **Check it's consistent, before you trust it.**
+5. **Check it's consistent, before you trust it.**
 
    ```bash
    DOCSTORE_URL=... DB_PATH=... MAILER_URL=...  \
@@ -144,7 +175,7 @@ file under `warden/` ever contains one of this repo's own demo strings
    `title`, which the checks above never require. Run it before flipping
    `[mcp].enabled`, not after — see `docs/DEPLOYMENT.md`.
 
-5. **Run it.**
+6. **Run it.**
 
    ```bash
    warden serve --config warden.toml

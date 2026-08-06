@@ -205,6 +205,9 @@ listen = "127.0.0.1:18081"
 [identity]
 private_key = "{missing_key}"
 
+[audit]
+path = "{tmp_path / "audit.jsonl"}"
+
 [tokens]
 issuer      = "warden-broker"
 ttl_seconds = 300

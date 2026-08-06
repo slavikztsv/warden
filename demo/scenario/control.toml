@@ -8,12 +8,25 @@
 # broker verifies against its own configured issuer, and a mismatch fails
 # every token, loudly. ttl_seconds is control-plane-only: the broker never
 # mints, so it has no use for a TTL.
+#
+# [audit].path must match warden.toml's [audit].path exactly, and this one
+# fails QUIETLY. The control plane records every mint into the same
+# hash-chained log the broker writes decisions into -- that is what lets the
+# log answer "what was task 4711 allowed to do" and not only "what did it
+# try". compose.yml mounts ./data:/data into both services, so the directory
+# is shared; the two paths are separate strings that nothing compares. Point
+# them at different files and you get two chains, no error, and a mint that
+# never appears above the first tool call.
 
 [control]
 listen = "0.0.0.0:8081"
 
 [identity]
 private_key = "/data/agent.key"
+
+[audit]
+# MUST equal warden.toml's [audit].path. See the note above.
+path = "/data/audit.jsonl"
 
 [tokens]
 issuer      = "warden-broker"

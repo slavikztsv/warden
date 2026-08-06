@@ -71,6 +71,11 @@ against anything real.
   and the broker so the recorded digest matches what was evaluated.
 - Give the broker a writable audit path. It returns 503 and refuses to act
   when it cannot record.
+- Give the control plane the **same** audit path, in `control.toml`'s `[audit]`
+  section. It records every grant into that chain and returns 503 without
+  minting if it cannot. Nothing compares the two paths, so a divergence is two
+  chains and no error: under Compose the directory is shared, and the value is
+  the same string in both files.
 - Run `warden config check --catalog … --data … --mcp` before setting
   `[mcp].enabled = true`. It demands a `description` and a `title` on every
   tool, which nothing else in this list requires.

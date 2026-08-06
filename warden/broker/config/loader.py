@@ -332,6 +332,14 @@ def _task_state_config(section: dict, env: Mapping[str, str]) -> TaskStateConfig
 class ControlConfig:
     listen: tuple[str, int]
     private_key: Path
+    # MUST name the same file as BrokerConfig.audit_path. The two processes
+    # share one hash chain, and nothing compares these two strings: under
+    # compose the DIRECTORY is shared (./data:/data into both services) but
+    # the paths are two independently interpolated values. A typo here
+    # produces a second, separate mint log -- quietly, at no boot. Same
+    # hazard as `issuer` below, and treated the same way: a comment in both
+    # TOMLs and here. See the B7 design's decision 7.
+    audit_path: Path
     # issuer must agree with BrokerConfig.issuer, or every minted token
     # fails verification. ttl_seconds governs minting only, so it lives
     # here and nowhere else -- the broker never mints.
@@ -342,19 +350,45 @@ class ControlConfig:
 def load_control_config(path: Path, env: Mapping[str, str]) -> ControlConfig:
     """Reads the control plane's wiring the same way load_broker_config does:
     same TOML-or-die failure mode, same ${VAR} interpolation. The control
-    plane's config is smaller -- one listen address, one key path, one
-    [tokens] table -- but a config it cannot fully understand must still
-    refuse to start rather than mint tokens under a guess.
+    plane's config is smaller -- one listen address, one key path, one audit
+    path, one [tokens] table -- but a config it cannot fully understand must
+    still refuse to start rather than mint tokens under a guess.
     """
     document = _load_toml(path)
 
+    # [audit] between [identity] and [tokens], matching where load_broker_config
+    # reads it. Not cosmetic: the order decides which error a half-updated
+    # config reports first, and therefore which of these sections an operator
+    # is sent to fix.
     control = _section(document, "control")
     identity = _section(document, "identity")
+    audit = _section(document, "audit")
     tokens = _section(document, "tokens")
+
+    # MANDATORY, via _section, exactly as the broker's is -- not
+    # _optional_section, whose docstring scopes itself to "a surface that is
+    # off by default". Recording the mint is not a surface that is off by
+    # default; it is the property B7 exists to add, and a control plane that
+    # silently does not have it is the failure that document is about.
+    ttl_seconds = _integer(tokens, "tokens", "ttl_seconds")
+    if ttl_seconds <= 0:
+        # A token minted with a non-positive TTL is expired at, or before,
+        # the instant it is issued. That was always a broken deployment; what
+        # makes it worth a boot failure now is that the control plane VERIFIES
+        # what it just signed in order to record the grant, so a zero TTL
+        # turns into an intermittent 500 -- measured, 4 mints in 200,000.
+        # The same class of quiet weakening _positive() exists to refuse; not
+        # _positive() itself, because that helper defaults a missing key and
+        # this one must stay mandatory (see the missing-[tokens] test).
+        raise ConfigError(
+            "tokens.ttl_seconds must be positive: a token minted with a "
+            f"non-positive TTL is expired before it is issued, got {ttl_seconds}"
+        )
 
     return ControlConfig(
         listen=_address(control, "control", "listen", env),
         private_key=Path(_string(identity, "identity", "private_key", env)),
+        audit_path=Path(_string(audit, "audit", "path", env)),
         issuer=_string(tokens, "tokens", "issuer", env),
-        ttl_seconds=_integer(tokens, "tokens", "ttl_seconds"),
+        ttl_seconds=ttl_seconds,
     )

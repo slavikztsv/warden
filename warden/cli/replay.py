@@ -14,6 +14,16 @@ from pathlib import Path
 from warden.broker.audit import AuditLog
 
 
+def _granted_tools(record: dict) -> list:
+    """The tools a mint record's grant names.
+
+    `.get` at both levels because this renders a log, and a log is exactly the
+    artifact that may have been hand-edited. `warden verify-chain` exists to
+    be pointed at a corrupt file and report what it found, not to traceback.
+    """
+    return record.get("target", {}).get("allowed_tools", []) or []
+
+
 def _describe(record: dict) -> str:
     if record["action"].get("type") == "tool_list":
         # A listing carries no tool name -- it is the question "which tools
@@ -27,6 +37,17 @@ def _describe(record: dict) -> str:
         # falls through and prints `?()` inside the same hash chain as real
         # decisions.
         return "mcp_handshake()"
+    if record["action"].get("type") == "mint":
+        # The control plane's grant (warden/broker/control.py's record_mint).
+        # Third branch, same reason as the two above -- measured, without it
+        # this renders `?()`.
+        #
+        # A COUNT, not the tool names: joining four typical tool names into
+        # this line measures 90 characters against its own 38-column field
+        # and the 76-character separator a caller prints around it. The names
+        # go on the ⊕ GRANT line render_replay emits beneath, at 69.
+        tools = _granted_tools(record)
+        return f"mint({len(tools)} tool{'' if len(tools) == 1 else 's'})"
     tool = record["action"].get("tool", "?")
     target = record["target"]
     kind = target.get("kind")
@@ -84,9 +105,23 @@ def render_replay(
         verdict = "allow" if record["decision"] == "allow" else "DENY "
         # On an allow the broker records the rule as the literal "allow", so
         # printing it would render "allow  allow". Show the rule only when it
-        # carries information — i.e. when it names why something was refused.
+        # carries information — usually the name of the rule something was
+        # refused under, and since B7 also `mint.unconditional`, which says
+        # out loud that no rule evaluated the grant at all.
         reason = "" if record["rule"] == "allow" else f"  {record['rule']}"
         lines.append(f"  {mark} {_describe(record):<38} {verdict}{reason}".rstrip())
+        if record["action"].get("type") == "mint":
+            # AFTER its own line, not before — it elaborates the line above
+            # it. ⛔ TAINT goes before its record for the opposite reason: the
+            # state it reports is the snapshot taken *before* that call, so
+            # putting it after would attribute the taint to the next one.
+            #
+            # The same idea as that marker, though: a fact too important to
+            # lose to the column layout gets its own indented line. This one
+            # is the answer to "what was this task allowed to do", which is
+            # the entire reason B7 exists — printing a bare `mint(4 tools)`
+            # would put that answer only in the raw file.
+            lines.append(f"      ⊕ GRANT: {', '.join(_granted_tools(record))}")
     head = str(records[-1].get("hash", "?"))[:8]
     if chain_ok is False:
         where = f" at seq {bad_seq}" if bad_seq is not None else ""

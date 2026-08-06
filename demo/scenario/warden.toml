@@ -29,6 +29,11 @@ decision_path = "warden/authz"
 bundle_roots  = ["/policies"]
 
 [audit]
+# MUST equal control.toml's [audit].path. Two processes write this one
+# hash chain: the broker's decisions and the control plane's mint records.
+# compose.yml shares the directory (./data:/data into both services); nothing
+# compares the two path strings, so a divergence here is two chains and no
+# error anywhere.
 path = "/data/audit.jsonl"
 
 [tokens]

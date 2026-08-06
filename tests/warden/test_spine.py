@@ -273,3 +273,114 @@ def test_replay_renders_a_handshake_refusal(tmp_path):
         "target": {"kind": "unknown"},
     })
     assert rendered == "mcp_handshake()"
+
+
+MINT_RECORD = {
+    "seq": 1,
+    "task_id": "4711",
+    "agent_id": "triage-bot",
+    "purpose": "support-triage",
+    "action": {"type": "mint"},
+    "target": {
+        "kind": "token",
+        "allowed_tools": ["read_document", "query_customers", "http_fetch", "send_email"],
+        "data_classes": ["public", "pii"],
+        "counterparties": ["customer:8812"],
+        "delegated_from": None,
+        "jti": "ffe4c16e49104513b3d63315c004068f",
+        "exp": 1786027002,
+    },
+    "decision": "allow",
+    "rule": "mint.unconditional",
+    "task_state": {"data_classes_held": [], "rows_charged_so_far": 0},
+    "hash": "a" * 64,
+}
+
+
+def test_replay_renders_a_mint(tmp_path):
+    """B7's third `?()` branch, and the one the roadmap's § B exit needs.
+
+    A COUNT rather than the names: measured, `mint(read_document,
+    query_customers, http_fetch, send_email)` is 90 characters against this
+    renderer's 38-column field and the demo's 76-character separator, where
+    `mint(4 tools)` is 68.
+    """
+    from warden.cli.replay import _describe
+
+    assert _describe(MINT_RECORD) == "mint(4 tools)"
+
+
+def test_replay_says_one_tool_not_one_tools(tmp_path):
+    from warden.cli.replay import _describe
+
+    narrow = {**MINT_RECORD, "target": {**MINT_RECORD["target"], "allowed_tools": ["read_document"]}}
+    assert _describe(narrow) == "mint(1 tool)"
+
+
+def test_replay_shows_what_the_mint_granted(tmp_path):
+    """The count on the record's own line is not the answer; this line is.
+
+    "The log cannot answer what task 4711 was ALLOWED to do, only what it
+    tried" is the whole of B7, so an artifact that recorded the grant and then
+    printed only its size would have moved the answer from nowhere to the raw
+    file. The ⊕ marker is the ⛔ TAINT precedent: a fact too important to lose
+    to the column layout gets its own indented line.
+    """
+    from warden.cli.replay import render_replay
+
+    output = render_replay([MINT_RECORD], chain_ok=True)
+    lines = output.splitlines()
+
+    assert lines[1] == "  ✓ mint(4 tools)                          allow  mint.unconditional"
+    assert lines[2] == (
+        "      ⊕ GRANT: read_document, query_customers, http_fetch, send_email"
+    )
+    # Under the demo's separator, which is what ruled out the joined form on
+    # the record's own line.
+    assert max(len(line) for line in lines[1:3]) <= 76
+
+
+def test_the_mint_record_is_rendered_first(tmp_path):
+    """§ B's exit criterion, as an assertion: "B7's record appears in `warden
+    replay` ABOVE the first tool call".
+
+    Position, not timestamp. B6 chose one chain in one file specifically so
+    this claim would mean something stronger than two clocks happening to
+    agree -- seq is allocated under an flock on the log, so the mint really is
+    before the call, not merely stamped earlier.
+    """
+    from warden.cli.replay import render_replay
+
+    call = {
+        "seq": 2, "task_id": "4711", "agent_id": "triage-bot",
+        "purpose": "support-triage",
+        "action": {"type": "tool_call", "tool": "read_document"},
+        "target": {"kind": "doc", "path": "ticket-4711"},
+        "decision": "allow", "rule": "allow",
+        "task_state": {"data_classes_held": [], "rows_charged_so_far": 0},
+        "hash": "b" * 64,
+    }
+    lines = render_replay([MINT_RECORD, call], chain_ok=True).splitlines()
+
+    mint_at = next(i for i, line in enumerate(lines) if "mint(" in line)
+    call_at = next(i for i, line in enumerate(lines) if "read_document(" in line)
+    assert mint_at < call_at
+    assert "⊕ GRANT" in lines[mint_at + 1]
+
+
+def test_a_decision_record_gets_no_grant_line(tmp_path):
+    """The branch must fire on mints and nothing else -- otherwise
+    tests/golden/replay-4711.txt, which is byte-pinned over seven tool_call
+    records, would gain seven blank grant lines."""
+    from warden.cli.replay import render_replay
+
+    call = {
+        "seq": 1, "task_id": "4711", "agent_id": "triage-bot",
+        "purpose": "support-triage",
+        "action": {"type": "tool_call", "tool": "read_document"},
+        "target": {"kind": "doc", "path": "ticket-4711"},
+        "decision": "allow", "rule": "allow",
+        "task_state": {"data_classes_held": [], "rows_charged_so_far": 0},
+        "hash": "b" * 64,
+    }
+    assert "GRANT" not in render_replay([call], chain_ok=True)
