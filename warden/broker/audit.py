@@ -10,11 +10,20 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
+
+# The first thing this module has ever imported from inside `warden`, and the
+# right direction: record_fields exists because two processes writing one chain
+# "must agree on what a field's value means or the chain is one file containing
+# two vocabularies", and B3's `_rotate` below makes THIS module a third writer.
+# It imports nothing but the standard library, and both processes that hold an
+# AuditLog already import it, so this costs no module anywhere.
+from warden.broker.record_fields import empty_task_state
 
 GENESIS_HASH = "0" * 64
 
@@ -49,6 +58,32 @@ _LOCK_POLL_SECONDS = 0.005
 # A fixed window finds no line boundary inside a record larger than itself,
 # so it would fail on exactly the record a probe produces.
 _TAIL_WINDOW_BYTES = 4096
+
+# Where a segment closes, in bytes of the active segment, checked BEFORE the
+# record that would cross it -- so a closed segment is at least this and at most
+# this plus one record.
+#
+# ON by default, and that is a different kind of default from B2's: B2 CHANGED
+# what an existing deployment does (16x slower appends), where this only starts
+# doing something once a log reaches 64MiB. At the 547 bytes a record measures
+# here that is ~123,000 records, at which point one file is a real operational
+# problem -- no editor opens it, records() loads it whole into memory, and it
+# cannot be archived in parts. A deployment that never gets there is untouched,
+# which is every test in this suite and the demo's eight records.
+#
+# 64MiB and not 16 (33 segments per million records) or 256 (2): ROADMAP § B's
+# exit is a million-record log that VERIFIES ACROSS ROTATION, and ~8 segments is
+# the granularity that actually exercises that.
+#
+# 0 disables rotation entirely, which is exactly what shipped before B3. Not a
+# separate flag: the loader's `_positive(..., allow_zero=True)` already means
+# this, and one key cannot then disagree with another.
+DEFAULT_SEGMENT_BYTES = 64 * 1024 * 1024
+
+# The `action.type` of the record that opens every segment after the first.
+# Named once because two files write or read it -- this one and
+# warden/cli/replay.py -- and a second spelling would be a second vocabulary.
+ANCHOR_ACTION_TYPE = "anchor"
 
 # The two durability levels, and what each promises.
 #
@@ -182,6 +217,74 @@ def _head_from_tail(handle: BinaryIO) -> tuple[int, str]:
         raise OSError(f"audit log tail is not a complete record: {exc}") from exc
 
 
+def _identity(path: Path) -> tuple[int, int]:
+    """WHICH FILE a name refers to, rather than which name.
+
+    Rotation deliberately gives the closing segment two names for a moment (see
+    AuditLog._rotate), and a crash in that window leaves them both. Every "is
+    this the same file" question in this module therefore has to be asked about
+    the inode: a draft that compared resolved paths reported `segment files
+    nothing in the chain names` for a log that was entirely fine, and left it
+    unreadable until the next rotation -- 64MiB of writes later.
+    """
+    info = os.stat(path)
+    return info.st_dev, info.st_ino
+
+
+def _still_the_active_segment(handle: BinaryIO, path: Path) -> bool:
+    """Whether the locked descriptor is the file `path` names RIGHT NOW.
+
+    This is B6 for a log that rotates. A writer opens `path`, then spins for the
+    flock; another writer holding that lock rotates; and the first writer now
+    holds a descriptor on a segment that has been CLOSED. Its size is still over
+    the threshold, so it does not merely append into a closed file -- it tries to
+    ROTATE it, and produces a second, divergent lineage of segments.
+
+    Measured with this check removed: four processes, 40 appends each, a 4KiB
+    segment, three runs -- 3 of 4 writers dead every run, 35 to 75 of 160 appends
+    returning at all, and what survived was either a chain BROKEN at seq 33 or a
+    log that refuses to be read at all.
+
+    A missing name counts as rotated away: reopening recreates it, and the
+    genesis guard in `append` is what then refuses to start a second chain.
+    """
+    held = os.fstat(handle.fileno())
+    try:
+        named = os.stat(path)
+    except FileNotFoundError:
+        return False
+    return (held.st_dev, held.st_ino) == (named.st_dev, named.st_ino)
+
+
+def _anchor_of(path: Path) -> dict | None:
+    """A segment's anchor record, or None if it does not begin with one.
+
+    `readline` rather than the tail read's doubling window: reading FORWARD to
+    the first newline needs no window at all, whatever the record's width.
+
+    Every "not an anchor" answer here is deliberately quiet, including a first
+    line that is not JSON at all. This function answers one question -- what does
+    this segment follow -- and `verify_chain` is what reports a corrupt record.
+    A first record that is the log's own genesis record is the ordinary answer,
+    not an error: that is what segment 0 looks like, and what every log written
+    before B3 looks like.
+    """
+    with path.open("rb") as handle:
+        first = handle.readline()
+    if not first.strip():
+        return None
+    try:
+        record = json.loads(first)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    action = record.get("action")
+    if not isinstance(action, dict) or action.get("type") != ANCHOR_ACTION_TYPE:
+        return None
+    return record
+
+
 class AuditLog:
     def __init__(
         self,
@@ -189,6 +292,7 @@ class AuditLog:
         *,
         lock_timeout: float = _LOCK_TIMEOUT_SECONDS,
         durability: str = DEFAULT_DURABILITY,
+        segment_bytes: int = DEFAULT_SEGMENT_BYTES,
     ) -> None:
         if durability not in DURABILITY_LEVELS:
             # Never a fallback, in EITHER direction. Falling back to "flush"
@@ -200,11 +304,21 @@ class AuditLog:
                 f"audit durability must be one of {DURABILITY_LEVELS}, "
                 f"got {durability!r}"
             )
+        if not isinstance(segment_bytes, int) or segment_bytes < 0:
+            # Never a silent fallback, exactly as `durability` above. A
+            # threshold this object quietly ignored would be a deployment whose
+            # log grows without bound while its config says otherwise.
+            raise ValueError(
+                f"audit segment_bytes must be a non-negative integer, got {segment_bytes!r}"
+            )
         self.path = Path(path)
         # PUBLIC, alongside `path`: broker/__main__.py's build() returns its
         # BrokerComponents, so a test can assert that the configured level
         # actually reached the log rather than mocking the constructor call.
         self.durability = durability
+        # Public for the same reason, and additionally because B4 is about
+        # teaching the CLI what a segmented log is.
+        self.segment_bytes = segment_bytes
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # The IN-PROCESS half of the exclusion. `append` also takes an flock on
         # the file itself, which would be sufficient on its own -- two file
@@ -228,14 +342,211 @@ class AuditLog:
     # head cache lazily; with no cache to populate it now holds by
     # construction, which is the better version of the same property.
 
+    def _closed_segment_name(self, last_seq: int) -> str:
+        """`audit.jsonl` closing at seq 8 becomes `audit-000008.jsonl`.
+
+        Named for the seq of its LAST record, which the tail read already has in
+        hand at rotation time, so naming costs no extra read. Unique by
+        construction, because seqs are. Past 999,999 it grows a seventh digit and
+        stops sorting lexically, which costs nothing: order comes from the
+        anchors, not from the names.
+        """
+        return f"{self.path.stem}-{last_seq:06d}{self.path.suffix}"
+
+    def _closed_segment_files(self) -> list[Path]:
+        """Every sibling shaped like a closed segment of THIS log.
+
+        `iterdir` and a compiled pattern, never `Path.glob`: glob interprets its
+        argument as a PATTERN, so an `[audit].path` containing `[`, `*` or `?`
+        would search a different set of names than the pattern accepts -- and
+        that mismatch EMPTIES the orphan guard below rather than tripping it.
+        `iterdir` lists the directory once, which glob does anyway.
+        """
+        pattern = re.compile(
+            re.escape(self.path.stem) + r"-\d{6,}" + re.escape(self.path.suffix)
+        )
+        return sorted(
+            entry for entry in self.path.parent.iterdir() if pattern.fullmatch(entry.name)
+        )
+
+    def segments(self) -> list[Path]:
+        """Every file this log is made of, OLDEST FIRST, active segment last.
+
+        Walked BACKWARD from the active segment through the anchors, not globbed
+        and sorted. The walk is content, so no filename can lie about where a
+        segment belongs, no naming pattern has to be authoritative, and a missing
+        segment is diagnosable AS a missing segment rather than as a hash
+        mismatch at an arbitrary seq. Measured at 27us per segment -- 3% on a
+        26-segment log -- so there is nothing here worth caching.
+
+        PUBLIC, like `durability`: a test that asserts which files a log is made
+        of should read the answer rather than mock its way to one.
+        """
+        if not self.path.exists():
+            # `records()` answers "zero records" for a log that is not there and
+            # warden/cli/replay.py depends on that -- it checks for the missing
+            # file itself, first, and exits 2. This answers the matching question
+            # the same way rather than raising where its caller does not.
+            return []
+        chain = [self.path]
+        seen = {_identity(self.path)}
+        cursor = self.path
+        while (anchor := _anchor_of(cursor)) is not None:
+            target = anchor.get("target")
+            previous = target.get("previous") if isinstance(target, dict) else None
+            if not isinstance(previous, str) or not previous or previous != Path(previous).name:
+                # A log is precisely the artifact that may have been hand-edited,
+                # so a crafted anchor must not become a file this code opens.
+                # `previous != Path(previous).name` rejects every separator, ".."
+                # and "." in one comparison -- Path("..").name is "".
+                raise OSError(
+                    f"audit segment {cursor.name} anchors to an illegal name: {previous!r}"
+                )
+            older = self.path.parent / previous
+            if not older.exists():
+                # Refused, not skipped. Verifying whatever suffix is present
+                # reports `chain BROKEN at seq N`, which calls a deliberate
+                # operator action tampering; returning the partial log silently is
+                # worse, because `warden replay` would then print `chain intact`
+                # over a log missing its beginning. Pruning an audit log is a real
+                # need and B3 does not serve it.
+                raise OSError(f"audit segment {previous} is missing, named by {cursor.name}")
+            if _identity(older) in seen:
+                # A hand-edited pair of anchors naming each other is an infinite
+                # walk, and an audit tool that hangs is one that gets skipped.
+                raise OSError(f"audit segment anchors form a cycle at {previous}")
+            seen.add(_identity(older))
+            chain.append(older)
+            cursor = older
+        strangers = [
+            entry.name for entry in self._closed_segment_files() if _identity(entry) not in seen
+        ]
+        if strangers:
+            # Every closed-segment-shaped file here must be reachable from the
+            # active segment. This is what catches a log that FORKED: the fork's
+            # segments are on disk and nothing names them, and without this the
+            # log reads as a short, perfectly intact chain.
+            raise OSError(f"audit log has segment files nothing in the chain names: {strangers}")
+        return list(reversed(chain))
+
     def records(self) -> list[dict]:
         if not self.path.exists():
             return []
         return [
             json.loads(line)
-            for line in self.path.read_text().splitlines()
+            for segment in self.segments()
+            for line in segment.read_text().splitlines()
             if line.strip()
         ]
+
+    def _fsync_directory(self) -> None:
+        """fsync on a FILE makes its contents durable and says nothing about the
+        DIRECTORY ENTRY that makes it findable.
+
+        B2 established that for the log's first record; rotation needs it twice
+        (see `_rotate`). One implementation of the pair, called from both.
+        """
+        if self.durability != "fsync":
+            return
+        directory = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def _rotate(self, handle: BinaryIO) -> None:
+        """Close the segment `handle` holds, and make a new one the active one.
+
+        Called under the flock on `handle`, which is what makes the head read
+        below still the head when the anchor is built from it.
+
+        The ORDER is the whole design. `[audit].path` must never, at any instant,
+        refer to an empty file once the log has a history: the naive rotation --
+        rename the active file away and let the next append's "a+b" recreate it --
+        leaves `_head_from_tail` reading an empty file, which answers
+        (0, GENESIS_HASH), so the log restarts at seq 1 with every record still
+        verifying and verify_chain() returning (True, None). Two chains in one
+        log, both internally perfect, and nothing saying so. Spiked, before any of
+        this was written.
+
+        So the anchor goes into a staging file FIRST, and `[audit].path` moves
+        straight from the old inode to a new one that already contains it. The
+        link before the replace is what keeps the closing segment reachable, since
+        the replace takes its name away.
+        """
+        seq, prev_hash = _head_from_tail(handle)
+        closed = self.path.parent / self._closed_segment_name(seq)
+        body = {
+            "seq": seq + 1,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            # Thirteen fields, the same thirteen every decision carries, on B7's
+            # decision 9: a mint reused them precisely so the record shape stays
+            # ONE shape and AuditLog needs no new field.
+            #
+            # The previous segment's head hash is `prev_hash` -- the field every
+            # record already uses for exactly that. ROADMAP B3 asked for "an
+            # anchor record carrying the previous segment's head hash" and
+            # anticipated a fourteenth field; the anchor is simply the chain's
+            # next record, so none is needed. What it adds is the previous
+            # segment's NAME, and that is what lets an operator archive the
+            # oldest segment and leave something verifiable behind.
+            "task_id": "-",
+            "agent_id": "warden",
+            "purpose": "audit-segment-rotation",
+            "action": {"type": ANCHOR_ACTION_TYPE},
+            "target": {"kind": "segment", "previous": closed.name},
+            # Bare "none", no `sha256:` prefix, on B7's reasoning about that exact
+            # choice: args_digest wears its prefix when arguments conceptually
+            # existed and were deliberately not read. Here there are none at all.
+            "args_digest": "none",
+            # Not "allow": nothing was authorised. Not a new word either --
+            # "none" is what this chain already says for a thing that did not
+            # exist (policy_bundle_digest, on a mint).
+            "decision": "none",
+            "rule": "audit.rotation",
+            # The SHAPE is forced rather than meaningful: warden/cli/replay.py
+            # subscripts task_state["data_classes_held"] for every record before
+            # printing anything, so {} tracebacks the one tool that renders the
+            # log -- and does so AFTER verify-chain reported it intact.
+            "task_state": empty_task_state(),
+            "policy_bundle_digest": "none",
+            "prev_hash": prev_hash,
+        }
+        anchor = dict(body)
+        anchor["hash"] = record_hash(body)
+        staging = self.path.with_name(self.path.name + ".rotating")
+        with staging.open("wb") as fresh:
+            fresh.write((json.dumps(anchor, sort_keys=True) + "\n").encode("utf-8"))
+            fresh.flush()
+            if self.durability == "fsync":
+                os.fsync(fresh.fileno())
+        held = os.fstat(handle.fileno())
+        try:
+            os.link(self.path, closed)
+        except FileExistsError:
+            if _identity(closed) != (held.st_dev, held.st_ino):
+                raise OSError(
+                    f"audit segment {closed.name} already exists and is not this log"
+                ) from None
+            # Same inode: a previous rotation was interrupted between this link
+            # and the replace below, and this completes it rather than refusing.
+            # Reads during that window are already correct, because the duplicate
+            # name is skipped by inode identity.
+        # ORDERING, not durability, and the one that is easy to leave out. The
+        # replace below depends on both names created above, and both are
+        # unfsynced directory metadata that POSIX orders in no way at all: a
+        # filesystem free to make the replace durable while the link is not would
+        # leave the closing segment with NO NAME and its records unrecoverable.
+        # Journalling filesystems happen not to do that; 1.4ms once per ~123,000
+        # records buys not depending on it.
+        self._fsync_directory()
+        os.replace(staging, self.path)
+        # Durability, and B2's property one level up. The record this append is
+        # about goes into the new segment after this returns and its bytes get the
+        # existing per-append fsync -- but its NAME is this replace, so a replace
+        # that is not durable leaves the record whose append() already returned in
+        # a nameless inode.
+        self._fsync_directory()
 
     def append(
         self,
@@ -251,80 +562,131 @@ class AuditLog:
         task_state: dict,
         policy_bundle_digest: str,
     ) -> dict:
+        # At most ONE rotation per call, tracked here rather than re-derived from
+        # the file. Without it a segment_bytes below one record makes every append
+        # rotate, reopen, find the new segment also over the threshold and rotate
+        # again until the deadline -- so appends FAIL rather than merely producing
+        # tiny segments.
+        rotated = False
         with self._lock:
-            # "a+b": append-only writes, but READABLE, which is what lets the
-            # head be taken from the tail of the same descriptor the lock is
-            # held on. Path.open rather than the builtin so the disk-full test
-            # keeps its patch point.
-            with self.path.open("a+b") as handle:
-                _acquire(handle, self._lock_timeout)
-                # Read AFTER the lock, never before. This is the whole of B6:
-                # two processes that read the head outside the lock both chain
-                # onto the same record, and verify_chain reports that as
-                # tampering. Measured before this change -- four processes,
-                # 200 appends each: 800 records, 451 distinct seqs, BROKEN at
-                # seq 52.
-                seq, prev_hash = _head_from_tail(handle)
-                body = {
-                    "seq": seq + 1,
-                    "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                    "task_id": task_id,
-                    "agent_id": agent_id,
-                    "purpose": purpose,
-                    "action": action,
-                    "target": target,
-                    "args_digest": args_digest,
-                    "decision": decision,
-                    "rule": rule,
-                    "task_state": task_state,
-                    "policy_bundle_digest": policy_bundle_digest,
-                    "prev_hash": prev_hash,
-                }
-                record = dict(body)
-                record["hash"] = record_hash(body)
-                # sort_keys, matching canonical_json. Without it the file's
-                # byte layout tracks dict insertion order, so a target built
-                # in a different order changes the file while every hash
-                # still verifies -- a diff that reads as tampering and
-                # checks as clean.
-                #
-                # Written and FLUSHED inside the lock. Releasing before the
-                # bytes are out would let the next writer read a tail that is
-                # still in a userspace buffer.
-                #
-                # The fsync below is NOT what makes that true, and it is worth
-                # saying so because this is the kind of thing that gets
-                # misremembered as load-bearing: B6's inter-process correctness
-                # is the PAGE CACHE serving the next process's tail read, which
-                # flush() is what provides. fsync is about power loss. Deleting
-                # the fsync would not break B6; deleting the flush would.
-                handle.write((json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
-                handle.flush()
-                if self.durability == "fsync":
-                    # B2. flush() reaches the kernel; this reaches the device.
-                    #
-                    # INSIDE the lock, which the `with` gives for free -- the
-                    # flock is released by the close at the end of the block.
-                    # Releasing it early to shorten the ~1.7ms hold would let
-                    # the next writer chain onto a record that is still only in
-                    # the page cache, and a content-linked chain that loses N
-                    # while keeping N+1 has a prev_hash nobody can supply.
-                    os.fsync(handle.fileno())
-                    if seq == 0:
-                        # This append CREATED the file -- `seq` is the head's,
-                        # so zero means the log had no records. fsync on the
-                        # file makes its CONTENTS durable and says nothing
-                        # about the DIRECTORY ENTRY that makes it findable, so
-                        # without this a power loss can lose the whole log,
-                        # including record 1, whose append() already returned
-                        # and whose action therefore went ahead. ~1.4ms, once
-                        # per log, on the one append that needs it.
-                        directory = os.open(self.path.parent, os.O_RDONLY)
-                        try:
-                            os.fsync(directory)
-                        finally:
-                            os.close(directory)
-                return record
+            # ONE deadline for the whole call, not one per attempt. Giving each
+            # attempt a fresh lock_timeout would let a retrying append hold a pool
+            # thread for a multiple of the constant whose own comment is about one
+            # wedged writer not wedging every worker.
+            deadline = time.monotonic() + self._lock_timeout
+            while True:
+                # "a+b": append-only writes, but READABLE, which is what lets the
+                # head be taken from the tail of the same descriptor the lock is
+                # held on. Path.open rather than the builtin so the disk-full test
+                # keeps its patch point.
+                with self.path.open("a+b") as handle:
+                    _acquire(handle, max(0.0, deadline - time.monotonic()))
+                    if not _still_the_active_segment(handle, self.path):
+                        reason = "was rotated out from under this writer"
+                    elif not rotated and self.segment_bytes and (
+                        os.fstat(handle.fileno()).st_size >= self.segment_bytes
+                    ):
+                        self._rotate(handle)
+                        rotated = True
+                        reason = "was rotated by this writer"
+                    else:
+                        # Read AFTER the lock, never before. This is the whole of B6:
+                        # two processes that read the head outside the lock both chain
+                        # onto the same record, and verify_chain reports that as
+                        # tampering. Measured before this change -- four processes,
+                        # 200 appends each: 800 records, 451 distinct seqs, BROKEN at
+                        # seq 52.
+                        seq, prev_hash = _head_from_tail(handle)
+                        if (seq, prev_hash) == (0, GENESIS_HASH):
+                            # This log holds no records -- and if closed segments sit
+                            # beside it, appending here would start a SECOND chain at
+                            # genesis: the exact fork the rotation order in _rotate
+                            # exists to prevent, arriving by another route (an
+                            # operator deleting the active file).
+                            #
+                            # Gated on the HEAD rather than on st_size == 0, because
+                            # _head_from_tail answers genesis for a file of nothing
+                            # but newlines too -- so a size test would leave a hole in
+                            # exactly the place the code it guards already documents a
+                            # special case for.
+                            #
+                            # Runs once in a log's life, so the directory scan costs
+                            # nothing in steady state.
+                            strangers = [
+                                entry.name
+                                for entry in self._closed_segment_files()
+                                if _identity(entry) != _identity(self.path)
+                            ]
+                            if strangers:
+                                raise OSError(
+                                    "audit log holds no records but segment files "
+                                    "exist: refusing to start a second chain at "
+                                    f"genesis ({strangers})"
+                                )
+                        body = {
+                            "seq": seq + 1,
+                            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                            "task_id": task_id,
+                            "agent_id": agent_id,
+                            "purpose": purpose,
+                            "action": action,
+                            "target": target,
+                            "args_digest": args_digest,
+                            "decision": decision,
+                            "rule": rule,
+                            "task_state": task_state,
+                            "policy_bundle_digest": policy_bundle_digest,
+                            "prev_hash": prev_hash,
+                        }
+                        record = dict(body)
+                        record["hash"] = record_hash(body)
+                        # sort_keys, matching canonical_json. Without it the file's
+                        # byte layout tracks dict insertion order, so a target built
+                        # in a different order changes the file while every hash
+                        # still verifies -- a diff that reads as tampering and
+                        # checks as clean.
+                        #
+                        # Written and FLUSHED inside the lock. Releasing before the
+                        # bytes are out would let the next writer read a tail that is
+                        # still in a userspace buffer.
+                        #
+                        # The fsync below is NOT what makes that true, and it is worth
+                        # saying so because this is the kind of thing that gets
+                        # misremembered as load-bearing: B6's inter-process correctness
+                        # is the PAGE CACHE serving the next process's tail read, which
+                        # flush() is what provides. fsync is about power loss. Deleting
+                        # the fsync would not break B6; deleting the flush would.
+                        handle.write((json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
+                        handle.flush()
+                        if self.durability == "fsync":
+                            # B2. flush() reaches the kernel; this reaches the device.
+                            #
+                            # INSIDE the lock, which the `with` gives for free -- the
+                            # flock is released by the close at the end of the block.
+                            # Releasing it early to shorten the ~1.7ms hold would let
+                            # the next writer chain onto a record that is still only in
+                            # the page cache, and a content-linked chain that loses N
+                            # while keeping N+1 has a prev_hash nobody can supply.
+                            os.fsync(handle.fileno())
+                            if seq == 0:
+                                # This append CREATED the file -- `seq` is the head's,
+                                # so zero means the log had no records. fsync on the
+                                # file makes its CONTENTS durable and says nothing
+                                # about the DIRECTORY ENTRY that makes it findable, so
+                                # without this a power loss can lose the whole log,
+                                # including record 1, whose append() already returned
+                                # and whose action therefore went ahead. ~1.4ms, once
+                                # per log, on the one append that needs it.
+                                self._fsync_directory()
+                        return record
+                # Reopen: the file this writer holds is not the active segment
+                # any more, either because another writer rotated it or because
+                # this call just did. OUTSIDE the `with`, so the flock on a segment
+                # that is no longer active is released before the retry -- and
+                # before the OSError, which is the same type, and lands in the same
+                # handlers, as the flock timeout in _acquire.
+                if time.monotonic() >= deadline:
+                    raise OSError(f"audit log {self.path} {reason}: gave up")
 
     def verify_chain(self) -> tuple[bool, int | None]:
         prev_hash = GENESIS_HASH

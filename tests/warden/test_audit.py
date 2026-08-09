@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -9,7 +10,23 @@ from unittest.mock import patch
 
 import pytest
 
-from warden.broker.audit import GENESIS_HASH, AuditLog, canonical_json
+from warden.broker import audit as audit_module
+from warden.broker.audit import (
+    DEFAULT_SEGMENT_BYTES,
+    GENESIS_HASH,
+    AuditLog,
+    canonical_json,
+)
+
+
+def json_lines(path) -> list[dict]:
+    """Every record in ONE file, read directly.
+
+    Deliberately not AuditLog.records(), which spans segments: several B3 tests
+    below are about which file a record landed in, and a helper that hid that
+    would make them pass against the bug they name.
+    """
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def _append(log, **overrides):
@@ -597,3 +614,566 @@ def test_the_fsync_happens_while_the_lock_is_still_held(tmp_path):
         _append(log)
 
     assert seen == ["held"]
+
+
+# --- B3: segment rotation ---------------------------------------------------
+#
+# Designed in docs/superpowers/specs/2026-08-06-p2b3-audit-segment-rotation-design.md.
+# The invariant everything here defends: the name in [audit].path never refers
+# to an empty file once the log has a history. Spiked before any of this was
+# written -- rename the active file away and let the next append recreate it and
+# the log restarts at seq 1 from genesis, with every record still verifying and
+# verify_chain() over the active file returning (True, None).
+
+
+def _fill_to_threshold(log, path, threshold):
+    """Append until the active segment is at or over `threshold`.
+
+    Returns the records written. A count would be a guess: a record's width is
+    not fixed (see the tail-window test), so the loop watches the file.
+    """
+    written = [_append(log)]
+    while path.stat().st_size < threshold:
+        written.append(_append(log))
+    return written
+
+
+def test_crossing_the_threshold_closes_a_segment(tmp_path):
+    """The closed segment is named for the seq of its LAST record -- which the
+    tail read already has in hand, so naming costs no extra read."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    written = _fill_to_threshold(log, path, 4096)
+    last_before = written[-1]["seq"]
+
+    _append(log)
+
+    closed = tmp_path / f"audit-{last_before:06d}.jsonl"
+    assert closed.exists(), sorted(p.name for p in tmp_path.iterdir())
+    assert [r["seq"] for r in json_lines(closed)] == list(range(1, last_before + 1))
+
+
+def test_the_new_segment_holds_its_anchor_before_it_is_the_active_segment(tmp_path):
+    """The whole of B3.
+
+    The active name must go straight from the old inode to a new one that
+    ALREADY contains the anchor. A rotation that renames the active file away
+    and lets "a+b" recreate it leaves _head_from_tail reading an empty file,
+    which answers (0, GENESIS_HASH) -- and the log restarts at seq 1 with every
+    record still verifying.
+
+    Asserted on the FIRST LINE of the active segment rather than by racing a
+    reader against the swap: if the anchor is line 1 of the file that carries
+    the active name, no reader can ever observe that name as empty.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    _fill_to_threshold(log, path, 4096)
+    _append(log)
+
+    first, second = json_lines(path)[:2]
+    assert first["action"] == {"type": "anchor"}
+    assert first["prev_hash"] != GENESIS_HASH
+    assert second["prev_hash"] == first["hash"]
+
+
+def test_a_rotated_log_verifies_end_to_end(tmp_path):
+    """Dense seqs across every segment, and a chain that verifies from genesis
+    -- read by a SECOND AuditLog, so the assertion is about the files and not
+    about one object agreeing with itself."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(60):
+        _append(log)
+
+    reader = AuditLog(path, segment_bytes=4096)
+    assert len(reader.segments()) > 2, "the log never rotated"
+    seqs = [r["seq"] for r in reader.records()]
+    assert seqs == list(range(1, len(seqs) + 1))
+    assert reader.verify_chain() == (True, None)
+
+
+def test_the_anchor_names_the_previous_segment(tmp_path):
+    """The name is what the anchor adds: prev_hash already carries the previous
+    segment's head hash. Without the name, an operator who archives the oldest
+    segment leaves a log whose first record links to a hash nobody can produce
+    -- indistinguishable from tampering."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    written = _fill_to_threshold(log, path, 4096)
+    _append(log)
+
+    anchor = json_lines(path)[0]
+    assert anchor["target"] == {
+        "kind": "segment",
+        "previous": f"audit-{written[-1]['seq']:06d}.jsonl",
+    }
+    assert anchor["prev_hash"] == written[-1]["hash"]
+
+
+def test_an_anchor_has_exactly_a_decision_records_fields(tmp_path):
+    """One record shape, on B7's decision 9: the mint reused the thirteen body
+    fields so AuditLog needed no new field, and so does this.
+
+    Compared against a real decision record rather than a hardcoded list, so a
+    field added to the record shape without being added to the anchor fails
+    here -- and a field added to both still has to face
+    test_a_written_record_has_exactly_these_fields, which IS hardcoded.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    _fill_to_threshold(log, path, 4096)
+    decision = _append(log)
+
+    anchor = json_lines(path)[0]
+    assert sorted(anchor) == sorted(decision)
+    assert anchor["task_id"] == "-"
+    assert anchor["agent_id"] == "warden"
+    assert anchor["purpose"] == "audit-segment-rotation"
+    assert anchor["decision"] == "none"
+    assert anchor["rule"] == "audit.rotation"
+    assert anchor["args_digest"] == "none"
+    assert anchor["policy_bundle_digest"] == "none"
+    # Forced, not chosen: warden/cli/replay.py subscripts
+    # task_state["data_classes_held"] for every record before printing
+    # anything, so {} tracebacks the one tool that renders the log.
+    assert anchor["task_state"] == {"data_classes_held": [], "rows_charged_so_far": 0}
+
+
+_ROTATING_APPEND_SCRIPT = """
+import sys
+from warden.broker.audit import AuditLog
+
+log = AuditLog(sys.argv[1], durability="flush", segment_bytes=int(sys.argv[3]))
+for _ in range(int(sys.argv[2])):
+    log.append(
+        task_id="4711",
+        agent_id="triage-bot",
+        purpose="support-triage",
+        action={"type": "tool_call", "tool": "read_document"},
+        target={"kind": "doc"},
+        args_digest="sha256:aaa",
+        decision="allow",
+        rule="tools.allowed",
+        task_state={"data_classes_held": [], "rows_charged_so_far": 0},
+        policy_bundle_digest="sha256:bbb",
+    )
+"""
+
+
+def test_four_processes_rotating_produce_one_intact_chain(tmp_path):
+    """The load-bearing one, and B6's test with rotation switched on.
+
+    Measured against a build with the staleness check removed -- four
+    processes, 40 appends each, a 4KiB segment, three runs: 3 of 4 writers dead
+    every run, 35 to 75 of 160 appends returning at all, and what survived was
+    either a chain BROKEN at seq 33 or a log that refuses to be read. The
+    mechanism is not the obvious one: a writer holding a rotated-away
+    descriptor does not merely append into the closed segment, it finds that
+    segment still over the threshold and tries to ROTATE it, forking the
+    segment tree.
+
+    A 4KiB segment holds ~8 records, so rotation happens roughly every other
+    append across four processes -- violently more often than any real
+    deployment, which is the point.
+
+    Fresh interpreters, never multiprocessing: tests/ has no __init__.py and
+    pytest.ini sets --import-mode=importlib, so a spawn child cannot re-import
+    the test module, and forking a multi-threaded pytest process is a
+    documented deadlock hazard.
+    """
+    path = tmp_path / "audit.jsonl"
+    procs, per_proc = 4, 40
+    workers = [
+        subprocess.Popen(
+            [sys.executable, "-c", _ROTATING_APPEND_SCRIPT, str(path), str(per_proc), "4096"],
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(procs)
+    ]
+    for worker in workers:
+        _, stderr = worker.communicate(timeout=300)
+        assert worker.returncode == 0, stderr
+
+    log = AuditLog(path, segment_bytes=4096)
+    records = log.records()
+    decisions = [r for r in records if r["action"]["type"] != "anchor"]
+    assert len(decisions) == procs * per_proc
+    assert len(log.segments()) > 5, "the log never rotated"
+    # Dense over EVERY record, anchors included: an anchor occupies a seq, so a
+    # chain with a gap is a chain with a record nobody has.
+    assert [r["seq"] for r in records] == list(range(1, len(records) + 1))
+    assert log.verify_chain() == (True, None)
+
+
+def test_a_writer_whose_segment_was_rotated_away_reopens(tmp_path):
+    """The staleness check, deterministically -- the process test above is a
+    race by nature.
+
+    Rotates the log from inside `_acquire` and BEFORE the real lock is taken,
+    which is the only interleaving that can actually happen: a rotating writer
+    holds the flock while it rotates, so a writer that opened the file first
+    necessarily acquires the lock AFTERWARDS -- on a descriptor that is already
+    stale. Rotating after `real_acquire` instead just deadlocks the rotator
+    against the lock this call is holding (two descriptors in one process do
+    exclude each other), which is how this test was first written and why it
+    took five seconds to fail.
+
+    Without the check the record lands in the closed segment, with a prev_hash
+    the new segment's anchor also claims: two records with one predecessor,
+    which is the fork.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    written = _fill_to_threshold(log, path, 4096)
+    rotator = AuditLog(path, segment_bytes=4096)
+
+    real_acquire = audit_module._acquire
+    rotations = []
+
+    def rotate_then_acquire(handle, timeout):
+        # Marked BEFORE rotating, not after: the rotator's own append goes
+        # through this same patched function, so a guard set afterwards recurses
+        # forever.
+        if not rotations:
+            rotations.append(None)
+            rotations[0] = _append(rotator)
+        real_acquire(handle, timeout)
+
+    with patch.object(audit_module, "_acquire", rotate_then_acquire):
+        record = _append(log)
+
+    # The rotator wrote two records: the new segment's anchor, and its own.
+    assert rotations[0]["seq"] == written[-1]["seq"] + 2
+    assert record["seq"] == rotations[0]["seq"] + 1
+    closed = tmp_path / f"audit-{written[-1]['seq']:06d}.jsonl"
+    assert json_lines(closed)[-1]["seq"] == written[-1]["seq"], (
+        "a record was appended into the closed segment"
+    )
+    assert AuditLog(path, segment_bytes=4096).verify_chain() == (True, None)
+
+
+def test_endless_rotation_gives_up_within_one_lock_timeout(tmp_path):
+    """Bounded, and bounded by ONE lock_timeout for the whole call rather than
+    one per attempt: giving each attempt a fresh five seconds would let a
+    retrying append hold a threadpool thread for a multiple of the constant
+    whose own comment says one wedged writer must not wedge every worker.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, durability="flush", segment_bytes=4096, lock_timeout=0.3)
+    _fill_to_threshold(log, path, 4096)
+    rotator = AuditLog(path, durability="flush", segment_bytes=1)
+
+    real_acquire = audit_module._acquire
+    inside = []
+
+    def rotate_then_acquire(handle, timeout):
+        # Before the lock, and re-entrancy-guarded, for the reasons the test
+        # above states. segment_bytes=1 makes every rotator append rotate, so
+        # this writer is rotated out on every attempt it makes.
+        if not inside:
+            inside.append(None)
+            try:
+                _append(rotator)
+            finally:
+                inside.clear()
+        real_acquire(handle, timeout)
+
+    started = time.monotonic()
+    with patch.object(audit_module, "_acquire", rotate_then_acquire):
+        with pytest.raises(OSError, match="was rotated out from under this writer"):
+            _append(log)
+    assert time.monotonic() - started < 3.0
+
+
+def test_a_threshold_below_one_record_still_makes_progress(tmp_path):
+    """At most one rotation per append() call, so any threshold terminates.
+    Without the flag, a threshold below one record makes every append rotate,
+    reopen, find the new segment also over the threshold, and rotate again
+    until the deadline -- so appends FAIL rather than merely producing tiny
+    segments."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=1)
+    for _ in range(5):
+        _append(log)
+
+    reader = AuditLog(path, segment_bytes=1)
+    records = reader.records()
+    assert [r["seq"] for r in records] == list(range(1, len(records) + 1))
+    assert sum(1 for r in records if r["action"]["type"] != "anchor") == 5
+    assert reader.verify_chain() == (True, None)
+
+
+def test_rotation_fsyncs_the_directory_before_and_after_the_replace(tmp_path):
+    """The SECOND directory fsync is durability -- the record is written into
+    the new segment after the replace, so a replace that is not durable leaves
+    it in a nameless inode, which is B2's failure one level up.
+
+    The FIRST one is ordering, and it is the one that is easy to leave out. The
+    link and the replace are both unfsynced directory metadata and POSIX orders
+    neither; a filesystem free to make the replace durable while the link is
+    not would leave the closing segment with NO NAME and its records
+    unrecoverable. Journalling filesystems happen not to do that. This does not
+    depend on it.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    _fill_to_threshold(log, path, 4096)
+
+    seen: list[str] = []
+    real = os.fsync
+
+    def spy(fd: int) -> None:
+        seen.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
+        real(fd)
+
+    with patch.object(os, "fsync", spy):
+        _append(log)
+
+    # The staging file, the directory before the replace, the directory after
+    # it, then the record's own file.
+    assert seen == ["file", "dir", "dir", "file"]
+
+
+def test_flush_durability_does_not_fsync_a_rotation(tmp_path):
+    """"flush" promises the page cache, not the device; spending 3.1ms per
+    rotation to half-honour a promise the operator declined is how a config key
+    comes to mean two things."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, durability="flush", segment_bytes=4096)
+    _fill_to_threshold(log, path, 4096)
+
+    seen: list[int] = []
+    with patch.object(os, "fsync", _fsync_spy(seen)):
+        _append(log)
+    assert seen == []
+    assert AuditLog(path, segment_bytes=4096).verify_chain() == (True, None)
+
+
+def test_a_crash_between_link_and_replace_is_readable_and_completes(tmp_path):
+    """The rotation is not atomic as a whole, and the window between the link
+    and the replace leaves the closing segment with TWO names, one of which is
+    still the active one.
+
+    Identity is (st_dev, st_ino), not the name: a draft that compared resolved
+    paths reported `segment files nothing in the chain names` for a log that
+    was completely fine, and left it unreadable until the next rotation --
+    64MiB of writes later.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    written = _fill_to_threshold(log, path, 4096)
+    closed = tmp_path / f"audit-{written[-1]['seq']:06d}.jsonl"
+    os.link(path, closed)  # the crash: linked, not yet replaced
+
+    during = AuditLog(path, segment_bytes=4096)
+    assert [r["seq"] for r in during.records()] == [r["seq"] for r in written]
+    assert during.verify_chain() == (True, None)
+
+    # The next append finds the segment still over the threshold and rotates,
+    # which COMPLETES the interrupted one: two more records, the anchor and the
+    # append's own, and the duplicate name is now a real closed segment.
+    record = _append(log)
+    after = AuditLog(path, segment_bytes=4096)
+    assert record["seq"] == len(written) + 2
+    assert [r["seq"] for r in after.records()] == list(range(1, len(written) + 3))
+    assert after.verify_chain() == (True, None)
+    assert after.segments() == [closed, path]
+
+
+def test_a_foreign_file_at_the_closed_name_refuses_the_rotation(tmp_path):
+    """The same-inode branch above must not become a blanket "FileExistsError
+    means carry on", or a file that is not this log gets absorbed into the
+    chain as a segment."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    written = _fill_to_threshold(log, path, 4096)
+    stranger = tmp_path / f"audit-{written[-1]['seq']:06d}.jsonl"
+    stranger.write_text("someone else's file\n")
+
+    with pytest.raises(
+        OSError,
+        match=f"audit segment {stranger.name} already exists and is not this log",
+    ):
+        _append(log)
+
+
+def test_an_emptied_active_segment_beside_segments_refuses_the_append(tmp_path):
+    """An operator deleting the active file while segments exist is the spiked
+    fork arriving by another route: "a+b" recreates it, the tail read answers
+    genesis, and the log acquires a second chain that verifies."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+    assert len(AuditLog(path, segment_bytes=4096).segments()) > 1
+    path.unlink()
+
+    with pytest.raises(OSError, match="refusing to start a second chain at genesis"):
+        _append(log)
+
+
+def test_a_newline_only_active_segment_refuses_the_append(tmp_path):
+    """Gated on the HEAD reading as genesis, not on st_size == 0:
+    _head_from_tail documents a second way to read as genesis -- a file of
+    nothing but newlines -- so a size test leaves a hole in exactly the place
+    the code it guards already has a special case."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+    path.write_bytes(b"\n\n")
+
+    with pytest.raises(OSError, match="refusing to start a second chain at genesis"):
+        _append(log)
+
+
+def test_an_absent_predecessor_refuses_the_read(tmp_path):
+    """Pruning an audit log is a real operator need and B3 does not serve it.
+    Refusing names both files; verifying the available suffix instead would
+    report `chain BROKEN at seq N` -- calling a deliberate operator action
+    tampering."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+    segments = AuditLog(path, segment_bytes=4096).segments()
+    oldest, namer = segments[0], segments[1]
+    oldest.unlink()
+
+    with pytest.raises(
+        OSError,
+        match=f"audit segment {oldest.name} is missing, named by {namer.name}",
+    ):
+        AuditLog(path, segment_bytes=4096).records()
+
+
+def test_an_anchor_naming_a_path_refuses_the_read(tmp_path):
+    """A log is precisely the artifact that may have been hand-edited, so a
+    crafted anchor must not become a file this code opens."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+
+    lines = path.read_text().splitlines()
+    doctored = json.loads(lines[0])
+    doctored["target"]["previous"] = "../../etc/passwd"
+    lines[0] = json.dumps(doctored, sort_keys=True)
+    path.write_text("\n".join(lines) + "\n")
+
+    with pytest.raises(
+        OSError, match=r"anchors to an illegal name: '\.\./\.\./etc/passwd'"
+    ):
+        AuditLog(path, segment_bytes=4096).records()
+
+
+def test_orphaned_segments_refuse_the_read(tmp_path):
+    """Every closed-segment-shaped file in the directory must be reachable from
+    the active segment's anchors. This is what catches a log that forked: the
+    fork's segments are on disk, and nothing names them."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+    (tmp_path / "audit-999999.jsonl").write_text("{}\n")
+
+    with pytest.raises(
+        OSError,
+        match=r"segment files nothing in the chain names: \['audit-999999.jsonl'\]",
+    ):
+        AuditLog(path, segment_bytes=4096).records()
+
+
+def test_an_anchor_cycle_refuses_the_read(tmp_path):
+    """A hand-edited pair of anchors naming each other is an infinite walk, and
+    an audit tool that hangs is an audit tool that gets skipped."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+
+    segments = AuditLog(path, segment_bytes=4096).segments()
+    oldest, second = segments[0], segments[1]
+    # Give the oldest segment an anchor pointing forward at its own successor.
+    anchor = json_lines(second)[0]
+    anchor["target"]["previous"] = second.name
+    oldest.write_text(json.dumps(anchor, sort_keys=True) + "\n" + oldest.read_text())
+
+    with pytest.raises(OSError, match="anchors form a cycle"):
+        AuditLog(path, segment_bytes=4096).records()
+
+
+def test_a_log_written_before_segments_still_reads_and_rotates(tmp_path):
+    """Zero migration: an unrotated single-file log IS segment 0, whose first
+    record links to genesis and which carries no anchor."""
+    path = tmp_path / "audit.jsonl"
+    old = AuditLog(path, segment_bytes=0)  # what shipped before B3
+    for _ in range(5):
+        _append(old)
+
+    log = AuditLog(path, segment_bytes=4096)
+    assert log.segments() == [path]
+    assert len(log.records()) == 5
+    assert log.verify_chain() == (True, None)
+
+    for _ in range(40):
+        _append(log)
+    assert len(log.segments()) > 1
+    assert log.verify_chain() == (True, None)
+
+
+def test_a_path_with_no_suffix_rotates(tmp_path):
+    """[audit].path is a string an operator writes; nothing makes it end in
+    .jsonl."""
+    path = tmp_path / "auditlog"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+
+    reader = AuditLog(path, segment_bytes=4096)
+    assert len(reader.segments()) > 1
+    assert reader.segments()[0].name.startswith("auditlog-0")
+    assert reader.verify_chain() == (True, None)
+
+
+def test_a_path_with_glob_metacharacters_still_finds_its_segments(tmp_path):
+    """Path.glob interprets its argument as a PATTERN, so a stem containing
+    [ ] * or ? would make the orphan scan search a different set of names than
+    the segment pattern accepts -- and the mismatch empties the guard rather
+    than tripping it."""
+    path = tmp_path / "audit[1].jsonl"
+    log = AuditLog(path, segment_bytes=4096)
+    for _ in range(30):
+        _append(log)
+    assert len(AuditLog(path, segment_bytes=4096).segments()) > 1
+    path.unlink()
+
+    with pytest.raises(OSError, match="refusing to start a second chain at genesis"):
+        _append(log)
+
+
+def test_segment_bytes_zero_never_rotates(tmp_path):
+    """The escape hatch, and what shipped before B3."""
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, segment_bytes=0)
+    for _ in range(60):
+        _append(log)
+    assert AuditLog(path, segment_bytes=0).segments() == [path]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["audit.jsonl"]
+
+
+def test_the_default_segment_size_is_64_mib(tmp_path):
+    """On by default: a deployment that reaches 64MiB has ~123,000 records and
+    a real operational problem, and one that never reaches it is unaffected."""
+    assert DEFAULT_SEGMENT_BYTES == 64 * 1024 * 1024
+    assert AuditLog(tmp_path / "audit.jsonl").segment_bytes == DEFAULT_SEGMENT_BYTES
+
+
+def test_a_negative_segment_bytes_is_refused_by_the_constructor(tmp_path):
+    """Same discipline as `durability`: never a silent fallback."""
+    with pytest.raises(
+        ValueError, match=r"audit segment_bytes must be a non-negative integer, got -1"
+    ):
+        AuditLog(tmp_path / "audit.jsonl", segment_bytes=-1)
