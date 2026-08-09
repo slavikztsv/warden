@@ -887,6 +887,56 @@ def test_endless_rotation_gives_up_within_one_lock_timeout(tmp_path):
     assert time.monotonic() - started < 3.0
 
 
+def test_each_retry_gets_what_is_left_of_the_one_lock_timeout(tmp_path):
+    """Added by the mutation pass, which is what found it missing.
+
+    `test_endless_rotation_gives_up_within_one_lock_timeout` above pins that a
+    writer rotated out forever gives up, and gives up as an OSError -- but it
+    does NOT pin the budget arithmetic. Passing `self._lock_timeout` to every
+    attempt instead of what is left of it changed nothing that test could see,
+    because nothing in it contends for the lock, so `_acquire` returns
+    immediately whatever timeout it is handed. Measured: that mutation reddened
+    nothing.
+
+    What it would break is real: a two-attempt append could hold a pool thread
+    for twice the constant whose own comment says one wedged writer must not
+    wedge every worker. So this reads the budget `_acquire` is actually given,
+    and forces exactly one retry through the staleness check rather than through
+    a real rotation -- the shortest path to two attempts.
+    """
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path, durability="flush", segment_bytes=0, lock_timeout=5.0)
+    _append(log)
+
+    real_check = audit_module._still_the_active_segment
+    real_acquire = audit_module._acquire
+    budgets: list[float] = []
+    checks: list[None] = []
+
+    def stale_exactly_once(handle, target):
+        checks.append(None)
+        return real_check(handle, target) if len(checks) > 1 else False
+
+    def recording_acquire(handle, timeout):
+        budgets.append(timeout)
+        # Burn a measurable slice of the budget, so "what is left" and "the whole
+        # thing" cannot come out equal to the resolution of the clock.
+        time.sleep(0.01)
+        real_acquire(handle, timeout)
+
+    with patch.object(audit_module, "_still_the_active_segment", stale_exactly_once):
+        with patch.object(audit_module, "_acquire", recording_acquire):
+            record = _append(log)
+
+    assert record["seq"] == 2
+    assert len(budgets) == 2, budgets
+    assert budgets[0] <= 5.0
+    assert budgets[1] < budgets[0], (
+        "the second attempt was given a fresh lock_timeout instead of the "
+        f"remainder of the first: {budgets}"
+    )
+
+
 def test_a_threshold_below_one_record_still_makes_progress(tmp_path):
     """At most one rotation per append() call, so any threshold terminates.
     Without the flag, a threshold below one record makes every append rotate,

@@ -541,7 +541,7 @@ visible as a miss.
 | 24 | A newline-only active segment is caught by the same guard as an emptied one | `test_a_newline_only_active_segment_refuses_the_append` | gate the guard on `st_size == 0` |
 | 25 | An `[audit].path` whose name contains glob metacharacters is still guarded | `test_a_path_with_glob_metacharacters_still_finds_its_segments` | find siblings with `glob()` instead of `iterdir()` |
 | 26 | A rotating append fsyncs the directory before the `replace` and after it | `test_rotation_fsyncs_the_directory_before_and_after_the_replace` | drop the pre-`replace` directory fsync |
-| 27 | The whole append is bounded by one `lock_timeout`, not one per attempt | `test_endless_rotation_gives_up_within_one_lock_timeout` | pass `self._lock_timeout` to each `_acquire` |
+| 27 | The whole append is bounded by one `lock_timeout`, not one per attempt | `test_each_retry_gets_what_is_left_of_the_one_lock_timeout` | pass `self._lock_timeout` to each `_acquire` |
 
 ## Files
 
@@ -622,4 +622,54 @@ is how a module stops having a subject.
 
 ## What the mutation pass found
 
-*(filled in after)*
+31 mutations across the 27 proof-table rows (four rows need two mutations, one
+in each direction). **29 reddened the test their row names.** Two could not, for
+a reason worth keeping. One row was a list of intentions and is now a test.
+
+**Row 27 reddened nothing.** `test_endless_rotation_gives_up_within_one_lock_timeout`
+pins that a writer rotated out forever gives up, and gives up as an `OSError` --
+and does not pin the budget arithmetic at all. Passing `self._lock_timeout` to
+every attempt instead of `max(0.0, deadline - now)` changed nothing that test
+could observe, because nothing in it contends for the lock, so `_acquire` returns
+immediately whatever timeout it is handed. The property is real — a two-attempt
+append could hold a pool thread for twice the constant whose own comment is about
+not wedging every worker — so it now has
+`test_each_retry_gets_what_is_left_of_the_one_lock_timeout`, which reads the
+budget `_acquire` is actually given and forces exactly one retry through the
+staleness check rather than through a real rotation. That mutation now reddens it.
+
+**Two mutations HUNG rather than failing, and that is the proof.** Removing the
+anchor-cycle check (row 17) and removing the give-up branch entirely (row 8b) each
+delete a *liveness* property, so the test they guard cannot report FAILED — it can
+only never finish. The harness times out at 240 s and records `HUNG` as its own
+verdict, distinct from both `RED` and `NOT REDDENED`, because a run that simply
+never returned would otherwise be filed as either. Row 8's other half is mutated
+into a `RuntimeError` instead, which does redden: the type is what the spine's
+`except OSError` depends on.
+
+**The harness caught a collision in its own mutation.** `if time.monotonic() >=
+deadline:` appears twice — once in `append`'s retry epilogue and once inside
+`_acquire`'s own flock spin — so the row-8b mutation would have silently patched
+the wrong one as well. The uniqueness assertion reported *2 of an expected 1* and
+the mutation was rewritten with two lines of context. This is the second time in
+this project that a mutation string mattering more than the mutation has cost
+something; the harness asserting an expected count (rather than merely
+uniqueness) is what makes a deliberately-two-site mutation — row 22b, which must
+hit both loaders — distinguishable from an accidental one.
+
+**One row has no mutation that reddens it alone, and the row was wrong about
+why.** Row 19 (an `[audit].path` with no suffix) was written expecting to be
+broken by "build the closed name by stem/suffix slicing" — a shape the
+implementation does not have, because `Path.stem` and `Path.suffix` do the split
+and handle an empty suffix themselves. What actually reddens that test is the
+never-rotate mutation, which also reddens row 1. The test is kept: it is cheap,
+and it exercises a real `[audit].path` shape end to end. But it is documentation
+of a rejected design rather than a guard on a branch this code owns, and saying
+so is better than leaving a row that looks proven by a mutation of its own.
+
+Everything else went red on the first attempt, which is the quietest possible
+outcome and the one worth being slightly suspicious of. The reason it happened
+here and not in B2 is that the 27 rows were written from a spike that had already
+*produced* every failure they describe — the fork at genesis, the dead writers,
+the unreadable log, the crash window — so the tests were written against observed
+behaviour rather than imagined behaviour.
