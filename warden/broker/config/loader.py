@@ -24,7 +24,11 @@ from pathlib import Path
 # graph is 9 `warden` modules and ALREADY contains warden.broker.audit, which
 # it imports to construct an AuditLog. This costs it nothing, and audit.py is
 # deliberately stdlib-only.
-from warden.broker.audit import DEFAULT_DURABILITY, DURABILITY_LEVELS
+from warden.broker.audit import (
+    DEFAULT_DURABILITY,
+    DEFAULT_SEGMENT_BYTES,
+    DURABILITY_LEVELS,
+)
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
@@ -114,6 +118,12 @@ class BrokerConfig:
     # a coherent tiering rather than a misconfiguration. Nothing compares them
     # and nothing should. See the B2 design, decision 2.
     audit_durability: str
+    # Where a segment closes, in bytes of the active segment; 0 disables
+    # rotation. Like audit_durability directly above, and unlike audit_path,
+    # this one need NOT match the other TOML's: whichever writer crosses its own
+    # threshold is the one that rotates, so a disagreement makes segment sizes
+    # irregular rather than wrong. See the B3 design, decision 14.
+    audit_segment_bytes: int
     # issuer, not ttl_seconds: the broker VERIFIES a token's issuer (so it
     # must agree with control.toml's, or every token is rejected) but never
     # MINTS one, so a TTL here would be parsed and never consumed -- exactly
@@ -322,6 +332,9 @@ def load_broker_config(path: Path, env: Mapping[str, str]) -> BrokerConfig:
         bundle_roots=_paths(policy, "policy", "bundle_roots", env),
         audit_path=Path(_string(audit, "audit", "path", env)),
         audit_durability=_durability(audit, "audit"),
+        audit_segment_bytes=_positive(
+            audit, "audit", "segment_bytes", DEFAULT_SEGMENT_BYTES, allow_zero=True
+        ),
         issuer=_string(tokens, "tokens", "issuer", env),
         catalog_path=Path(_string(catalog, "catalog", "tools", env)),
         worker_threads=_positive(broker, "broker", "worker_threads", 16),
@@ -385,6 +398,12 @@ class ControlConfig:
     # deployment that weakens the BROKER's is making a coherent choice, not a
     # mistake, so nothing here enforces agreement. See BrokerConfig.
     audit_durability: str
+    # Where a segment closes, in bytes of the active segment; 0 disables
+    # rotation. Like audit_durability directly above, and unlike audit_path,
+    # this one need NOT match the other TOML's: whichever writer crosses its own
+    # threshold is the one that rotates, so a disagreement makes segment sizes
+    # irregular rather than wrong. See the B3 design, decision 14.
+    audit_segment_bytes: int
     # issuer must agree with BrokerConfig.issuer, or every minted token
     # fails verification. ttl_seconds governs minting only, so it lives
     # here and nowhere else -- the broker never mints.
@@ -435,6 +454,9 @@ def load_control_config(path: Path, env: Mapping[str, str]) -> ControlConfig:
         private_key=Path(_string(identity, "identity", "private_key", env)),
         audit_path=Path(_string(audit, "audit", "path", env)),
         audit_durability=_durability(audit, "audit"),
+        audit_segment_bytes=_positive(
+            audit, "audit", "segment_bytes", DEFAULT_SEGMENT_BYTES, allow_zero=True
+        ),
         issuer=_string(tokens, "tokens", "issuer", env),
         ttl_seconds=ttl_seconds,
     )

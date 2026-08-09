@@ -87,6 +87,7 @@ def write_warden_toml(
     listen: str = "0.0.0.0:8080",
     proxy_listen: str = "0.0.0.0:3128",
     durability: str = "fsync",
+    segment_bytes: int = 64 * 1024 * 1024,
 ) -> Path:
     """Writes a warden.toml the shape compose.yml mounts, with the
     same defaults broker_env() used to bake into an env dict -- one root
@@ -115,8 +116,9 @@ decision_path = "{decision_path}"
 bundle_roots  = [{roots_toml}]
 
 [audit]
-path       = "{audit_path}"
-durability = "{durability}"
+path          = "{audit_path}"
+durability    = "{durability}"
+segment_bytes = {segment_bytes}
 
 [tokens]
 issuer = "{issuer}"
@@ -140,6 +142,7 @@ def write_control_toml(
     ttl_seconds: int = 300,
     audit_path: Path | None = None,
     durability: str = "fsync",
+    segment_bytes: int = 64 * 1024 * 1024,
 ) -> Path:
     """issuer here must match write_warden_toml's issuer for a token minted
     under one to verify under the other -- see
@@ -162,8 +165,9 @@ listen = "{listen}"
 private_key = "{private_key}"
 
 [audit]
-path       = "{audit_path}"
-durability = "{durability}"
+path          = "{audit_path}"
+durability    = "{durability}"
+segment_bytes = {segment_bytes}
 
 [tokens]
 issuer      = "{issuer}"
@@ -707,3 +711,39 @@ def test_the_control_plane_builds_its_audit_log_with_the_configured_durability(
     monkeypatch.setattr(control_main, "AuditLog", Capturing)
     control_main.build(control_config(tmp_path, private_key, durability="flush"))
     assert captured["durability"] == "flush"
+
+
+# --- B3: the configured segment size must actually reach the log -------------
+#
+# Same pair, same asymmetry, and the same failure if either is missing: a
+# [audit].segment_bytes parsed and never consumed is a log that grows without
+# bound while the config says it does not.
+
+
+def test_the_broker_builds_its_audit_log_with_the_configured_segment_bytes(
+    tmp_path, monkeypatch
+):
+    """Reads the RESULT: AuditLog.segment_bytes is public for this."""
+    set_catalog_env(monkeypatch, tmp_path)
+    _, public_key = write_keypair(tmp_path)
+    config = broker_config(tmp_path, public_key, segment_bytes=4096)
+    _, components = broker_main.build(config, client=stub_client())
+    assert components.audit.segment_bytes == 4096
+
+
+def test_the_control_plane_builds_its_audit_log_with_the_configured_segment_bytes(
+    tmp_path, monkeypatch
+):
+    """Captures the construction, because control_main.build() returns only the
+    app -- the log is a closure argument to create_control_app."""
+    private_key, _ = write_keypair(tmp_path)
+    captured: dict = {}
+
+    class Capturing(AuditLog):
+        def __init__(self, path, **kwargs):
+            captured.update(kwargs)
+            super().__init__(path, **kwargs)
+
+    monkeypatch.setattr(control_main, "AuditLog", Capturing)
+    control_main.build(control_config(tmp_path, private_key, segment_bytes=4096))
+    assert captured["segment_bytes"] == 4096

@@ -345,15 +345,25 @@ directions: either half reading the other's spelling denies `input.malformed`.
 |---|---|---|
 | B1 | ~~Cache the chain head in memory after one read at boot~~; stop re-parsing the file per append. **Done**, pulled in front of A6 — and read on the first *append* rather than "at boot", because `warden verify-chain` exists to be pointed at a corrupt log and [cli/replay.py](../warden/cli/replay.py) constructs the `AuditLog` before the guard that reports one. A constructor that parsed the file would make that tool traceback instead of doing its job | S |
 | B2 | ~~`os.fsync` before returning from `append()`, with the durability level configurable and the default being the safe one~~. **Done.** `append()` returns only once the record is on the device, so README's "written down **before** anything happens" is true against a host loss and not only against a process crash — the doc change B2 makes is a *subtraction*. The level is `[audit].durability`, in **both** TOMLs, defaulting to `"fsync"`; unlike `[audit].path` and `[tokens].issuer` the two values need **not** agree, because a broker at `"flush"` with a control plane at `"fsync"` is a coherent tiering rather than a misconfiguration. Record 1 also fsyncs the parent **directory**: `fsync` on the file makes its contents durable and says nothing about the directory entry that makes it findable, so without it a power loss can lose the whole log including the record whose `append()` already returned. Measured 16× (~107µs → ~1.7ms), flat in log size, which puts the deployment's audit ceiling at ~590 records/second; `fdatasync` measured *indistinguishable* from `fsync` (1687µs against 1649µs — an append changes the file size, so the metadata flush happens anyway), so there is no third level | S |
-| B3 | Segment rotation with an anchor record carrying the previous segment's head hash, so a rotated chain still verifies end to end | M |
+| B3 | ~~Segment rotation with an anchor record carrying the previous segment's head hash, so a rotated chain still verifies end to end~~. **Done.** `append()` closes the active segment at `[audit].segment_bytes` — in **both** TOMLs, default 64 MiB (~122,000 records at the 547 bytes one measures), `0` to disable, and like `durability` the two values need **not** agree — and opens a new one whose first record anchors to it. The anchor needs no fourteenth field: the previous segment's head hash is `prev_hash`, the field every record already uses for exactly that, so on B7's precedent it is an ordinary record with `action.type = "anchor"` and thirteen body fields. What it adds is the previous segment's **name**, which is what makes archiving the oldest segment leave something verifiable behind rather than a first record linking to a hash nobody has. One invariant carries the design: `[audit].path` must never, at any instant, name a file with no records in it — so rotation writes the anchor into a staging file and `os.link`s, fsyncs, `os.replace`s, fsyncs, all under the `flock`. The naive order fails **silently**: rename the active file away, let `"a+b"` recreate it, and the tail read answers genesis, the log restarts at seq 1, and `verify_chain()` returns `(True, None)` over a log that now contains two chains. Every append also re-checks that the descriptor it locked is still the file `[audit].path` names — measured without it, four processes × 40 appends at a 4 KiB segment, three runs: 3 of 4 writers dead every run and either a chain BROKEN at seq 33 or a log that refuses to be read. Costs +6.4 µs per append at `flush` and ~2% at the `fsync` default; a rotating append is 6.7 ms, once per 122,582 records | M |
 | B4 | Teach `warden verify-chain` about segments | S |
 | B5 | A pluggable sink: the file, plus structured stdout for a log shipper, plus an optional append-only external store | M |
 | B6 | ~~Multi-writer sequencing — either a dedicated writer, or move seq allocation into the same store as A2~~. **Done, and neither of those.** Both lose to the same fact: the chain is *content*-linked, so handing out a number is not the hard part. A Redis `INCR` cannot supply `prev_hash` at all; a Redis CAS on the head that succeeds and then dies before its file write leaves a `prev_hash` whose record **nobody has** — unrepairable by replay, backup or anything else. `seq` and `prev_hash` are now allocated under an `flock` on the log file itself: the only lock whose scope is exactly the resource, and the only one the kernel releases when the holder dies | M |
 | B7 | ~~Audit the **mint**~~. **Done.** The control plane now appends a `mint` record — `action.type = "mint"`, `target.kind = "token"`, the grant itself in `target` — to the same chain the broker writes decisions into, *before* returning the token, and refuses to mint at all if it cannot record. It reuses the existing thirteen body fields with two honest sentinels (`policy_bundle_digest = "none"`, and a `task_state` that is the minter's view rather than the task's), so **zero interfaces changed**. `warden replay` renders it as `mint(N tools)` above the first tool call, with the granted tools on a `⊕ GRANT` line beneath | S |
 
 **Exit:** a million-record log appends in constant time, verifies across rotation,
-and B7's record appears in `warden replay` above the first tool call. **The last
-clause is met**; constant-time append is met by B6; rotation is B3/B4 and is not.
+and B7's record appears in `warden replay` above the first tool call. **All three
+clauses are now met by the library**: constant-time append by B6, verification
+across rotation by B3 (`AuditLog.records()` and `verify_chain()` span every
+segment, walked backward from the active one through the anchors), and B7's
+record renders above the first tool call. What is **not** met is the *tool*:
+`warden verify-chain` reports a segment problem through `replay.py`'s existing
+"cannot read audit log" branch and exits **2**, where a tampered record exits 1
+with `chain BROKEN` — so a hand-edited anchor is reported as unreadable rather
+than as broken, and a pruned oldest segment is refused rather than verified from
+the seq its anchor names. That mapping is exactly what **B4** is, and B3
+deliberately did not do it: nothing tracebacks, and every message names the real
+problem, which is what a commit that stops short owes the one after it.
 
 B7 was small and disproportionately valuable, and it is done. The audit log's
 whole pitch is that it says what was authorised rather than what was reported
@@ -381,6 +391,18 @@ process memory is exactly what a rotated segment needs — whoever appends next
 reads the anchor record the rotation wrote, and no process holds a stale head
 for rotation to invalidate. Doing B3 first would have meant two writers
 rotating one segment set: strictly worse than two writers on one file.
+
+**That prediction was half right, and B3 found the other half.** No process
+holds a stale *head* — but a writer can still hold a stale *descriptor*: it opens
+`[audit].path`, spins for the `flock`, and by the time it gets the lock another
+writer has rotated, so the file it holds is a **closed segment whose size is
+still over the threshold**. It therefore does not merely append into a closed
+file, it tries to rotate it, and forks the segment tree. B6 moved the stale state
+out of process memory and into the file layer rather than eliminating it, and the
+fix is the same shape one level down: compare the locked descriptor's
+`(st_dev, st_ino)` against the name's, every append, and reopen when they differ.
+The paragraph above is kept because the sequencing conclusion still holds — this
+was one check on top of B6, not a redesign of it.
 
 ### C · A control plane that can face a network
 

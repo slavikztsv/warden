@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from warden.broker.audit import AuditLog
+from warden.broker.audit import ANCHOR_ACTION_TYPE, AuditLog
 
 
 def _granted_tools(record: dict) -> list:
@@ -48,6 +48,18 @@ def _describe(record: dict) -> str:
         # go on the ⊕ GRANT line render_replay emits beneath, at 69.
         tools = _granted_tools(record)
         return f"mint({len(tools)} tool{'' if len(tools) == 1 else 's'})"
+    if record["action"].get("type") == ANCHOR_ACTION_TYPE:
+        # The record audit.py writes for itself when a segment closes (B3).
+        # Fourth branch, same reason as the three above: without it this falls
+        # through to the tool_call case and renders `?()` for a record sitting in
+        # the same hash chain as real decisions.
+        #
+        # It cannot reach the ✓/✗ column today. An anchor's task_id is "-" and
+        # this renderer only ever sees records `warden replay` already matched
+        # against a task_id, so a `decision` that is neither allow nor deny
+        # cannot be mistaken for a refusal here. What the CLI should say about
+        # segments is B4.
+        return f"anchor({record.get('target', {}).get('previous', '?')})"
     tool = record["action"].get("tool", "?")
     target = record["target"]
     kind = target.get("kind")

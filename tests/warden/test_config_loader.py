@@ -634,3 +634,77 @@ def test_the_two_writers_may_choose_different_durability(tmp_path):
     assert control.audit_durability == "fsync"
     # Same file, different durability. That is the point.
     assert broker.audit_path == control.audit_path
+
+
+# --- B3: [audit].segment_bytes, in BOTH loaders -----------------------------
+#
+# Designed in docs/superpowers/specs/2026-08-06-p2b3-audit-segment-rotation-design.md.
+# Grouped for the same reason the B2 block above is: the point is the
+# relationship between the two values, not either one alone.
+
+
+def test_audit_segment_bytes_defaults_to_64_mib(tmp_path):
+    """Every config written before this key existed keeps loading, and gets what
+    the product ships rather than what it replaced."""
+    config = load_broker_config(write_complete_config(tmp_path), env={})
+    assert config.audit_segment_bytes == 64 * 1024 * 1024
+
+
+def test_the_control_plane_defaults_to_64_mib(tmp_path):
+    config = load_control_config(write_control(tmp_path, CONTROL_COMPLETE), env={})
+    assert config.audit_segment_bytes == 64 * 1024 * 1024
+
+
+def test_audit_segment_bytes_is_read_from_both_tomls(tmp_path):
+    broker = load_broker_config(
+        write(tmp_path, COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + "\nsegment_bytes = 4096")),
+        env={},
+    )
+    control = load_control_config(
+        write_control(
+            tmp_path, CONTROL_COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + "\nsegment_bytes = 8192")
+        ),
+        env={},
+    )
+    assert (broker.audit_segment_bytes, control.audit_segment_bytes) == (4096, 8192)
+
+
+def test_the_two_writers_may_choose_different_segment_bytes(tmp_path):
+    """Like `durability` and unlike [audit].path: nothing compares these, and
+    nothing should. Whichever writer crosses its own threshold is the one that
+    rotates, so a disagreement makes segment sizes irregular -- untidy, not a
+    misconfiguration.
+
+    The second test here that pins the ABSENCE of a check, and would fail if
+    someone "helpfully" added one.
+    """
+    broker = load_broker_config(
+        write(tmp_path, COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + "\nsegment_bytes = 0")),
+        env={},
+    )
+    control = load_control_config(write_control(tmp_path, CONTROL_COMPLETE), env={})
+    # Rotation off in the broker, on in the control plane, one file. Legal.
+    assert broker.audit_segment_bytes == 0
+    assert control.audit_segment_bytes == 64 * 1024 * 1024
+    assert broker.audit_path == control.audit_path
+
+
+def test_a_negative_segment_bytes_is_a_config_error(tmp_path):
+    """Zero is meaningful -- it disables rotation -- so this rides on
+    _positive(..., allow_zero=True) rather than on _positive's default."""
+    text = COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + "\nsegment_bytes = -1")
+    with pytest.raises(
+        ConfigError, match=re.escape("audit.segment_bytes must be zero or greater, got -1")
+    ):
+        load_broker_config(write(tmp_path, text), env={})
+
+
+def test_a_non_integer_segment_bytes_is_a_config_error(tmp_path):
+    """A size is not a string. `_integer` refuses it before AuditLog ever sees
+    it, which matters because the comparison this value feeds would otherwise
+    raise TypeError on an append rather than at boot."""
+    text = COMPLETE.replace(_AUDIT_SECTION, _AUDIT_SECTION + '\nsegment_bytes = "64MiB"')
+    with pytest.raises(
+        ConfigError, match=re.escape("audit.segment_bytes must be an integer")
+    ):
+        load_broker_config(write(tmp_path, text), env={})

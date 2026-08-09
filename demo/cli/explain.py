@@ -368,6 +368,14 @@ class NarratedAudit:
     def records(self):
         return self._inner.records()
 
+    def segments(self):
+        # Forwarded although nothing in the narrated path calls it. This whole
+        # file exists because these wrappers forward hand-written SUBSETS of
+        # interfaces, and one of them silently lagged an interface that grew --
+        # see this module's own tests. A three-line forward now is cheaper than
+        # the next AttributeError inside the spine's describe() guard.
+        return self._inner.segments()
+
     def verify_chain(self):
         return self._inner.verify_chain()
 

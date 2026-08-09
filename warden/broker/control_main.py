@@ -45,7 +45,11 @@ def build(config: ControlConfig):
     )
     return create_control_app(
         signer=signer,
-        audit=AuditLog(config.audit_path, durability=config.audit_durability),
+        audit=AuditLog(
+            config.audit_path,
+            durability=config.audit_durability,
+            segment_bytes=config.audit_segment_bytes,
+        ),
         issuer=config.issuer,
     )
 

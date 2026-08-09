@@ -1324,3 +1324,20 @@ def test_the_shipped_configs_name_the_safe_durability():
     scenario = Path(__file__).resolve().parents[2] / "demo" / "scenario"
     for name in ("warden.toml", "control.toml"):
         assert 'durability = "fsync"' in (scenario / name).read_text(), name
+
+
+def test_replay_describes_an_anchor_record():
+    """A fourth action.type, same reason as tool_list, mcp_handshake and mint:
+    without a branch the renderer falls through to the tool_call case and prints
+    `?()` for a record sitting in the same hash chain as real decisions."""
+    from warden.cli.replay import _describe
+
+    assert (
+        _describe(
+            {
+                "action": {"type": "anchor"},
+                "target": {"kind": "segment", "previous": "audit-000008.jsonl"},
+            }
+        )
+        == "anchor(audit-000008.jsonl)"
+    )

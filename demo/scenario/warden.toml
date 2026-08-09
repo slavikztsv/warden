@@ -47,6 +47,18 @@ path = "/data/audit.jsonl"
 # loss; the high-volume decisions accept the risk" -- a coherent tiering, not
 # a misconfiguration, and nothing compares the two.
 durability = "fsync"
+# Where a segment closes, in bytes. 64MiB is the default, written out here
+# because a knob nobody can find is a knob nobody sets; at the ~547 bytes a
+# record measures that is about 122,000 records. The ACTIVE segment always keeps
+# `path` above -- a closed one becomes a sibling named for the seq of its last
+# record, /data/audit-000008.jsonl, and the new segment's first record names it
+# and hashes onto it, so the chain still verifies end to end across the split.
+# 0 disables rotation and gives back the single growing file this replaced.
+#
+# Also need NOT match control.toml's, for a weaker reason than `durability`:
+# whichever writer crosses its own threshold is the one that rotates, so a
+# disagreement makes segment sizes irregular rather than wrong.
+segment_bytes = 67108864
 
 [tokens]
 issuer = "warden-broker"

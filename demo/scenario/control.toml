@@ -32,6 +32,12 @@ path = "/data/audit.jsonl"
 # writes a handful of mint records per task, so it has no throughput reason to
 # ever weaken.
 durability = "fsync"
+# Where a segment closes, in bytes; 64MiB (the default) is about 122,000
+# records. This need not match warden.toml's either -- see the longer note there
+# -- but it is set here because the control plane writes into the SAME chain, so
+# whichever process crosses its own threshold is the one that rotates. Leaving
+# it out would make segment sizes depend on which writer got there first.
+segment_bytes = 67108864
 
 [tokens]
 issuer      = "warden-broker"
